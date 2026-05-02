@@ -1,101 +1,113 @@
 import streamlit as st
 import requests
+import pandas as pd
+import os
 from datetime import datetime
 
 # =================================================================
-# 1. CONFIGURACIÓN TOTAL (SportScore 6)
+# 1. CONFIGURACIÓN Y CREDENCIALES
 # =================================================================
-st.set_page_config(page_title="Tennis Predictor PRO", page_icon="🎾")
-
 API_KEY = "b6e30442c9mshea9fbba5c27adebp1fa8adjsn322f35fdd7f4"
 API_HOST = "sportscore6.p.rapidapi.com"
 
-# Diseño Minimalista para iPhone
+st.set_page_config(page_title="Tennis Predictor", page_icon="🎾")
+
+# Estilo profesional para iPhone
 st.markdown("""
     <style>
-    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background-color: #2e7d32; color: white; font-weight: bold; border: none; }
-    .match-card { padding: 15px; border-radius: 12px; background-color: #ffffff; border: 1px solid #e0e0e0; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
-    .tour-name { color: #666; font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px; }
-    .vs-text { color: #2e7d32; font-weight: bold; font-size: 0.9em; }
+    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background: #2e7d32; color: white; font-weight: bold; }
+    .card { padding: 15px; border-radius: 15px; background: white; border: 1px solid #eee; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .mode-box { padding: 10px; background: #e8f5e9; border-radius: 10px; margin-bottom: 20px; text-align: center; font-weight: bold; color: #2e7d32; }
     </style>
     """, unsafe_allow_html=True)
 
 # =================================================================
-# 2. MOTOR DE BÚSQUEDA MULTI-RUTA
+# 2. FUNCIONES CORE (API Y DATOS LOCALES)
 # =================================================================
-def buscar_partidos_hoy():
-    headers = {
-        "x-rapidapi-host": API_HOST,
-        "x-rapidapi-key": API_KEY,
-        "Content-Type": "application/json"
-    }
-    
+
+def obtener_partidos_api():
+    headers = {"x-rapidapi-host": API_HOST, "x-rapidapi-key": API_KEY}
     fecha = datetime.now().strftime('%Y-%m-%d')
-    
-    # Lista de rutas posibles ordenadas por probabilidad de éxito en v6
-    intentos = [
-        f"https://{API_HOST}/api/v1/events/date/{fecha}",
-        f"https://{API_HOST}/api/event/date/{fecha}",
-        f"https://{API_HOST}/api/v1/events"
-    ]
-    
-    for url in intentos:
-        try:
-            # Parámetros para filtrar por Tenis (ID 2 o 5)
-            params = {"sport_id": "2", "date": fecha}
-            response = requests.get(url, headers=headers, params=params, timeout=8)
-            
-            if response.status_code == 200:
-                data = response.json().get('data', [])
-                if data:
-                    return data, url # Retorna los datos y la ruta que funcionó
-        except:
-            continue
-            
-    return [], None
+    # Intentamos la ruta más probable de sportscore6
+    url = f"https://{API_HOST}/api/v1/events/date/{fecha}"
+    try:
+        r = requests.get(url, headers=headers, params={"sport_id": "2"}, timeout=8)
+        if r.status_code == 200:
+            return r.json().get('data', [])
+    except: pass
+    return []
 
-# =================================================================
-# 3. INTERFAZ DE USUARIO
-# =================================================================
-st.title("🎾 Tennis Live Predictor")
-st.caption(f"Server: {API_HOST} • {datetime.now().strftime('%d %b %Y')}")
-
-if st.button("🔄 ACTUALIZAR CARTELERA"):
-    with st.spinner("Buscando partidos activos..."):
-        partidos, ruta_ok = buscar_partidos_hoy()
-        
-        if not partidos:
-            st.error("No se encontraron partidos en las rutas conocidas.")
-            st.info("💡 Si ya te suscribiste al plan Free, es posible que el ID del tenis sea diferente o no haya torneos hoy.")
-        else:
-            st.success(f"Conectado con éxito!")
-            
-            for p in partidos:
+@st.cache_data
+def cargar_jugadores_locales():
+    ruta = 'datos'
+    jugadores = []
+    if os.path.exists(ruta):
+        for f in os.listdir(ruta):
+            if f.endswith(('.csv', '.xlsx')):
                 try:
-                    # Extracción segura de datos
-                    h_team = p.get('home_team', {})
-                    a_team = p.get('away_team', {})
-                    
-                    nombre1 = h_team.get('name', 'Jugador 1')
-                    nombre2 = a_team.get('name', 'Jugador 2')
-                    torneo = p.get('season', {}).get('name', 'Torneo ATP/WTA')
-                    hora = p.get('start_at', '').split(' ')[-1][:5] # Toma HH:MM
+                    df = pd.read_csv(os.path.join(ruta, f)) if f.endswith('.csv') else pd.read_excel(os.path.join(ruta, f))
+                    # Buscamos columnas que contengan 'winner' o 'player'
+                    cols = [c for c in df.columns if 'winner' in c.lower() or 'player' in c.lower()]
+                    for c in cols:
+                        jugadores.extend(df[c].astype(str).unique())
+                except: continue
+    return sorted(list(set([j.upper() for j in jugadores if len(j) > 2])))
 
-                    # Renderizado de Tarjeta
-                    st.markdown(f"""
-                    <div class="match-card">
-                        <div class="tour-name">🏆 {torneo}</div>
-                        <div style="margin: 8px 0; font-size: 1.1em;">
-                            <strong>{nombre1}</strong> <span class="vs-text">vs</span> <strong>{nombre2}</strong>
-                        </div>
-                        <div style="font-size: 0.85em; color: #888;">
-                            ⏰ Inicio: {hora if hora else 'Verificar'}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
+# =================================================================
+# 3. INTERFAZ PRINCIPAL
+# =================================================================
+
+st.title("🎾 Tennis IA Predictor")
+
+# SELECTOR DE MODO
+modo = st.radio("Selecciona origen de datos:", ["📡 Cartelera API (En vivo)", "manual Selección Manual (Mis Datos)"], horizontal=True)
+
+if modo == "📡 Cartelera API (En vivo)":
+    st.markdown('<div class="mode-box">Buscando partidos programados para hoy</div>', unsafe_allow_html=True)
+    
+    if st.button("🔄 ACTUALIZAR CARTELERA"):
+        with st.spinner("Conectando con SportScore6..."):
+            partidos = obtener_partidos_api()
+            
+            if not partidos:
+                st.error("No se encontraron partidos en la API para hoy.")
+                st.info("Usa el 'Modo Manual' si quieres analizar jugadores de tu base de datos.")
+            else:
+                st.success(f"Se han encontrado {len(partidos)} partidos.")
+                for p in partidos:
+                    h = p.get('home_team', {}).get('name', 'N/A')
+                    a = p.get('away_team', {}).get('name', 'N/A')
+                    t = p.get('season', {}).get('name', 'Torneo')
                     
-                except Exception as e:
-                    continue
+                    with st.container():
+                        st.markdown(f"""
+                        <div class="card">
+                            <small>🏆 {t}</small><br>
+                            <strong>{h}</strong> vs <strong>{a}</strong>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        if st.button(f"Analizar {h} vs {a}", key=f"btn_{h}"):
+                            st.write(f"✨ Procesando estadísticas de **{h}** y **{a}**...")
+
+else:
+    st.markdown('<div class="mode-box">Modo Manual: Usa tus archivos en /datos</div>', unsafe_allow_html=True)
+    jugadores = cargar_jugadores_locales()
+    
+    if not jugadores:
+        st.warning("No se detectaron jugadores en la carpeta /datos.")
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            j1 = st.selectbox("Jugador 1", jugadores)
+        with col2:
+            j2 = st.selectbox("Jugador 2", jugadores)
+            
+        superficie = st.selectbox("Superficie", ["Hard", "Clay", "Grass"])
+        
+        if st.button("🚀 PREDECIR GANADOR"):
+            st.success(f"Analizando enfrentamiento: {j1} vs {j2}")
+            # Aquí va tu lógica de cálculo (Elo, PowerScore, etc.)
+            st.info("Predicción: Simulando resultado basado en datos históricos...")
 
 st.divider()
-st.caption("App diseñada para visualización rápida en dispositivos móviles.")
+st.caption(f"Host activo: {API_HOST} | Base de datos: {len(cargar_jugadores_locales())} jugadores")
