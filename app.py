@@ -4,87 +4,77 @@ import requests
 from datetime import datetime
 
 # =================================================================
-# 1. CONFIGURACIÓN DE LA APP
+# 1. CONFIGURACIÓN Y CREDENCIALES (SportScore)
 # =================================================================
-st.set_page_config(page_title="Tennis IA Live", page_icon="🎾")
+st.set_page_config(page_title="Tennis SportScore Live", page_icon="🎾")
 
-# Mantén tus credenciales
+# SUSTITUYE AQUÍ TU API KEY SI ES DIFERENTE
 API_KEY = "b6e30442c9mshea9fbba5c27adebp1fa8adjsn322f35fdd7f4"
-API_HOST = "tennis-api-atp-wta-itf.p.rapidapi.com"
+API_HOST = "sportscore1.p.rapidapi.com" # Verifica este Host en la pestaña de la API de Charlie Villa
 
-st.title("🎾 Tennis Live Predictor")
-st.markdown("---")
+st.markdown("""
+    <style>
+    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background-color: #1a73e8; color: white; font-weight: bold; }
+    .match-box { padding: 15px; border-radius: 12px; background-color: #f1f3f4; border-left: 6px solid #1a73e8; margin-bottom: 10px; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # =================================================================
-# 2. FUNCIÓN CAZADORA DE PARTIDOS (DEBUG MODE)
+# 2. FUNCIÓN DE CONEXIÓN A SPORTSCORE
 # =================================================================
-def obtener_partidos():
+def obtener_partidos_sportscore():
+    # El ID 2 suele corresponder a 'Tennis' en SportScore
+    url = f"https://{API_HOST}/sports/2/events" 
     headers = {
         "X-RapidAPI-Key": API_KEY,
         "X-RapidAPI-Host": API_HOST
     }
     
-    # Intentamos los 3 endpoints que suelen tener los partidos de hoy
-    endpoints = ["/matches", "/fixtures", "/live"]
+    # Buscamos los de la fecha actual
     fecha_hoy = datetime.now().strftime('%Y-%m-%d')
+    params = {"date": fecha_hoy}
     
-    for endpoint in endpoints:
-        url = f"https://{API_HOST}{endpoint}"
-        try:
-            # Algunas APIs requieren 'date', otras no para el live
-            params = {"date": fecha_hoy} if endpoint != "/live" else {}
-            response = requests.get(url, headers=headers, params=params, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                # Extraemos la lista de partidos de donde sea que esté
-                partidos = data.get('data', data.get('results', data.get('matches', [])))
-                if isinstance(partidos, list) and len(partidos) > 0:
-                    return partidos, endpoint
-        except:
-            continue
-    return [], None
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        if r.status_code == 200:
+            return r.json().get('data', [])
+        return []
+    except:
+        return []
 
 # =================================================================
-# 3. INTERFAZ Y RENDERIZADO
+# 3. INTERFAZ PRINCIPAL
 # =================================================================
-if st.button("🔄 CARGAR PARTIDOS DE HOY"):
-    with st.spinner("Consultando cartelera real..."):
-        partidos, endpoint_exitoso = obtener_partidos()
+st.title("🎾 SportScore Live")
+st.write("Cartelera de tenis actualizada en tiempo real.")
+
+if st.button("🔄 CARGAR CARTELERA DE HOY"):
+    with st.spinner("Conectando con SportScore..."):
+        eventos = obtener_partidos_sportscore()
         
-        if not partidos:
-            st.error("⚠️ No se encontraron partidos activos.")
-            st.warning("""
-            **Diagnóstico de la API:**
-            1. La suscripción gratuita de esta API puede estar limitada a estadísticas históricas.
-            2. Es posible que hoy no haya partidos en los torneos que cubre esta API.
-            3. Verifica en RapidAPI que el endpoint '/matches' devuelva datos en el 'Test Endpoint'.
-            """)
+        if not eventos:
+            st.warning("No se encontraron eventos de tenis para hoy.")
+            st.info("Asegúrate de estar suscrito al plan (aunque sea el gratuito) de la API de Charlie Villa.")
         else:
-            st.success(f"¡Conexión exitosa vía {endpoint_exitoso}!")
-            st.write(f"Se han encontrado **{len(partidos)}** encuentros:")
+            st.success(f"¡{len(eventos)} partidos encontrados!")
             
-            for p in partidos:
-                # Intento de extraer nombres (flexible según la API)
-                home = p.get('home_player', p.get('player1_name', p.get('player1', 'N/A')))
-                away = p.get('away_player', p.get('player2_name', p.get('player2', 'N/A')))
-                torneo = p.get('tournament_name', p.get('event_name', 'Torneo'))
-                
-                # Diseño de tarjeta para iPhone
-                with st.container():
+            for ev in eventos:
+                # SportScore suele usar 'home_team' y 'away_team' con una subclave 'name'
+                try:
+                    home = ev.get('home_team', {}).get('name', 'Jugador 1')
+                    away = ev.get('away_team', {}).get('name', 'Jugador 2')
+                    torneo = ev.get('season', {}).get('name', 'Torneo')
+                    estado = ev.get('status_more', 'Programado')
+                    
                     st.markdown(f"""
-                    <div style="padding:15px; border-radius:10px; background-color:#f0f2f6; margin-bottom:10px; border-left: 5px solid #2e7d32;">
-                        <small style="color:gray;">{torneo}</small><br>
-                        <strong>{home}</strong> vs <strong>{away}</strong>
+                    <div class="match-box">
+                        <small style="color:#5f6368;">{torneo}</small><br>
+                        <strong>{home}</strong> vs <strong>{away}</strong><br>
+                        <small style="color:#1a73e8;">Estado: {estado}</small>
                     </div>
                     """, unsafe_allow_html=True)
-                    if st.button(f"Analizar IA", key=f"btn_{home}_{away}"):
-                        st.write("✨ Calculando probabilidades...")
+                except:
+                    continue
 
-# =================================================================
-# 4. PLAN B: SELECCIÓN MANUAL
-# =================================================================
-st.sidebar.title("Configuración")
-if st.sidebar.button("Limpiar Caché"):
-    st.cache_data.clear()
-    st.rerun()
+st.divider()
+st.caption("Nota: Si el Host es diferente, cámbialo en la línea 14 del código.")
