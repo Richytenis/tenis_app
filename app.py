@@ -12,20 +12,22 @@ from difflib import get_close_matches
 # =================================================================
 st.set_page_config(page_title="Tennis IA Live", page_icon="🎾", layout="centered")
 
+# Tu Key y Host exactos para la "Tennis API (ATP, WTA, ITF)"
 API_KEY = "b6e30442c9mshea9fbba5c27adebp1fa8adjsn322f35fdd7f4"
 API_HOST = "tennis-api-atp-wta-itf.p.rapidapi.com"
 
-# Estilos para móvil
+# Estilos optimizados para iPhone
 st.markdown("""
     <style>
-    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background-color: #2e7d32; color: white; font-weight: bold; }
-    .stTabs [data-baseweb="tab-list"] { gap: 10px; }
-    .stTabs [data-baseweb="tab"] { background-color: #f0f2f6; border-radius: 10px; padding: 10px; }
+    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background-color: #2e7d32; color: white; font-weight: bold; margin-top: 10px; }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    .stTabs [data-baseweb="tab"] { background-color: #f0f2f6; border-radius: 8px; padding: 8px 16px; }
+    .main { background-color: #ffffff; }
     </style>
     """, unsafe_allow_html=True)
 
 # =================================================================
-# 2. LÓGICA DE PROCESAMIENTO DE DATOS
+# 2. PROCESAMIENTO DE DATOS HISTÓRICOS
 # =================================================================
 def normalizar(n):
     if pd.isna(n): return ""
@@ -78,10 +80,9 @@ def cargar_big_data():
     return stats_jugador
 
 # =================================================================
-# 3. MOTOR DE SIMULACIÓN
+# 3. MOTOR DE SIMULACIÓN (MONTE CARLO)
 # =================================================================
 def simular_partido(p1, p2, superficie, circuito, stats_ia):
-    # Cálculo de Poder Real
     def get_pow(nombre):
         s = stats_ia.get(nombre, {'power_score': 0, 'total': 0, 'surf_stats': {}})
         ss = s['surf_stats'].get(superficie, {'wins': 0, 'total': 0})
@@ -90,8 +91,6 @@ def simular_partido(p1, p2, superficie, circuito, stats_ia):
         return max(1200 + s['power_score'] + bonus, base)
 
     pow1, pow2 = get_pow(p1), get_pow(p2)
-    
-    # Probabilidades de Saque
     base_h = 0.74 if circuito != 'WTA' else 0.64
     diff = (pow1 - pow2) / 1200
     p1_h = np.clip(base_h + diff, 0.50, 0.95)
@@ -104,89 +103,114 @@ def simular_partido(p1, p2, superficie, circuito, stats_ia):
     for _ in range(sims):
         s1, s2, tot_j = 0, 0, 0
         while s1 < 2 and s2 < 2:
-            # Simulación simplificada de set
             prob_set = p1_h / (p1_h + (1 - p2_h))
             if random.random() < prob_set: s1 += 1
             else: s2 += 1
-            tot_j += 9.5 # Promedio de juegos por set
+            tot_j += random.uniform(8.5, 12.5) # Variabilidad de juegos
         if s1 == 2: p1_sets += 1
         juegos.append(tot_j)
 
     return {
         'prob_p1': p1_sets / sims,
         'over18': sum(1 for j in juegos if j > 18.5) / sims,
-        'pow_dif': abs(pow1 - pow2)
+        'pow1': pow1,
+        'pow2': pow2
     }
 
 # =================================================================
-# 4. CONEXIÓN API EN VIVO
+# 4. CONEXIÓN API (TENNIS API ATP/WTA/ITF)
 # =================================================================
 def obtener_partidos_hoy():
     url = f"https://{API_HOST}/matches"
-    querystring = {"date": pd.Timestamp.now().strftime('%Y-%m-%d')}
-    headers = {"X-RapidAPI-Key": API_KEY, "X-RapidAPI-Host": API_HOST}
+    # Usamos la fecha actual del servidor
+    fecha_hoy = pd.Timestamp.now().strftime('%Y-%m-%d')
+    querystring = {"date": fecha_hoy}
+    headers = {
+        "X-RapidAPI-Key": API_KEY,
+        "X-RapidAPI-Host": API_HOST
+    }
     try:
         r = requests.get(url, headers=headers, params=querystring, timeout=15)
         if r.status_code == 200:
-            return r.json().get('data', [])
-        return []
-    except:
+            data = r.json()
+            return data.get('data', [])
+        elif r.status_code == 403:
+            st.error("🔑 Error 403: Verifica tu suscripción gratuita en RapidAPI.")
+            return []
+        else:
+            st.error(f"Error {r.status_code}: {r.text}")
+            return []
+    except Exception as e:
+        st.error(f"Error de conexión: {e}")
         return []
 
 # =================================================================
-# 5. INTERFAZ STREAMLIT
+# 5. INTERFAZ PRINCIPAL
 # =================================================================
-st.title("🎾 Tennis IA Live")
+st.title("🎾 Tennis IA Live Predictor")
+
 stats_ia = cargar_big_data()
 lista_jugadores = sorted(list(stats_ia.keys()))
 
 if not stats_ia:
-    st.error("No hay archivos en la carpeta /datos")
+    st.error("⚠️ La base de datos está vacía. Sube archivos a la carpeta /datos.")
 else:
-    tab1, tab2 = st.tabs(["📅 HOY", "⌨️ MANUAL"])
+    tab1, tab2 = st.tabs(["📅 PARTIDOS DE HOY", "⌨️ SELECCIÓN MANUAL"])
 
     with tab1:
-        if st.button("🔄 BUSCAR PARTIDOS DE HOY"):
-            partidos = obtener_partidos_hoy()
-            if not partidos:
-                st.warning("No se encontraron partidos. Verifica tu suscripción en RapidAPI.")
-            else:
-                for m in partidos:
-                    p1_api = m.get('home_player', '')
-                    p2_api = m.get('away_player', '')
+        if st.button("🔄 ACTUALIZAR CARTELERA"):
+            with st.spinner("Consultando API..."):
+                partidos = obtener_partidos_hoy()
+                
+                if not partidos:
+                    st.warning("No hay partidos programados para hoy en esta API.")
+                else:
+                    st.success(f"Se han encontrado {len(partidos)} partidos.")
+                    st.divider()
                     
-                    # Mapeo difuso
-                    m1 = get_close_matches(normalizar(p1_api), lista_jugadores, n=1, cutoff=0.3)
-                    m2 = get_close_matches(normalizar(p2_api), lista_jugadores, n=1, cutoff=0.3)
-                    
-                    if m1 and m2:
-                        with st.container():
-                            st.markdown(f"**{m1[0]} vs {m2[0]}**")
-                            st.caption(f"🏆 {m.get('tournament_name', 'Torneo')} | 🏟️ {m.get('surface', 'Hard')}")
-                            if st.button(f"Analizar", key=f"api_{p1_api}"):
-                                res = simular_partido(m1[0], m2[0], mapear_superficie(m.get('surface')), 'ATP', stats_ia)
-                                
-                                col1, col2 = st.columns(2)
-                                win_p = res['prob_p1'] if res['prob_p1'] > 0.5 else 1 - res['prob_p1']
-                                ganador = m1[0] if res['prob_p1'] > 0.5 else m2[0]
-                                
-                                col1.metric("Ganador", ganador, f"{win_p:.1%}")
-                                col2.metric("Over 18.5", f"{res['over18']:.1%}")
-                                st.divider()
-                    else:
-                        pass # Jugadores no encontrados en histórico
+                    for m in partidos:
+                        # Extraer nombres según estructura de tu API específica
+                        p1_api = m.get('home_player', 'Jugador 1')
+                        p2_api = m.get('away_player', 'Jugador 2')
+                        torneo = m.get('tournament_name', 'Torneo')
+                        surf_api = m.get('surface', 'Hard')
+
+                        # Mapeo difuso con tu base de datos (cutoff bajo para iPhone/nombres cortos)
+                        m1 = get_close_matches(normalizar(p1_api), lista_jugadores, n=1, cutoff=0.3)
+                        m2 = get_close_matches(normalizar(p2_api), lista_jugadores, n=1, cutoff=0.3)
+                        
+                        if m1 and m2:
+                            with st.expander(f"⭐ {m1[0]} vs {m2[0]}"):
+                                st.write(f"🏆 {torneo}")
+                                if st.button(f"Simular", key=f"api_btn_{p1_api}"):
+                                    res = simular_partido(m1[0], m2[0], mapear_superficie(surf_api), 'ATP', stats_ia)
+                                    
+                                    # Resultados visuales
+                                    ganador = m1[0] if res['prob_p1'] > 0.5 else m2[0]
+                                    confianza = res['prob_p1'] if res['prob_p1'] > 0.5 else 1 - res['prob_p1']
+                                    
+                                    c1, c2 = st.columns(2)
+                                    c1.metric("Ganador", ganador, f"{confianza:.1%}")
+                                    c2.metric("Over 18.5", f"{res['over18']:.1%}")
+                        else:
+                            # Opción por si no encuentra al jugador exacto
+                            st.write(f"⚪ {p1_api} vs {p2_api} (Sin datos históricos)")
 
     with tab2:
-        c1, c2 = st.columns(2)
-        p1_m = c1.selectbox("Jugador 1", lista_jugadores)
-        p2_m = c2.selectbox("Jugador 2", lista_jugadores)
-        surf_m = st.selectbox("Superficie", ["Tierra", "Dura", "Hierba"])
-        circ_m = st.selectbox("Circuito", ["ATP", "WTA", "CHALLENGER"])
+        st.subheader("Simulación a medida")
+        col_a, col_b = st.columns(2)
+        j1 = col_a.selectbox("Jugador 1", lista_jugadores, key="man_j1")
+        j2 = col_b.selectbox("Jugador 2", lista_jugadores, key="man_j2")
+        
+        surf_m = st.selectbox("Superficie", ["Tierra", "Dura", "Hierba"], key="man_surf")
+        circ_m = st.selectbox("Circuito", ["ATP", "WTA", "CHALLENGER"], key="man_circ")
 
-        if st.button("🚀 SIMULAR MANUAL"):
-            res = simular_partido(p1_m, p2_m, mapear_superficie(surf_m), circ_m, stats_ia)
-            ganador = p1_m if res['prob_p1'] > 0.5 else p2_m
-            win_p = res['prob_p1'] if res['prob_p1'] > 0.5 else 1 - res['prob_p1']
+        if st.button("🚀 INICIAR SIMULACIÓN MANUAL"):
+            res = simular_partido(j1, j2, mapear_superficie(surf_m), circ_m, stats_ia)
+            ganador = j1 if res['prob_p1'] > 0.5 else j2
+            conf = res['prob_p1'] if res['prob_p1'] > 0.5 else 1 - res['prob_p1']
             
-            st.success(f"### 🏆 {ganador} ({win_p:.1%})")
-            st.write(f"**Probabilidad Over 18.5 juegos:** {res['over18']:.1%}")
+            st.divider()
+            st.success(f"### 🏆 Ganador: {ganador}")
+            st.metric("Confianza", f"{conf:.1%}")
+            st.metric("Probabilidad Over 18.5", f"{res['over18']:.1%}")
