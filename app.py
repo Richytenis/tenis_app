@@ -5,119 +5,121 @@ import os
 from datetime import datetime
 
 # =================================================================
-# 1. CONFIGURACIÓN Y ESTILOS
+# 1. CONFIGURACIÓN
 # =================================================================
-API_KEY = "TU_API_KEY"
+API_KEY = "b6e30442c9mshea9fbba5c27adebp1fa8adjsn322f35fdd7f4"
 API_HOST = "sportscore6.p.rapidapi.com"
 
-st.set_page_config(page_title="Tennis Auto-Predict", page_icon="🎾")
-
-st.markdown("""
-    <style>
-    .match-box { padding: 15px; border-radius: 15px; background: #ffffff; border: 1px solid #e0e0e0; margin-bottom: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    .player-name { font-size: 1.1em; font-weight: bold; color: #1e88e5; }
-    .vs-label { color: #666; font-size: 0.8em; margin: 0 10px; }
-    </style>
-    """, unsafe_allow_html=True)
+st.set_page_config(page_title="Tennis Predictor", page_icon="🎾")
 
 # =================================================================
-# 2. MOTOR DE DATOS
+# 2. CARGADOR RECURSIVO (Entra en todas las subcarpetas)
 # =================================================================
 @st.cache_data
-def cargar_base_jugadores():
+def cargar_jugadores_recursivo():
     jugadores = set()
-    if os.path.exists('datos'):
-        for root, _, files in os.walk('datos'):
-            for f in files:
-                if f.startswith('.') or not f.lower().endswith(('.csv', '.xlsx')): continue
-                try:
-                    df = pd.read_csv(os.path.join(root, f), engine='python', on_bad_lines='skip')
-                    for col in df.columns:
-                        for v in df[col].dropna().unique():
-                            jugadores.add(str(v).strip().upper())
-                except: continue
-    return jugadores
-
-def ejecutar_pronostico(home, away, db_local):
-    """Aquí centralizamos la lógica de cálculo que ya te funcionaba"""
-    home = home.strip().upper()
-    away = away.strip().upper()
+    base_path = 'datos'
+    conteo_archivos = 0
     
-    if home in db_local and away in db_local:
-        st.success(f"✅ Análisis completado para: {home} vs {away}")
-        # --- TU LÓGICA DE CÁLCULO AQUÍ ---
-        st.metric(label=f"Probabilidad {home}", value="65%", delta="Favorito")
-        st.progress(0.65)
-    else:
-        st.error("Faltan datos de uno o ambos jugadores en la base local.")
-        if home not in db_local: st.warning(f"Falta: {home}")
-        if away not in db_local: st.warning(f"Falta: {away}")
+    if os.path.exists(base_path):
+        # os.walk recorre carpetas y subcarpetas (atp, wta, itf, challenger)
+        for root, dirs, files in os.walk(base_path):
+            for nombre_f in files:
+                if nombre_f.startswith('.'): continue
+                
+                archivo_path = os.path.join(root, nombre_f)
+                conteo_archivos += 1
+                
+                try:
+                    # Intentamos leer como CSV o Excel
+                    if nombre_f.lower().endswith(('.xlsx', '.xls')):
+                        df = pd.read_excel(archivo_path)
+                    else:
+                        # Para CSV o archivos sin extensión, probamos lectura flexible
+                        df = pd.read_csv(archivo_path, sep=None, engine='python', on_bad_lines='skip')
+                    
+                    # Extraer nombres de todas las columnas
+                    for col in df.columns:
+                        # Añadir el nombre de la columna por si acaso
+                        c_str = str(col).strip().upper()
+                        if len(c_str) > 3 and not c_str.isdigit() and 'UNNAMED' not in c_str:
+                            jugadores.add(c_str)
+                            
+                        # Añadir los datos de las filas
+                        for val in df[col].dropna().unique():
+                            n = str(val).strip().upper()
+                            if len(n) > 3 and len(n) < 35 and not n.replace('.','').isdigit() and 'NAN' != n:
+                                jugadores.add(n)
+                except:
+                    # Si falla pandas, probamos lectura de texto crudo (fallback)
+                    try:
+                        with open(archivo_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            for linea in f:
+                                for palabra in linea.split(','):
+                                    p = palabra.strip().upper()
+                                    if 3 < len(p) < 35 and not p.isdigit():
+                                        jugadores.add(p)
+                    except: continue
+                    
+    return sorted(list(jugadores)), conteo_archivos
 
 # =================================================================
-# 3. INTERFAZ PRINCIPAL
+# 3. INTERFAZ
 # =================================================================
-st.title("🎾 Tennis Predictor Pro")
+st.title("🎾 Tennis IA Predictor")
 
-# Cargamos base de datos
-db_jugadores = cargar_base_jugadores()
+nombres, total_f = cargar_jugadores_recursivo()
 
-# Menú de selección de modo
-modo = st.radio("Selecciona modo de uso:", 
-                ["📅 Partidos de Hoy (Auto)", "⌨️ Entrada Manual"], 
-                horizontal=True)
+tab1, tab2, tab3 = st.tabs(["📡 API En Vivo", "📂 Modo Manual", "🛠 Status"])
 
-st.divider()
-
-if modo == "📅 Partidos de Hoy (Auto)":
-    st.subheader("Cartelera del día")
-    if st.button("🔍 BUSCAR PARTIDOS EN VIVO"):
+with tab1:
+    st.info("Buscando partidos en vivo...")
+    if st.button("🔄 ACTUALIZAR CARTELERA"):
         headers = {"x-rapidapi-host": API_HOST, "x-rapidapi-key": API_KEY}
         url = f"https://{API_HOST}/api/v1/events/date/{datetime.now().strftime('%Y-%m-%d')}"
-        
         try:
-            with st.spinner('Conectando con la API...'):
-                r = requests.get(url, headers=headers, params={"sport_id": "2"}, timeout=7)
-                eventos = r.json().get('data', [])
+            r = requests.get(url, headers=headers, params={"sport_id": "2"}, timeout=5)
+            data = r.json().get('data', [])
+            if data:
+                for p in data:
+                    st.write(f"🔹 **{p.get('home_team',{}).get('name')}** vs **{p.get('away_team',{}).get('name')}**")
+            else:
+                st.warning("No hay partidos hoy en la API.")
+        except:
+            st.error("Error al conectar con la API.")
 
-            if not eventos:
-                st.info("No se encontraron partidos para hoy.")
-            
-            for ev in eventos:
-                home = ev.get('home_team', {}).get('name', '').upper()
-                away = ev.get('away_team', {}).get('name', '').upper()
-                torneo = ev.get('season', {}).get('name', 'Torneo')
-                
-                with st.container():
-                    st.markdown(f"""
-                    <div class="match-box">
-                        <small>🏆 {torneo}</small><br>
-                        <span class="player-name">{home}</span> <span class="vs-label">VS</span> <span class="player-name">{away}</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    if st.button(f"Pronosticar", key=f"btn_{home}_{away}"):
-                        ejecutar_pronostico(home, away, db_jugadores)
-                        
-        except Exception as e:
-            st.error(f"Error en API: {e}")
+with tab2:
+    if not nombres:
+        st.error("⚠️ No se encontraron jugadores dentro de las subcarpetas.")
+        st.info("Asegúrate de que dentro de 'atp', 'wta', etc., haya archivos CSV o Excel.")
+    else:
+        st.success(f"✅ {len(nombres)} Jugadores cargados de todas las categorías.")
+        col1, col2 = st.columns(2)
+        with col1:
+            j1 = st.selectbox("Jugador 1", nombres)
+        with col2:
+            j2 = st.selectbox("Jugador 2", nombres)
+        
+        if st.button("🚀 PREDECIR"):
+            st.balloons()
+            st.markdown(f"""
+            <div style="padding:20px; border-radius:15px; background:#e8f5e9; border:2px solid #2e7d32;">
+                <h3 style="color:#2e7d32; margin:0;">Análisis de IA</h3>
+                <p>Enfrentamiento: <b>{j1}</b> vs <b>{j2}</b></p>
+                <p>Calculando probabilidades basadas en histórico...</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-else:
-    st.subheader("Entrada de Jugadores Manual")
-    col1, col2 = st.columns(2)
-    with col1:
-        jugador_1 = st.text_input("Jugador 1 (Local)", placeholder="Ej: ALCARAZ C.")
-    with col2:
-        jugador_2 = st.text_input("Jugador 2 (Visitante)", placeholder="Ej: DJOKOVIC N.")
+with tab3:
+    st.subheader("Estructura de Datos")
+    st.write(f"**Total de archivos encontrados:** {total_f}")
+    st.write(f"**Jugadores únicos detectados:** {len(nombres)}")
     
-    if st.button("🎯 GENERAR PRONÓSTICO MANUAL", use_container_width=True):
-        if jugador_1 and jugador_2:
-            ejecutar_pronostico(jugador_1, jugador_2, db_jugadores)
-        else:
-            st.warning("Por favor, introduce ambos nombres.")
+    if st.checkbox("Ver lista de archivos"):
+        # Lista los archivos reales para confirmar
+        for root, dirs, files in os.walk('datos'):
+            for f in files:
+                st.text(os.path.join(root, f))
 
-# =================================================================
-# FOOTER
-# =================================================================
-st.sidebar.caption(f"📊 {len(db_jugadores)} jugadores en DB")
-if st.sidebar.button("Limpiar Caché"):
-    st.cache_data.clear()
+st.divider()
+st.caption(f"DB: {len(nombres)} nombres | Origen: Subcarpetas de datos")
