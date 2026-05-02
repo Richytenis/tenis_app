@@ -3,80 +3,99 @@ import requests
 from datetime import datetime
 
 # =================================================================
-# 1. CREDENCIALES EXACTAS
+# 1. CONFIGURACIÓN TOTAL (SportScore 6)
 # =================================================================
+st.set_page_config(page_title="Tennis Predictor PRO", page_icon="🎾")
+
 API_KEY = "b6e30442c9mshea9fbba5c27adebp1fa8adjsn322f35fdd7f4"
 API_HOST = "sportscore6.p.rapidapi.com"
 
-st.set_page_config(page_title="Tennis IA Live", page_icon="🎾")
-
-# --- Estilo para el iPhone ---
+# Diseño Minimalista para iPhone
 st.markdown("""
     <style>
-    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background-color: #1a73e8; color: white; font-weight: bold; }
-    .match-card { padding: 15px; border-radius: 12px; background-color: #f8f9fa; border-left: 5px solid #1a73e8; margin-bottom: 10px; }
+    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background-color: #2e7d32; color: white; font-weight: bold; border: none; }
+    .match-card { padding: 15px; border-radius: 12px; background-color: #ffffff; border: 1px solid #e0e0e0; margin-bottom: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+    .tour-name { color: #666; font-size: 0.75em; text-transform: uppercase; letter-spacing: 1px; }
+    .vs-text { color: #2e7d32; font-weight: bold; font-size: 0.9em; }
     </style>
     """, unsafe_allow_html=True)
 
 # =================================================================
-# 2. FUNCIÓN DE CONEXIÓN (Estructura v6)
+# 2. MOTOR DE BÚSQUEDA MULTI-RUTA
 # =================================================================
-def obtener_datos():
+def buscar_partidos_hoy():
     headers = {
         "x-rapidapi-host": API_HOST,
-        "x-rapidapi-key": API_KEY
+        "x-rapidapi-key": API_KEY,
+        "Content-Type": "application/json"
     }
     
-    fecha_hoy = datetime.now().strftime('%Y-%m-%d')
+    fecha = datetime.now().strftime('%Y-%m-%d')
     
-    # En la v6, la ruta de eventos suele ser /api/event o /api/events
-    # Intentamos la ruta más común de esta versión:
-    url = f"https://{API_HOST}/api/events/date/{fecha_hoy}"
+    # Lista de rutas posibles ordenadas por probabilidad de éxito en v6
+    intentos = [
+        f"https://{API_HOST}/api/v1/events/date/{fecha}",
+        f"https://{API_HOST}/api/event/date/{fecha}",
+        f"https://{API_HOST}/api/v1/events"
+    ]
     
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        
-        # Si da 404, probamos la ruta de 'list' con el prefijo /api/
-        if r.status_code == 404:
-            url_alt = f"https://{API_HOST}/api/event/list"
-            r = requests.get(url_alt, headers=headers, params={"sport_id": "2", "date": fecha_hoy}, timeout=10)
+    for url in intentos:
+        try:
+            # Parámetros para filtrar por Tenis (ID 2 o 5)
+            params = {"sport_id": "2", "date": fecha}
+            response = requests.get(url, headers=headers, params=params, timeout=8)
             
-        if r.status_code == 200:
-            return r.json().get('data', [])
-        else:
-            st.error(f"Error {r.status_code}: La API no reconoce la ruta.")
-            return []
-    except Exception as e:
-        st.error(f"Fallo: {e}")
-        return []
+            if response.status_code == 200:
+                data = response.json().get('data', [])
+                if data:
+                    return data, url # Retorna los datos y la ruta que funcionó
+        except:
+            continue
+            
+    return [], None
 
 # =================================================================
-# 3. INTERFAZ
+# 3. INTERFAZ DE USUARIO
 # =================================================================
 st.title("🎾 Tennis Live Predictor")
+st.caption(f"Server: {API_HOST} • {datetime.now().strftime('%d %b %Y')}")
 
-if st.button("🔄 CARGAR PARTIDOS DE HOY"):
-    with st.spinner("Conectando con SportScore 6..."):
-        partidos = obtener_datos()
+if st.button("🔄 ACTUALIZAR CARTELERA"):
+    with st.spinner("Buscando partidos activos..."):
+        partidos, ruta_ok = buscar_partidos_hoy()
         
         if not partidos:
-            st.warning("No se encontraron partidos.")
-            st.info("💡 Consejo: Entra al Playground de RapidAPI y copia el 'Request URL' del endpoint que te funcione (probablemente 'Events by Date').")
+            st.error("No se encontraron partidos en las rutas conocidas.")
+            st.info("💡 Si ya te suscribiste al plan Free, es posible que el ID del tenis sea diferente o no haya torneos hoy.")
         else:
-            st.success(f"¡{len(partidos)} partidos encontrados!")
+            st.success(f"Conectado con éxito!")
+            
             for p in partidos:
-                # SportScore 6 usa nombres con guiones bajos
-                home = p.get('home_team', {}).get('name', 'N/A')
-                away = p.get('away_team', {}).get('name', 'N/A')
-                torneo = p.get('season', {}).get('name', 'Torneo')
-                
-                with st.container():
+                try:
+                    # Extracción segura de datos
+                    h_team = p.get('home_team', {})
+                    a_team = p.get('away_team', {})
+                    
+                    nombre1 = h_team.get('name', 'Jugador 1')
+                    nombre2 = a_team.get('name', 'Jugador 2')
+                    torneo = p.get('season', {}).get('name', 'Torneo ATP/WTA')
+                    hora = p.get('start_at', '').split(' ')[-1][:5] # Toma HH:MM
+
+                    # Renderizado de Tarjeta
                     st.markdown(f"""
                     <div class="match-card">
-                        <small style="color:gray;">{torneo}</small><br>
-                        <strong>{home}</strong> vs <strong>{away}</strong>
+                        <div class="tour-name">🏆 {torneo}</div>
+                        <div style="margin: 8px 0; font-size: 1.1em;">
+                            <strong>{nombre1}</strong> <span class="vs-text">vs</span> <strong>{nombre2}</strong>
+                        </div>
+                        <div style="font-size: 0.85em; color: #888;">
+                            ⏰ Inicio: {hora if hora else 'Verificar'}
+                        </div>
                     </div>
                     """, unsafe_allow_html=True)
+                    
+                except Exception as e:
+                    continue
 
 st.divider()
-st.caption(f"Host: {API_HOST}")
+st.caption("App diseñada para visualización rápida en dispositivos móviles.")
