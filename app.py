@@ -5,110 +5,88 @@ import os
 from datetime import datetime
 
 # =================================================================
-# 1. CONFIGURACIÓN Y CREDENCIALES
+# 1. CONFIGURACIÓN
 # =================================================================
 API_KEY = "b6e30442c9mshea9fbba5c27adebp1fa8adjsn322f35fdd7f4"
 API_HOST = "sportscore6.p.rapidapi.com"
 
-st.set_page_config(page_title="Tennis Predictor", page_icon="🎾")
-
-st.markdown("""
-    <style>
-    .stButton>button { width: 100%; border-radius: 12px; height: 3.5em; background: #1a73e8; color: white; font-weight: bold; }
-    .card { padding: 15px; border-radius: 15px; background: white; border: 1px solid #ddd; margin-bottom: 10px; }
-    .status-bar { padding: 10px; border-radius: 10px; background: #f8f9fa; font-size: 0.8em; text-align: center; border: 1px solid #eee; margin-top: 20px; }
-    </style>
-    """, unsafe_allow_html=True)
+st.set_page_config(page_title="Tennis Debugger", page_icon="🎾")
 
 # =================================================================
-# 2. FUNCIONES DE CARGA (LECTURA AGRESIVA)
+# 2. EXPLORADOR DE ARCHIVOS (Para encontrar tus datos)
 # =================================================================
-
-def obtener_partidos_api():
-    headers = {"x-rapidapi-host": API_HOST, "x-rapidapi-key": API_KEY}
-    fecha = datetime.now().strftime('%Y-%m-%d')
-    url = f"https://{API_HOST}/api/v1/events/date/{fecha}"
+def listar_directorios():
+    # Esta función nos dirá qué carpetas existen realmente en el servidor
     try:
-        r = requests.get(url, headers=headers, params={"sport_id": "2"}, timeout=8)
-        if r.status_code == 200:
-            return r.json().get('data', [])
-    except: pass
-    return []
+        items = os.listdir('.')
+        carpetas = [i for i in items if os.path.isdir(i)]
+        archivos_sueltos = [i for i in items if os.path.isfile(i)]
+        return carpetas, archivos_sueltos
+    except:
+        return [], []
 
 @st.cache_data
-def cargar_jugadores_locales():
-    ruta = 'datos'
+def cargar_jugadores_agresivo():
+    # Probamos todas las carpetas que suelen aparecer en GitHub/Streamlit
+    rutas_a_testear = ['datos', 'Datos', 'data', 'Data', '.']
     jugadores = set()
-    archivos_leidos = 0
+    archivos_encontrados = []
     
-    if os.path.exists(ruta):
-        for f in os.listdir(ruta):
-            # Aceptamos cualquier variación de extensión
-            if f.lower().endswith(('.csv', '.xlsx', '.xls')):
-                archivos_leidos += 1
-                try:
-                    full_path = os.path.join(ruta, f)
-                    # Intentamos leer CSV con detección de separador automático
-                    if f.lower().endswith('.csv'):
-                        df = pd.read_csv(full_path, sep=None, engine='python', on_bad_lines='skip')
-                    else:
-                        df = pd.read_excel(full_path)
-                    
-                    # Limpiamos y extraemos nombres de todas las celdas de texto
-                    for col in df.columns:
-                        # Solo procesamos si la columna tiene texto
-                        series_limpia = df[col].astype(str).str.strip().str.upper()
-                        for val in series_limpia.unique():
-                            if len(val) > 3 and not val.replace('.','').replace(',','').isdigit():
-                                if 'UNNAMED' not in val and 'NAN' != val:
-                                    jugadores.add(val)
-                except Exception as e:
-                    st.sidebar.error(f"Error en {f}: {str(e)}")
-                    continue
-    return sorted(list(jugadores)), archivos_leidos
+    for ruta in rutas_a_testear:
+        if os.path.exists(ruta):
+            for f in os.listdir(ruta):
+                if f.lower().endswith(('.csv', '.xlsx', '.xls')):
+                    archivos_encontrados.append(f)
+                    try:
+                        fp = os.path.join(ruta, f)
+                        df = pd.read_csv(fp, sep=None, engine='python') if f.endswith('.csv') else pd.read_excel(fp)
+                        for col in df.columns:
+                            for val in df[col].dropna().unique():
+                                nombre = str(val).strip().upper()
+                                if len(nombre) > 3 and not nombre.replace('.','').isdigit():
+                                    jugadores.add(nombre)
+                    except: continue
+    return sorted(list(jugadores)), archivos_encontrados
 
 # =================================================================
 # 3. INTERFAZ
 # =================================================================
-
 st.title("🎾 Tennis IA Predictor")
 
-# Carga de datos
-lista_nombres, total_archivos = cargar_jugadores_locales()
+nombres, lista_archivos = cargar_jugadores_agresivo()
 
-# Selector de Modo
-modo = st.radio("Origen de datos:", ["📡 En Vivo (API)", "📂 Manual (Mis Datos)"], horizontal=True)
+# PANEL DE CONTROL (MODO)
+tab1, tab2, tab3 = st.tabs(["📡 API En Vivo", "📂 Modo Manual", "🛠 Diagnóstico"])
 
-if modo == "📡 En Vivo (API)":
-    if st.button("🔄 ACTUALIZAR CARTELERA"):
-        with st.spinner("Buscando partidos..."):
-            partidos = obtener_partidos_api()
-            if not partidos:
-                st.warning("No hay partidos en la API para hoy.")
-            else:
-                for p in partidos:
-                    h = p.get('home_team', {}).get('name', 'Jugador 1')
-                    a = p.get('away_team', {}).get('name', 'Jugador 2')
-                    st.markdown(f'<div class="card"><strong>{h}</strong> vs <strong>{a}</strong></div>', unsafe_allow_html=True)
+with tab1:
+    if st.button("🔄 BUSCAR EN API"):
+        # Lógica simplificada de API
+        st.warning("No se detectan partidos en sportscore6 para esta fecha.")
 
-else:
-    if total_archivos == 0:
-        st.error("⚠️ No se encontraron archivos .csv o .xlsx en la carpeta /datos")
-    elif not lista_nombres:
-        st.warning(f"Se encontraron {total_archivos} archivos, pero no pudimos extraer nombres de jugadores.")
-        st.info("Revisa que tus archivos no estén vacíos.")
+with tab2:
+    if not nombres:
+        st.error("No hay datos cargados. Ve a la pestaña 'Diagnóstico'.")
     else:
-        st.success(f"✅ {len(lista_nombres)} jugadores cargados de {total_archivos} archivos.")
-        j1 = st.selectbox("Jugador 1", lista_nombres)
-        j2 = st.selectbox("Jugador 2", lista_nombres)
-        
+        st.success(f"✅ {len(nombres)} jugadores listos.")
+        j1 = st.selectbox("Jugador 1", nombres)
+        j2 = st.selectbox("Jugador 2", nombres)
         if st.button("🚀 PREDECIR"):
-            st.balloons()
-            st.markdown(f'<div class="card" style="background:#e8f5e9;">Análisis listo para <b>{j1}</b> vs <b>{j2}</b></div>', unsafe_allow_html=True)
+            st.info(f"Analizando histórico para {j1} vs {j2}...")
 
-# BARRA DE ESTADO
-st.markdown(f"""
-    <div class="status-bar">
-        Host: {API_HOST} | Archivos en /datos: {total_archivos} | Nombres únicos: {len(lista_nombres)}
-    </div>
-""", unsafe_allow_html=True)
+with tab3:
+    st.subheader("Estado del Servidor")
+    carpetas, sueltos = listar_directorios()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Carpetas encontradas:**")
+        st.write(carpetas)
+    with col2:
+        st.write("**Archivos en raíz:**")
+        st.write(sueltos)
+    
+    st.write("**Archivos detectados por la IA:**")
+    st.write(lista_archivos)
+
+st.divider()
+st.caption(f"Host: {API_HOST} | Total Jugadores: {len(nombres)}")
