@@ -4,7 +4,6 @@ import numpy as np
 import random
 import re
 import os
-from difflib import get_close_matches
 
 # =================================================================
 # 0. REGISTRO DE APUESTAS
@@ -42,21 +41,13 @@ def actualizar_resultado(index, resultado):
     df.to_csv(ARCHIVO_APUESTAS, index=False)
 
 # =================================================================
-# 1. CONFIGURACIÓN Y ESTILOS
+# 1. CONFIG
 # =================================================================
 
 st.set_page_config(page_title="Tennis IA Predictor Pro", page_icon="🎾", layout="wide")
 
-st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    .report-card { padding: 20px; border-radius: 15px; background-color: #ffffff; border-left: 10px solid #2e7d32; margin-bottom: 20px; }
-    </style>
-    """, unsafe_allow_html=True)
-
 # =================================================================
-# 2. FUNCIONES IA (SIN CAMBIOS)
+# 2. FUNCIONES IA (IGUAL)
 # =================================================================
 
 def normalizar(n):
@@ -135,13 +126,9 @@ def calcular_probabilidades_saque(pow1, pow2, superficie, circuito):
     else:
         base_h = {'Clay': 0.68, 'Hard': 0.76, 'Grass': 0.82}.get(superficie, 0.74)
         suelo_tenis = 0.55
-    
-    if pow1 <= 1410 and pow2 <= 1410:
-        base_h -= 0.08
-        suelo_tenis -= 0.10
 
     raw_diff = (pow1 - pow2)
-    diff_log = np.sign(raw_diff) * (np.log1p(abs(raw_diff)) / 25) 
+    diff_log = np.sign(raw_diff) * (np.log1p(abs(raw_diff)) / 25)
     p1_hold = base_h + (diff_log * 0.35)
     p2_hold = base_h - (diff_log * 0.35)
     return np.clip(p1_hold, suelo_tenis, 0.97), np.clip(p2_hold, suelo_tenis, 0.97)
@@ -158,126 +145,100 @@ def simular_set(p1_h, p2_h):
         servidor = 3 - servidor
 
 # =================================================================
-# 3. INTERFAZ + TABS
+# APP
 # =================================================================
 
 stats_ia = cargar_big_data()
 lista_jugadores = sorted(list(stats_ia.keys()))
 
-st.title("🎾 Tennis IA: Simulador Pro de Mercados")
+st.title("🎾 Tennis IA")
 
-tab1, tab2 = st.tabs(["🎾 Simulador", "📊 Historial"])
+tab1, tab2 = st.tabs(["Simulador", "Historial"])
 
-# =================================================================
-# TAB 1 (TU APP ORIGINAL)
-# =================================================================
-
+# ---------------- TAB 1 ----------------
 with tab1:
 
-    if not stats_ia:
-        st.error("❌ Carpeta '/datos' no encontrada o vacía.")
-    else:
-        with st.sidebar:
-            st.header("⚙️ Configuración")
-            circ = st.selectbox("Circuito", ["ATP", "WTA", "CHALLENGER"])
-            surf_in = st.selectbox("Superficie", ["Dura", "Tierra", "Hierba"])
-            sims = st.slider("Simulaciones", 5000, 20000, 10000)
-            
-            st.divider()
-            st.header("🎯 Parámetros de Apuestas")
-            umbral_ou = st.number_input("Línea Over/Under Juegos", value=22.5, step=0.5)
-            h_val = st.number_input("Hándicap Juegos (Jugador 1)", value=-2.5, step=0.5)
+    circ = st.selectbox("Circuito", ["ATP", "WTA", "CHALLENGER"])
+    surf_in = st.selectbox("Superficie", ["Dura", "Tierra", "Hierba"])
+    sims = st.slider("Simulaciones", 5000, 20000, 10000)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            p1_in = st.selectbox("Jugador 1", lista_jugadores, index=0)
-        with col2:
-            p2_in = st.selectbox("Jugador 2", lista_jugadores, index=min(1, len(lista_jugadores)-1))
+    umbral_ou = st.number_input("Over/Under", value=22.5, step=0.5)
+    h_val = st.number_input("Hándicap", value=-2.5, step=0.5)
 
-        if st.button("🚀 INICIAR SIMULACIÓN DE ALTO RENDIMIENTO"):
+    p1_in = st.selectbox("Jugador 1", lista_jugadores)
+    p2_in = st.selectbox("Jugador 2", lista_jugadores, index=1)
 
-            superficie = mapear_superficie(surf_in)
-            pow1 = calcular_poder_real(p1_in, superficie, circ, stats_ia)
-            pow2 = calcular_poder_real(p2_in, superficie, circ, stats_ia)
-            p1_h, p2_h = calcular_probabilidades_saque(pow1, pow2, superficie, circ)
+    if st.button("🚀 SIMULAR"):
+        superficie = mapear_superficie(surf_in)
+        pow1 = calcular_poder_real(p1_in, superficie, circ, stats_ia)
+        pow2 = calcular_poder_real(p2_in, superficie, circ, stats_ia)
+        p1_h, p2_h = calcular_probabilidades_saque(pow1, pow2, superficie, circ)
 
-            j_totales, d_juegos = [], []
-            sets_p1 = 0
+        sets_p1 = 0
+        j_totales, d_juegos = [], []
 
-            for _ in range(sims):
-                s1, s2, jp1, jp2 = 0, 0, 0, 0
-                while s1 < 2 and s2 < 2:
-                    r1, r2 = simular_set(p1_h, p2_h)
-                    jp1 += r1; jp2 += r2
-                    if r1 > r2: s1 += 1
-                    else: s2 += 1
-                j_totales.append(jp1 + jp2)
-                d_juegos.append(jp1 - jp2)
-                if s1 == 2: sets_p1 += 1
+        for _ in range(sims):
+            s1, s2, jp1, jp2 = 0, 0, 0, 0
+            while s1 < 2 and s2 < 2:
+                r1, r2 = simular_set(p1_h, p2_h)
+                jp1 += r1; jp2 += r2
+                if r1 > r2: s1 += 1
+                else: s2 += 1
+            j_totales.append(jp1 + jp2)
+            d_juegos.append(jp1 - jp2)
+            if s1 == 2: sets_p1 += 1
 
-            p_win_p1 = sets_p1 / sims
-            p_over = sum(1 for j in j_totales if j > umbral_ou) / sims
-            p_hcap = sum(1 for d in d_juegos if d + h_val > 0) / sims
+        st.session_state["res"] = {
+            "p1": p1_in, "p2": p2_in,
+            "win": sets_p1 / sims,
+            "over": sum(j > umbral_ou for j in j_totales) / sims,
+            "hcap": sum(d + h_val > 0 for d in d_juegos) / sims,
+            "ou": umbral_ou,
+            "h": h_val
+        }
 
-            st.metric(f"Ganador {p1_in}", f"{p_win_p1:.1%}")
-            st.metric(f"Over {umbral_ou}", f"{p_over:.1%}")
-            st.metric(f"Hcap {h_val}", f"{p_hcap:.1%}")
+    if "res" in st.session_state:
+        r = st.session_state["res"]
 
-            # REGISTRO APUESTA
-            st.divider()
-            st.subheader("💾 Registrar apuesta")
+        st.metric(f"Ganador {r['p1']}", f"{r['win']:.1%}")
+        st.metric(f"Over {r['ou']}", f"{r['over']:.1%}")
+        st.metric(f"Hcap {r['h']}", f"{r['hcap']:.1%}")
 
-            opcion = st.selectbox("¿Qué vas a apostar?", [
-                f"Ganador {p1_in}",
-                f"Ganador {p2_in}",
-                f"Over {umbral_ou}",
-                f"Hándicap {h_val}"
-            ])
+        opcion = st.selectbox("Apuesta", [
+            f"Ganador {r['p1']}",
+            f"Ganador {r['p2']}",
+            f"Over {r['ou']}",
+            f"Hándicap {r['h']}"
+        ])
 
-            if st.button("Guardar apuesta"):
-                prob_map = {
-                    f"Ganador {p1_in}": p_win_p1,
-                    f"Ganador {p2_in}": 1 - p_win_p1,
-                    f"Over {umbral_ou}": p_over,
-                    f"Hándicap {h_val}": p_hcap
-                }
+        if st.button("Guardar"):
+            prob_map = {
+                f"Ganador {r['p1']}": r["win"],
+                f"Ganador {r['p2']}": 1 - r["win"],
+                f"Over {r['ou']}": r["over"],
+                f"Hándicap {r['h']}": r["hcap"]
+            }
 
-                guardar_apuesta(p1_in, p2_in, opcion, prob_map[opcion])
-                st.success("✅ Apuesta guardada")
+            guardar_apuesta(r["p1"], r["p2"], opcion, prob_map[opcion])
+            st.success("Guardado")
 
-# =================================================================
-# TAB 2 (HISTORIAL)
-# =================================================================
-
+# ---------------- TAB 2 ----------------
 with tab2:
 
-    st.subheader("📊 Historial de apuestas")
-
     df = cargar_apuestas()
+    st.dataframe(df)
 
-    if df.empty:
-        st.info("No hay apuestas registradas.")
-    else:
-        st.dataframe(df)
+    for i, row in df.iterrows():
+        if row["Resultado"] == "Pendiente":
+            if st.button(f"✔️ {i}", key=f"a{i}"):
+                actualizar_resultado(i, "Acierto")
+                st.rerun()
+            if st.button(f"❌ {i}", key=f"f{i}"):
+                actualizar_resultado(i, "Fallo")
+                st.rerun()
 
-        for i, row in df.iterrows():
-            if row["Resultado"] == "Pendiente":
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button(f"✔️ Acierto {i}", key=f"a_{i}"):
-                        actualizar_resultado(i, "Acierto")
-                        st.rerun()
-                with col2:
-                    if st.button(f"❌ Fallo {i}", key=f"f_{i}"):
-                        actualizar_resultado(i, "Fallo")
-                        st.rerun()
+    total = len(df[df["Resultado"] != "Pendiente"])
+    aciertos = len(df[df["Resultado"] == "Acierto"])
 
-        total = len(df[df["Resultado"] != "Pendiente"])
-        aciertos = len(df[df["Resultado"] == "Acierto"])
-
-        if total > 0:
-            st.metric("📈 % Acierto", f"{(aciertos/total):.1%}")
-            st.metric("🎯 Aciertos", aciertos)
-            st.metric("📉 Fallos", total - aciertos)
-
-st.caption(f"Motor de IA v2.5 | Basado en {len(lista_jugadores)} jugadores.")
+    if total > 0:
+        st.metric("Acierto %", f"{(aciertos/total):.1%}")
