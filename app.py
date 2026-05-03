@@ -9,31 +9,18 @@ from difflib import get_close_matches
 # =================================================================
 # 1. CONFIGURACIÓN Y ESTILOS
 # =================================================================
-st.set_page_config(page_title="Tennis IA Predictor", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor Pro", page_icon="🎾", layout="wide")
 
-# Estilo para los reportes
-CSS_REPORTE = """
-<style>
-    .report-card {
-        padding: 25px;
-        border-radius: 15px;
-        background-color: #f8f9fa;
-        border-left: 8px solid #2e7d32;
-        margin: 10px 0px;
-    }
-    .metric-box {
-        text-align: center;
-        padding: 10px;
-        background: white;
-        border-radius: 10px;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
-    }
-</style>
-"""
-st.markdown(CSS_REPORTE, unsafe_allow_html=True)
+st.markdown("""
+    <style>
+    .main { background-color: #f5f7f9; }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .report-card { padding: 20px; border-radius: 15px; background-color: #ffffff; border-left: 10px solid #2e7d32; margin-bottom: 20px; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # =================================================================
-# 2. TU LÓGICA MATEMÁTICA (Mantenida al 100%)
+# 2. FUNCIONES DE LÓGICA MATEMÁTICA (TU MOTOR)
 # =================================================================
 
 def normalizar(n):
@@ -65,7 +52,7 @@ def cargar_big_data():
             if not (f.endswith('.xlsx') or f.endswith('.csv')): continue
             try:
                 if f.endswith('.csv'):
-                    df = pd.read_csv(os.path.join(root, f), engine='python', on_bad_lines='skip')
+                    df = pd.read_csv(os.path.join(root, f), engine='python', on_bad_lines='skip', encoding_errors='ignore')
                 else:
                     df = pd.read_excel(os.path.join(root, f))
                 
@@ -98,12 +85,10 @@ def calcular_poder_real(nombre, superficie, circuito, stats_ia):
     stats = stats_ia.get(nombre, {'power_score': 0, 'total': 0, 'surf_stats': {}})
     pts_score = stats['power_score']
     s_stats = stats['surf_stats'].get(superficie, {'wins': 0, 'total': 0})
-    
     surf_bonus = 0
     if s_stats['total'] > 0:
         surf_rate = s_stats['wins'] / s_stats['total']
         surf_bonus = (surf_rate - 0.5) * 400
-    
     poder_final = 1200 + pts_score + surf_bonus
     return max(poder_final, suelo_min)
 
@@ -114,17 +99,15 @@ def calcular_probabilidades_saque(pow1, pow2, superficie, circuito):
     else:
         base_h = {'Clay': 0.68, 'Hard': 0.76, 'Grass': 0.82}.get(superficie, 0.74)
         suelo_tenis = 0.55
-
+    
     if pow1 <= 1410 and pow2 <= 1410:
         base_h -= 0.08
         suelo_tenis -= 0.10
 
     raw_diff = (pow1 - pow2)
     diff_log = np.sign(raw_diff) * (np.log1p(abs(raw_diff)) / 25) 
-    
     p1_hold = base_h + (diff_log * 0.35)
     p2_hold = base_h - (diff_log * 0.35)
-    
     return np.clip(p1_hold, suelo_tenis, 0.97), np.clip(p2_hold, suelo_tenis, 0.97)
 
 def simular_set(p1_h, p2_h):
@@ -139,23 +122,28 @@ def simular_set(p1_h, p2_h):
         servidor = 3 - servidor
 
 # =================================================================
-# 3. INTERFAZ STREAMLIT
+# 3. INTERFAZ Y CONTROLADORES
 # =================================================================
-
-st.title("🎾 Tennis IA: Simulador Pro")
 
 stats_ia = cargar_big_data()
 lista_jugadores = sorted(list(stats_ia.keys()))
 
+st.title("🎾 Tennis IA: Simulador Pro de Mercados")
+
 if not stats_ia:
-    st.error("❌ No se encontraron archivos de datos en la carpeta /datos")
+    st.error("❌ Carpeta '/datos' no encontrada o vacía.")
 else:
     with st.sidebar:
-        st.header("Configuración del Partido")
+        st.header("⚙️ Configuración")
         circ = st.selectbox("Circuito", ["ATP", "WTA", "CHALLENGER"])
         surf_in = st.selectbox("Superficie", ["Dura", "Tierra", "Hierba"])
-        sims = st.slider("Número de Simulaciones", 1000, 20000, 10000)
+        sims = st.slider("Simulaciones", 5000, 20000, 10000)
         
+        st.divider()
+        st.header("🎯 Parámetros de Apuestas")
+        umbral_ou = st.number_input("Línea Over/Under Juegos", value=22.5, step=0.5)
+        h_val = st.number_input("Hándicap Juegos (Jugador 1)", value=-2.5, step=0.5)
+
     col1, col2 = st.columns(2)
     with col1:
         p1_in = st.selectbox("Jugador 1", lista_jugadores, index=0)
@@ -164,63 +152,61 @@ else:
 
     if st.button("🚀 INICIAR SIMULACIÓN DE ALTO RENDIMIENTO"):
         superficie = mapear_superficie(surf_in)
-        
-        # Cálculos
         pow1 = calcular_poder_real(p1_in, superficie, circ, stats_ia)
         pow2 = calcular_poder_real(p2_in, superficie, circ, stats_ia)
         p1_h, p2_h = calcular_probabilidades_saque(pow1, pow2, superficie, circ)
 
-        juegos_totales, sets_p1, tres_sets = [], 0, 0
+        # Contenedores de datos
+        j_totales, d_juegos = [], []
+        sets_p1, t_breaks = 0, 0
+        score_counts = {"2-0": 0, "2-1": 0, "1-2": 0, "0-2": 0}
 
-        # Barra de progreso para las simulaciones
         progreso = st.progress(0)
         for i in range(sims):
             if i % 1000 == 0: progreso.progress(i/sims)
-            s1, s2, j_tot = 0, 0, 0
+            s1, s2, jp1, jp2 = 0, 0, 0, 0
             while s1 < 2 and s2 < 2:
-                res1, res2 = simular_set(p1_h, p2_h)
-                j_tot += (res1 + res2)
-                if res1 > res2: s1 += 1
+                r1, r2 = simular_set(p1_h, p2_h)
+                jp1 += r1; jp2 += r2
+                if r1 == 7 or r2 == 7: t_breaks += 1
+                if r1 > r2: s1 += 1
                 else: s2 += 1
-            juegos_totales.append(j_tot)
+            j_totales.append(jp1 + jp2)
+            d_juegos.append(jp1 - jp2)
+            score_counts[f"{s1}-{s2}"] += 1
             if s1 == 2: sets_p1 += 1
-            if (s1 + s2) == 3: tres_sets += 1
         progreso.empty()
 
-        # Resultados
-        prob_p1 = sets_p1 / sims
-        p_win = max(prob_p1, 1-prob_p1)
-        o18 = sum(1 for j in juegos_totales if j > 18.5) / sims
-        u24 = sum(1 for j in juegos_totales if j < 24.5) / sims
-        p3s = tres_sets / sims
+        # Métricas
+        p_win_p1 = sets_p1 / sims
+        p_over = sum(1 for j in j_totales if j > umbral_ou) / sims
+        p_hcap = sum(1 for d in d_juegos if d + h_val > 0) / sims
+        p_tb = (t_breaks / (sims * 2.2)) # Estimado de tie-break por set
 
-        # Lógica de Símbolos
-        s_win = "🔥" if p_win > 0.85 else ("✅" if p_win > 0.75 else "")
-        s_3s = "⚔️" if p3s > 0.40 else ""
-        s_o18 = "🚀" if o18 > 0.75 else ("✅" if o18 > 0.65 else "")
-        ganador = p1_in if prob_p1 > 0.5 else p2_in
-
-        # VISUALIZACIÓN DE RESULTADOS
+        # VISUALIZACIÓN
         st.markdown(f"""
-        <div class="report-card">
-            <h2>🏆 Pronóstico: {ganador} {p_win:.1%} {s_win}</h2>
-            <p>Diferencia de Power: {abs(pow1-pow2):.0f} pts | Prob. Saque: {p1_h:.1%} vs {p2_h:.1%}</p>
-        </div>
+            <div class="report-card">
+                <h3>🏆 Pronóstico Principal: {p1_in if p_win_p1 > 0.5 else p2_in}</h3>
+                <p>Confianza: {max(p_win_p1, 1-p_win_p1):.1%} | Prob. Saque: {p1_h:.1%} vs {p2_h:.1%}</p>
+            </div>
         """, unsafe_allow_html=True)
 
-        m1, m2, m3 = st.columns(3)
-        with m1:
-            st.metric("Prob. 3 Sets", f"{p3s:.1%}", s_3s)
-        with m2:
-            st.metric("Over 18.5 Juegos", f"{o18:.1%}", s_o18)
-        with m3:
-            st.metric("Under 24.5 Juegos", f"{u24:.1%}")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(f"Ganador {p1_in}", f"{p_win_p1:.1%}")
+        m2.metric(f"Over {umbral_ou}", f"{p_over:.1%}")
+        m3.metric(f"Hcap {h_val}", f"{p_hcap:.1%}")
+        m4.metric("Prob. Tie-break", f"{min(p_tb, 0.99):.1%}")
 
-        # Mensajes Premium
-        if s_win == "🔥" and u24 > 0.75:
-            st.success("🌟 PRONÓSTICO PREMIUM: Victoria clara del favorito + Under de juegos.")
-        elif s_3s == "⚔️" and o18 > 0.75:
-            st.warning("🌟 PRONÓSTICO PREMIUM: Partido de alta intensidad / Over de juegos.")
+        st.subheader("🎯 Probabilidades de Marcador Exacto")
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        cols = [sc1, sc2, sc3, sc4]
+        for idx, (m, c) in enumerate(score_counts.items()):
+            cols[idx].info(f"**{m}**\n\n {c/sims:.1%}")
 
-st.divider()
-st.caption("Estructura de datos detectada: Carpeta 'datos' con subcarpetas ATP/WTA/CHALLENGER.")
+        st.divider()
+        # ALERTAS PREMIUM
+        if p_over > 0.75: st.success(f"🔥 SEÑAL FUERTE: La probabilidad de Over {umbral_ou} es muy alta.")
+        if p_win_p1 > 0.85 and p_over < 0.40: st.success("💎 SEÑAL PREMIUM: Victoria cómoda del favorito (2-0).")
+        if p_tb > 0.35: st.warning("⚔️ PARTIDO CERRADO: Alta probabilidad de Tie-breaks.")
+
+st.caption(f"Motor de IA v2.5 | Basado en {len(lista_jugadores)} jugadores.")
