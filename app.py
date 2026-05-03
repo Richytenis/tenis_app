@@ -1,3 +1,4 @@
+import streamlit as set_page_config
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -9,7 +10,7 @@ from datetime import datetime
 # =================================================================
 # 1. CONFIGURACIÓN E INICIALIZACIÓN
 # =================================================================
-st.set_page_config(page_title="Tennis IA: Auditoría Total", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Tennis IA: Auditoría Definitiva", page_icon="🎯", layout="wide")
 
 FILE_REGISTRO = "auditoria_tenis.csv"
 
@@ -31,13 +32,16 @@ def guardar_seleccion(partido, apuesta, prob):
     pd.concat([df, nueva_fila], ignore_index=True).to_csv(FILE_REGISTRO, index=False)
 
 # =================================================================
-# 2. MOTOR LÓGICO (RECUPERADO Y MEJORADO)
+# 2. MOTOR LÓGICO (Optimizado para nombres cortos como Coulibaly)
 # =================================================================
 
-def normalizar_nombre(n):
+def limpiar_nombre_extremo(n):
     if pd.isna(n): return ""
+    # Convertir a texto, a mayúsculas y quitar espacios extra
     n = str(n).upper().strip()
-    # Mantenemos letras y espacios, pero permitimos nombres cortos
+    # Eliminar cualquier número al principio (como "1-", "2.", etc.)
+    n = re.sub(r'^[0-9\-\.\s]+', '', n)
+    # Dejar solo letras y espacios
     n = re.sub(r'[^A-Z\s]', '', n)
     return " ".join(n.split())
 
@@ -49,34 +53,39 @@ def cargar_big_data():
     
     for root, _, files in os.walk(ruta_base):
         folder_name = os.path.basename(root).upper()
-        # Peso por nivel de torneo
         peso = 2.5 if 'ATP' in folder_name else (2.0 if 'WTA' in folder_name else 1.5)
         
         for f in files:
             if not (f.endswith('.xlsx') or f.endswith('.csv')): continue
             try:
                 path = os.path.join(root, f)
-                df = pd.read_csv(path, engine='python', on_bad_lines='skip') if f.endswith('.csv') else pd.read_excel(path)
+                # Cargar archivo con manejo de errores de encoding
+                if f.endswith('.csv'):
+                    df = pd.read_csv(path, engine='python', on_bad_lines='skip', encoding_errors='ignore')
+                else:
+                    df = pd.read_excel(path)
+                
                 df.columns = df.columns.str.lower().str.strip()
                 
-                w_col = next((c for c in df.columns if 'winner' in c), None)
-                l_col = next((c for c in df.columns if 'loser' in c), None)
-                surf_col = next((c for c in df.columns if 'surface' in c), 'surface')
+                # Buscador de columnas agresivo
+                w_col = next((c for c in df.columns if 'winner' in c or 'ganador' in c), None)
+                l_col = next((c for c in df.columns if 'loser' in c or 'perdedor' in c), None)
+                surf_col = next((c for c in df.columns if 'surface' in c or 'superficie' in c), 'surface')
 
                 if w_col and l_col:
                     for _, row in df.iterrows():
-                        w = normalizar_nombre(row[w_col])
-                        l = normalizar_nombre(row[l_col])
-                        if not w or not l: continue
+                        w = limpiar_nombre_extremo(row[w_col])
+                        l = limpiar_nombre_extremo(row[l_col])
                         
-                        # Superficie
+                        # Si no hay nombre válido, saltar
+                        if len(w) < 2 or len(l) < 2: continue
+                        
                         s_raw = str(row.get(surf_col, 'Hard')).upper()
-                        surf = 'Clay' if 'CLAY' in s_raw or 'TIERRA' in s_raw else ('Grass' if 'GRASS' in s_raw or 'HIERBA' in s_raw else 'Hard')
+                        surf = 'Clay' if any(x in s_raw for x in ['CLAY', 'TIERRA', 'ARCILLA']) else ('Grass' if any(x in s_raw for x in ['GRASS', 'HIERBA']) else 'Hard')
 
                         for p in [w, l]:
                             if p not in stats_jugador: 
                                 stats_jugador[p] = {'power': 0, 'surf_stats': {}}
-                            
                             if surf not in stats_jugador[p]['surf_stats']:
                                 stats_jugador[p]['surf_stats'][surf] = {'w': 0, 't': 0}
                             
@@ -89,6 +98,7 @@ def cargar_big_data():
             except: continue
     return stats_jugador
 
+# [Las funciones calcular_poder_real y simular_set se mantienen igual]
 def calcular_poder_real(nombre, superficie, circuito, stats_ia):
     stats = stats_ia.get(nombre, {'power': 0, 'surf_stats': {}})
     s_stats = stats['surf_stats'].get(superficie, {'w': 0, 't': 0})
@@ -108,12 +118,12 @@ def simular_set(p1_h, p2_h):
         srv = 3 - srv
 
 # =================================================================
-# 3. INTERFAZ (Pestañas y Selectores)
+# 3. INTERFAZ (Tabs)
 # =================================================================
 inicializar_db()
 stats_ia = cargar_big_data()
-# Permite nombres de al menos 3 letras para no perder a nadie
-jugadores = sorted([j for j in stats_ia.keys() if len(j) >= 3])
+# ¡AQUÍ ESTÁ EL CAMBIO! Aceptamos nombres desde 2 letras (ej. LI, YU, COULIBALY)
+jugadores = sorted([j for j in stats_ia.keys() if len(j) >= 2])
 
 tab1, tab2 = st.tabs(["🚀 SIMULADOR", "📊 MI FIABILIDAD"])
 
@@ -125,61 +135,68 @@ with tab1:
         surf_in = st.selectbox("Superficie", ["Dura", "Tierra", "Hierba"])
         linea_ou = st.number_input("Línea Over/Under", value=22.5, step=0.5)
 
-    c1, c2 = st.columns(2)
-    p1_name = c1.selectbox("Jugador 1", jugadores, index=0)
-    p2_name = c2.selectbox("Jugador 2", jugadores, index=min(1, len(jugadores)-1))
+    if not jugadores:
+        st.error("No se han cargado jugadores. Revisa la carpeta 'datos'.")
+    else:
+        c1, c2 = st.columns(2)
+        p1_name = c1.selectbox("Jugador 1", jugadores, index=0)
+        # Intentar buscar a Coulibaly por defecto si existe para que veas que está
+        try:
+            idx_coul = [i for i, x in enumerate(jugadores) if "COULIBALY" in x][0]
+            p2_name = c2.selectbox("Jugador 2", jugadores, index=idx_coul)
+        except:
+            p2_name = c2.selectbox("Jugador 2", jugadores, index=min(1, len(jugadores)-1))
 
-    if st.button("🔥 EJECUTAR ANÁLISIS"):
-        surf_map = {'Dura': 'Hard', 'Tierra': 'Clay', 'Hierba': 'Grass'}[surf_in]
-        pow1 = calcular_poder_real(p1_name, surf_map, circ, stats_ia)
-        pow2 = calcular_poder_real(p2_name, surf_map, circ, stats_ia)
-        
-        # Probabilidades de saque basadas en Power Score
-        diff = (pow1 - pow2) / 25
-        base_s = 0.65 if circ == 'WTA' else 0.74
-        p1_h = np.clip(base_s + (diff * 0.05), 0.50, 0.95)
-        p2_h = np.clip(base_s - (diff * 0.05), 0.50, 0.95)
+        if st.button("🔥 EJECUTAR ANÁLISIS"):
+            surf_map = {'Dura': 'Hard', 'Tierra': 'Clay', 'Hierba': 'Grass'}[surf_in]
+            pow1 = calcular_poder_real(p1_name, surf_map, circ, stats_ia)
+            pow2 = calcular_poder_real(p2_name, surf_map, circ, stats_ia)
+            
+            diff = (pow1 - pow2) / 25
+            base_s = 0.65 if circ == 'WTA' else 0.74
+            p1_h = np.clip(base_s + (diff * 0.05), 0.50, 0.95)
+            p2_h = np.clip(base_s - (diff * 0.05), 0.50, 0.95)
 
-        j_tot, s1_win, t_sets = [], 0, 0
-        bar = st.progress(0)
-        for i in range(n_sims):
-            if i % 1000 == 0: bar.progress(i/n_sims)
-            s1, s2, jt = 0, 0, 0
-            while s1 < 2 and s2 < 2:
-                r1, r2 = simular_set(p1_h, p2_h)
-                jt += (r1 + r2)
-                if r1 > r2: s1 += 1
-                else: s2 += 1
-            if s1 > s2: s1_win += 1
-            if (s1 + s2) == 3: t_sets += 1
-            j_tot.append(jt)
-        bar.empty()
+            j_tot, s1_win, t_sets = [], 0, 0
+            bar = st.progress(0)
+            for i in range(n_sims):
+                if i % 1000 == 0: bar.progress(i/n_sims)
+                s1, s2, jt = 0, 0, 0
+                while s1 < 2 and s2 < 2:
+                    r1, r2 = simular_set(p1_h, p2_h)
+                    jt += (r1 + r2)
+                    if r1 > r2: s1 += 1
+                    else: s2 += 1
+                if s1 > s2: s1_win += 1
+                if (s1 + s2) == 3: t_sets += 1
+                j_tot.append(jt)
+            bar.empty()
 
-        st.session_state.res = {
-            'partido': f"{p1_name} vs {p2_name}",
-            'p1': p1_name, 'p2': p2_name,
-            'prob1': s1_win/n_sims, 'prob2': 1-(s1_win/n_sims),
-            'over': sum(1 for j in j_tot if j > linea_ou)/n_sims,
-            'under': sum(1 for j in j_tot if j < linea_ou)/n_sims,
-            'sets': t_sets/n_sims, 'linea': linea_ou
-        }
+            st.session_state.res = {
+                'partido': f"{p1_name} vs {p2_name}",
+                'p1': p1_name, 'p2': p2_name,
+                'prob1': s1_win/n_sims, 'prob2': 1-(s1_win/n_sims),
+                'over': sum(1 for j in j_tot if j > linea_ou)/n_sims,
+                'under': sum(1 for j in j_tot if j < linea_ou)/n_sims,
+                'sets': t_sets/n_sims, 'linea': linea_ou
+            }
 
-    if 'res' in st.session_state:
-        r = st.session_state.res
-        st.divider()
-        col_res = st.columns(4)
-        col_res[0].metric(f"Gana {r['p1']}", f"{r['prob1']:.1%}")
-        col_res[1].metric(f"Gana {r['p2']}", f"{r['prob2']:.1%}")
-        col_res[2].metric(f"Over {r['linea']}", f"{r['over']:.1%}")
-        col_res[3].metric("3 Sets", f"{r['sets']:.1%}")
+        if 'res' in st.session_state:
+            r = st.session_state.res
+            st.divider()
+            col_res = st.columns(4)
+            col_res[0].metric(f"Gana {r['p1']}", f"{r['prob1']:.1%}")
+            col_res[1].metric(f"Gana {r['p2']}", f"{r['prob2']:.1%}")
+            col_res[2].metric(f"Over {r['linea']}", f"{r['over']:.1%}")
+            col_res[3].metric("3 Sets", f"{r['sets']:.1%}")
 
-        with st.expander("📌 REGISTRAR APUESTA REALIZADA"):
-            opc = {f"Gana {r['p1']}": r['prob1'], f"Gana {r['p2']}": r['prob2'], 
-                   f"Over {r['linea']}": r['over'], f"Under {r['linea']}": r['under'], "3 Sets": r['sets']}
-            pick = st.selectbox("Mercado:", list(opc.keys()))
-            if st.button("GUARDAR EN AUDITORÍA"):
-                guardar_seleccion(r['partido'], pick, opc[pick])
-                st.toast("Guardado!")
+            with st.expander("📌 REGISTRAR APUESTA REALIZADA"):
+                opc = {f"Gana {r['p1']}": r['prob1'], f"Gana {r['p2']}": r['prob2'], 
+                       f"Over {r['linea']}": r['over'], f"Under {r['linea']}": r['under'], "3 Sets": r['sets']}
+                pick = st.selectbox("Mercado:", list(opc.keys()))
+                if st.button("GUARDAR EN AUDITORÍA"):
+                    guardar_seleccion(r['partido'], pick, opc[pick])
+                    st.toast("Guardado!")
 
 with tab2:
     st.header("📊 Auditoría de Aciertos")
