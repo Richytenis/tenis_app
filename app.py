@@ -4,226 +4,209 @@ import numpy as np
 import random
 import re
 import os
-from datetime import datetime
+from difflib import get_close_matches
 
 # =================================================================
-# 1. CONFIGURACIÓN Y PERSISTENCIA
+# 1. CONFIGURACIÓN Y ESTILOS
 # =================================================================
-st.set_page_config(page_title="Tennis IA: Auditoría y Simulación", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor Pro", page_icon="🎾", layout="wide")
 
-FILE_REGISTRO = "auditoria_tenis.csv"
-
-def inicializar_db():
-    if not os.path.exists(FILE_REGISTRO):
-        pd.DataFrame(columns=["ID", "Fecha", "Partido", "Apuesta", "Prob_IA", "Resultado"]).to_csv(FILE_REGISTRO, index=False)
-
-def guardar_seleccion(partido, apuesta, prob):
-    df = pd.read_csv(FILE_REGISTRO)
-    nueva_fila = pd.DataFrame([{
-        "ID": len(df) + 1,
-        "Fecha": datetime.now().strftime("%d/%m/%Y"),
-        "Partido": partido,
-        "Apuesta": apuesta,
-        "Prob_IA": f"{prob:.1%}",
-        "Resultado": "Pendiente"
-    }])
-    pd.concat([df, nueva_fila], ignore_index=True).to_csv(FILE_REGISTRO, index=False)
+st.markdown("""
+    <style>
+    .main { background-color: #f5f7f9; }
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    .report-card { padding: 20px; border-radius: 15px; background-color: #ffffff; border-left: 10px solid #2e7d32; margin-bottom: 20px; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # =================================================================
-# 2. MOTOR LÓGICO (Power Score + Limpieza)
+# 2. FUNCIONES DE LÓGICA MATEMÁTICA (TU MOTOR)
 # =================================================================
 
-def limpiar_nombre(n):
+def normalizar(n):
     if pd.isna(n): return ""
-    n = str(n).upper().strip()
-    # Quitar números iniciales y símbolos
-    n = re.sub(r'^[0-9\-\.\s]+', '', n)
+    n = str(n).upper()
     n = re.sub(r'[^A-Z\s]', '', n)
     return " ".join(n.split())
 
+def mapear_superficie(s):
+    s = s.upper()
+    if any(x in s for x in ['TIERRA', 'CLAY', 'ARCILLA']): return 'Clay'
+    if any(x in s for x in ['HIERBA', 'GRASS', 'CESPED']): return 'Grass'
+    return 'Hard'
+
 @st.cache_data
-def cargar_todo():
+def cargar_big_data():
     ruta_base = 'datos'
     stats_jugador = {} 
-    archivos_ok = 0
-    if not os.path.exists(ruta_base): return {}, 0
+    if not os.path.exists(ruta_base): return {}
 
     for root, _, files in os.walk(ruta_base):
+        folder_name = os.path.basename(root).upper()
+        peso_nivel = 1.0  
+        if 'ATP' in folder_name: peso_nivel = 2.5
+        elif 'WTA' in folder_name: peso_nivel = 2.0
+        elif 'CHALLENGER' in folder_name: peso_nivel = 1.5
+
         for f in files:
-            if f.endswith(('.csv', '.xlsx', '.xls')):
-                try:
-                    path = os.path.join(root, f)
-                    peso = 2.5 if 'ATP' in root.upper() else (2.0 if 'WTA' in root.upper() else 1.5)
-                    
-                    df = pd.read_csv(path, engine='python', on_bad_lines='skip', encoding_errors='ignore') if f.endswith('.csv') else pd.read_excel(path)
-                    df.columns = [str(c).lower().strip() for c in df.columns]
-                    
-                    w_col = next((c for c in df.columns if 'winner' in c or 'ganador' in c), None)
-                    l_col = next((c for c in df.columns if 'loser' in c or 'perdedor' in c), None)
-                    surf_col = next((c for c in df.columns if 'surface' in c), 'surface')
+            if not (f.endswith('.xlsx') or f.endswith('.csv')): continue
+            try:
+                if f.endswith('.csv'):
+                    df = pd.read_csv(os.path.join(root, f), engine='python', on_bad_lines='skip', encoding_errors='ignore')
+                else:
+                    df = pd.read_excel(os.path.join(root, f))
+                
+                df.columns = df.columns.str.lower().str.strip()
+                w_col = next((c for c in df.columns if c in ['winner', 'winner_name']), None)
+                l_col = next((c for c in df.columns if c in ['loser', 'loser_name']), None)
+                surf_col = next((c for c in df.columns if 'surface' in c), 'surface')
 
-                    if w_col and l_col:
-                        archivos_ok += 1
-                        for _, row in df.iterrows():
-                            w, l = limpiar_nombre(row[w_col]), limpiar_nombre(row[l_col])
-                            if len(w) < 2 or len(l) < 2: continue
-                            
-                            s_raw = str(row.get(surf_col, 'Hard')).upper()
-                            surf = 'Clay' if 'CLAY' in s_raw or 'TIERRA' in s_raw else ('Grass' if 'GRASS' in s_raw or 'HIERBA' in s_raw else 'Hard')
+                if w_col and l_col:
+                    for _, row in df.iterrows():
+                        w, l = normalizar(row[w_col]), normalizar(row[l_col])
+                        surf = mapear_superficie(str(row.get(surf_col, 'Hard')))
+                        for p in [w, l]:
+                            if p not in stats_jugador: 
+                                stats_jugador[p] = {'power_score': 0, 'total': 0, 'surf_stats': {}}
+                            stats_jugador[p]['total'] += 1
+                            if surf not in stats_jugador[p]['surf_stats']:
+                                stats_jugador[p]['surf_stats'][surf] = {'wins': 0, 'total': 0}
+                            stats_jugador[p]['surf_stats'][surf]['total'] += 1
+                            if p == w: 
+                                stats_jugador[p]['power_score'] += (10 * peso_nivel)
+                                stats_jugador[p]['surf_stats'][surf]['wins'] += 1
+                            else:
+                                stats_jugador[p]['power_score'] -= (6 / peso_nivel)
+            except: continue
+    return stats_jugador
 
-                            for p in [w, l]:
-                                if p not in stats_jugador: stats_jugador[p] = {'pwr': 0, 'surf': {}}
-                                if surf not in stats_jugador[p]['surf']: stats_jugador[p]['surf'][surf] = {'w': 0, 't': 0}
-                                stats_jugador[p]['surf'][surf]['t'] += 1
-                                if p == w:
-                                    stats_jugador[p]['pwr'] += (10 * peso)
-                                    stats_jugador[p]['surf'][surf]['w'] += 1
-                                else:
-                                    stats_jugador[p]['pwr'] -= (6 / peso)
-                except: continue
-    return stats_jugador, archivos_ok
+def calcular_poder_real(nombre, superficie, circuito, stats_ia):
+    suelo_min = 1750 if circuito in ['ATP', 'WTA'] else 1400
+    stats = stats_ia.get(nombre, {'power_score': 0, 'total': 0, 'surf_stats': {}})
+    pts_score = stats['power_score']
+    s_stats = stats['surf_stats'].get(superficie, {'wins': 0, 'total': 0})
+    surf_bonus = 0
+    if s_stats['total'] > 0:
+        surf_rate = s_stats['wins'] / s_stats['total']
+        surf_bonus = (surf_rate - 0.5) * 400
+    poder_final = 1200 + pts_score + surf_bonus
+    return max(poder_final, suelo_min)
 
-def calcular_pwr_real(nombre, superficie, circuito, stats_ia):
-    s = stats_ia.get(nombre, {'pwr': 0, 'surf': {}})
-    s_stats = s['surf'].get(superficie, {'w': 0, 't': 0})
-    bonus = (s_stats['w']/s_stats['t'] - 0.5) * 400 if s_stats['t'] > 0 else 0
-    base = 1750 if circuito in ['ATP', 'WTA'] else 1400
-    return max(1200 + s['pwr'] + bonus, base)
+def calcular_probabilidades_saque(pow1, pow2, superficie, circuito):
+    if circuito == 'WTA':
+        base_h = {'Clay': 0.58, 'Hard': 0.64, 'Grass': 0.70}.get(superficie, 0.62)
+        suelo_tenis = 0.45
+    else:
+        base_h = {'Clay': 0.68, 'Hard': 0.76, 'Grass': 0.82}.get(superficie, 0.74)
+        suelo_tenis = 0.55
+    
+    if pow1 <= 1410 and pow2 <= 1410:
+        base_h -= 0.08
+        suelo_tenis -= 0.10
+
+    raw_diff = (pow1 - pow2)
+    diff_log = np.sign(raw_diff) * (np.log1p(abs(raw_diff)) / 25) 
+    p1_hold = base_h + (diff_log * 0.35)
+    p2_hold = base_h - (diff_log * 0.35)
+    return np.clip(p1_hold, suelo_tenis, 0.97), np.clip(p2_hold, suelo_tenis, 0.97)
 
 def simular_set(p1_h, p2_h):
     j1, j2 = 0, 0
-    srv = 1 if random.random() > 0.5 else 2
+    servidor = 1 if random.random() > 0.5 else 2
     while True:
-        prob = p1_h if srv == 1 else (1 - p2_h)
+        prob = p1_h if servidor == 1 else (1 - p2_h)
         if random.random() < prob: j1 += 1
         else: j2 += 1
         if (j1 >= 6 or j2 >= 6) and abs(j1 - j2) >= 2: return j1, j2
         if j1 == 7 or j2 == 7: return j1, j2
-        srv = 3 - srv
+        servidor = 3 - servidor
 
 # =================================================================
-# 3. INTERFAZ STREAMLIT
+# 3. INTERFAZ Y CONTROLADORES
 # =================================================================
-inicializar_db()
-stats_ia, n_archivos = cargar_todo()
-jugadores = sorted(list(stats_ia.keys()))
 
-tab1, tab2 = st.tabs(["🚀 SIMULADOR IA", "📊 AUDITORÍA DE ACIERTOS"])
+stats_ia = cargar_big_data()
+lista_jugadores = sorted(list(stats_ia.keys()))
 
-with tab1:
+st.title("🎾 Tennis IA: Simulador Pro de Mercados")
+
+if not stats_ia:
+    st.error("❌ Carpeta '/datos' no encontrada o vacía.")
+else:
     with st.sidebar:
-        st.header("⚙️ Ajustes")
-        st.info(f"📂 {n_archivos} archivos cargados.")
-        n_sims = st.slider("Simulaciones", 5000, 20000, 10000, step=1000)
+        st.header("⚙️ Configuración")
         circ = st.selectbox("Circuito", ["ATP", "WTA", "CHALLENGER"])
         surf_in = st.selectbox("Superficie", ["Dura", "Tierra", "Hierba"])
-        linea_ou = st.number_input("Línea Over/Under", value=22.5, step=0.5)
+        sims = st.slider("Simulaciones", 5000, 20000, 10000)
         
         st.divider()
-        busqueda = st.text_input("🔍 Buscar Jugador (ej: COULIBALY)")
-        if busqueda:
-            matches = [j for j in jugadores if busqueda.upper() in j]
-            if matches: st.success(f"Encontrado: {matches[0]}")
-            else: st.error("No encontrado")
+        st.header("🎯 Parámetros de Apuestas")
+        umbral_ou = st.number_input("Línea Over/Under Juegos", value=22.5, step=0.5)
+        h_val = st.number_input("Hándicap Juegos (Jugador 1)", value=-2.5, step=0.5)
 
-    if not jugadores:
-        st.warning("Sube archivos CSV/Excel a la carpeta 'datos'")
-    else:
-        # Lógica de pre-selección por búsqueda
-        p1_idx = 0
-        if busqueda:
-            for i, j in enumerate(jugadores):
-                if busqueda.upper() in j: 
-                    p1_idx = i
-                    break
+    col1, col2 = st.columns(2)
+    with col1:
+        p1_in = st.selectbox("Jugador 1", lista_jugadores, index=0)
+    with col2:
+        p2_in = st.selectbox("Jugador 2", lista_jugadores, index=min(1, len(lista_jugadores)-1))
 
-        c1, c2 = st.columns(2)
-        p1_sel = c1.selectbox("Jugador 1", jugadores, index=p1_idx)
-        p2_sel = c2.selectbox("Jugador 2", jugadores, index=min(1, len(jugadores)-1))
+    if st.button("🚀 INICIAR SIMULACIÓN DE ALTO RENDIMIENTO"):
+        superficie = mapear_superficie(surf_in)
+        pow1 = calcular_poder_real(p1_in, superficie, circ, stats_ia)
+        pow2 = calcular_poder_real(p2_in, superficie, circ, stats_ia)
+        p1_h, p2_h = calcular_probabilidades_saque(pow1, pow2, superficie, circ)
 
-        if st.button("🔥 EJECUTAR ANÁLISIS COMPLETO"):
-            s_map = {'Dura': 'Hard', 'Tierra': 'Clay', 'Hierba': 'Grass'}[surf_in]
-            pow1 = calcular_pwr_real(p1_sel, s_map, circ, stats_ia)
-            pow2 = calcular_pwr_real(p2_sel, s_map, circ, stats_ia)
-            
-            # Cálculo de probabilidades de saque
-            diff = (pow1 - pow2) / 25
-            base_s = 0.65 if circ == 'WTA' else 0.74
-            p1_h = np.clip(base_s + (diff * 0.05), 0.50, 0.95)
-            p2_h = np.clip(base_s - (diff * 0.05), 0.50, 0.95)
+        # Contenedores de datos
+        j_totales, d_juegos = [], []
+        sets_p1, t_breaks = 0, 0
+        score_counts = {"2-0": 0, "2-1": 0, "1-2": 0, "0-2": 0}
 
-            j_tot, s1_win, t_sets = [], 0, 0
-            bar = st.progress(0)
-            for i in range(n_sims):
-                if i % 1000 == 0: bar.progress(i/n_sims)
-                s1, s2, jt = 0, 0, 0
-                while s1 < 2 and s2 < 2:
-                    r1, r2 = simular_set(p1_h, p2_h)
-                    jt += (r1 + r2)
-                    if r1 > r2: s1 += 1
-                    else: s2 += 1
-                if s1 > s2: s1_win += 1
-                if (s1 + s2) == 3: t_sets += 1
-                j_tot.append(jt)
-            bar.empty()
+        progreso = st.progress(0)
+        for i in range(sims):
+            if i % 1000 == 0: progreso.progress(i/sims)
+            s1, s2, jp1, jp2 = 0, 0, 0, 0
+            while s1 < 2 and s2 < 2:
+                r1, r2 = simular_set(p1_h, p2_h)
+                jp1 += r1; jp2 += r2
+                if r1 == 7 or r2 == 7: t_breaks += 1
+                if r1 > r2: s1 += 1
+                else: s2 += 1
+            j_totales.append(jp1 + jp2)
+            d_juegos.append(jp1 - jp2)
+            score_counts[f"{s1}-{s2}"] += 1
+            if s1 == 2: sets_p1 += 1
+        progreso.empty()
 
-            st.session_state.result = {
-                'partido': f"{p1_sel} vs {p2_sel}",
-                'p1': p1_sel, 'p2': p2_sel,
-                'prob1': s1_win/n_sims, 'prob2': 1-(s1_win/n_sims),
-                'over': sum(1 for j in j_tot if j > linea_ou)/n_sims,
-                'under': sum(1 for j in j_tot if j < linea_ou)/n_sims,
-                'sets': t_sets/n_sims, 'linea': linea_ou
-            }
+        # Métricas
+        p_win_p1 = sets_p1 / sims
+        p_over = sum(1 for j in j_totales if j > umbral_ou) / sims
+        p_hcap = sum(1 for d in d_juegos if d + h_val > 0) / sims
+        p_tb = (t_breaks / (sims * 2.2)) # Estimado de tie-break por set
 
-        if 'result' in st.session_state:
-            res = st.session_state.result
-            st.divider()
-            m = st.columns(4)
-            m[0].metric(f"Gana {res['p1']}", f"{res['prob1']:.1%}")
-            m[1].metric(f"Gana {res['p2']}", f"{res['prob2']:.1%}")
-            m[2].metric(f"Over {res['linea']}", f"{res['over']:.1%}")
-            m[3].metric("3 Sets", f"{res['sets']:.1%}")
+        # VISUALIZACIÓN
+        st.markdown(f"""
+            <div class="report-card">
+                <h3>🏆 Pronóstico Principal: {p1_in if p_win_p1 > 0.5 else p2_in}</h3>
+                <p>Confianza: {max(p_win_p1, 1-p_win_p1):.1%} | Prob. Saque: {p1_h:.1%} vs {p2_h:.1%}</p>
+            </div>
+        """, unsafe_allow_html=True)
 
-            with st.expander("📌 REGISTRAR PICK PARA AUDITORÍA"):
-                opciones = {
-                    f"Gana {res['p1']}": res['prob1'],
-                    f"Gana {res['p2']}": res['prob2'],
-                    f"Over {res['linea']}": res['over'],
-                    f"Under {res['linea']}": res['under'],
-                    "3 Sets": res['sets']
-                }
-                pick_sel = st.selectbox("Mercado apostado:", list(opciones.keys()))
-                if st.button("GUARDAR EN HISTORIAL"):
-                    guardar_seleccion(res['partido'], pick_sel, opciones[pick_sel])
-                    st.toast("¡Pick registrado!")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(f"Ganador {p1_in}", f"{p_win_p1:.1%}")
+        m2.metric(f"Over {umbral_ou}", f"{p_over:.1%}")
+        m3.metric(f"Hcap {h_val}", f"{p_hcap:.1%}")
+        m4.metric("Prob. Tie-break", f"{min(p_tb, 0.99):.1%}")
 
-with tab2:
-    st.header("📊 Seguimiento de Fiabilidad")
-    df_aud = pd.read_csv(FILE_REGISTRO)
-    
-    if df_aud.empty:
-        st.info("No hay picks registrados para auditar.")
-    else:
-        # Cierre de picks
-        pendientes = df_aud[df_aud["Resultado"] == "Pendiente"]
-        if not pendientes.empty:
-            with st.form("cierre_pick"):
-                id_up = st.selectbox("ID del Pick", pendientes["ID"])
-                status = st.radio("Resultado real:", ["✅ ACERTADA", "❌ FALLADA"], horizontal=True)
-                if st.form_submit_button("ACTUALIZAR"):
-                    df_aud.loc[df_aud["ID"] == id_up, "Resultado"] = status
-                    df_aud.to_csv(FILE_REGISTRO, index=False)
-                    st.rerun()
+        st.subheader("🎯 Probabilidades de Marcador Exacto")
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        cols = [sc1, sc2, sc3, sc4]
+        for idx, (m, c) in enumerate(score_counts.items()):
+            cols[idx].info(f"**{m}**\n\n {c/sims:.1%}")
 
-        # KPIs
-        finalizados = df_aud[df_aud["Resultado"] != "Pendiente"]
-        if not finalizados.empty:
-            aciertos = len(finalizados[finalizados["Resultado"] == "✅ ACERTADA"])
-            st.metric("TASA DE ACIERTO REAL", f"{(aciertos/len(finalizados))*100:.1%}", f"{aciertos} de {len(finalizados)}")
-        
-        st.dataframe(df_aud.sort_values("ID", ascending=False), use_container_width=True)
-        
-        if st.button("🗑️ Borrar Historial"):
-            os.remove(FILE_REGISTRO)
-            st.rerun()
+        st.divider()
+        # ALERTAS PREMIUM
+        if p_over > 0.75: st.success(f"🔥 SEÑAL FUERTE: La probabilidad de Over {umbral_ou} es muy alta.")
+        if p_win_p1 > 0.85 and p_over < 0.40: st.success("💎 SEÑAL PREMIUM: Victoria cómoda del favorito (2-0).")
+        if p_tb > 0.35: st.warning("⚔️ PARTIDO CERRADO: Alta probabilidad de Tie-breaks.")
+
+st.caption(f"Motor de IA v2.5 | Basado en {len(lista_jugadores)} jugadores.")
