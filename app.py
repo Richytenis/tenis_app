@@ -1,132 +1,226 @@
 import streamlit as st
-import requests
 import pandas as pd
+import numpy as np
+import random
+import re
 import os
-from datetime import datetime
+from difflib import get_close_matches
 
 # =================================================================
-# 1. CONFIGURACIÓN Y SEGURIDAD
+# 1. CONFIGURACIÓN Y ESTILOS
 # =================================================================
-# Intenta obtener la clave de Streamlit Secrets, si no, usa la que pusiste por defecto
-API_KEY = st.secrets.get("RAPIDAPI_KEY", "b6e30442c9mshea9fbba5c27adebp1fa8adjsn322f35fdd7f4")
-API_HOST = "sportscore6.p.rapidapi.com"
+st.set_page_config(page_title="Tennis IA Predictor", page_icon="🎾", layout="wide")
 
-st.set_page_config(page_title="Tennis Predictor", page_icon="🎾", layout="wide")
-
-# =================================================================
-# 2. CARGADOR RECURSIVO MEJORADO
-# =================================================================
-@st.cache_data(ttl=3600) # Se actualiza cada hora para no saturar
-def cargar_jugadores_recursivo():
-    jugadores = set()
-    base_path = 'datos'
-    conteo_archivos = 0
-    
-    if os.path.exists(base_path):
-        for root, dirs, files in os.walk(base_path):
-            for nombre_f in files:
-                if nombre_f.startswith('.') or nombre_f.startswith('__'): continue
-                
-                archivo_path = os.path.join(root, nombre_f)
-                conteo_archivos += 1
-                
-                try:
-                    # Intento de lectura multiformato
-                    if nombre_f.lower().endswith(('.xlsx', '.xls')):
-                        df = pd.read_excel(archivo_path)
-                    else:
-                        df = pd.read_csv(archivo_path, sep=None, engine='python', on_bad_lines='skip', encoding_errors='ignore')
-                    
-                    # Extraer nombres de columnas y celdas
-                    for col in df.columns:
-                        # Limpiar nombre de columna
-                        c_str = str(col).strip().upper()
-                        if len(c_str) > 3 and not c_str.isdigit() and 'UNNAMED' not in c_str:
-                            jugadores.add(c_str)
-                        
-                        # Limpiar datos de celdas (Optimizado)
-                        filas = df[col].dropna().unique()
-                        for val in filas:
-                            n = str(val).strip().upper()
-                            # Filtros de calidad: ni muy corto, ni muy largo, ni solo números
-                            if 3 < len(n) < 35 and not n.replace('.','').isdigit() and 'NAN' != n:
-                                jugadores.add(n)
-                except Exception as e:
-                    # Si falla, simplemente saltamos ese archivo silenciosamente
-                    continue
-                        
-    return sorted(list(jugadores)), conteo_archivos
+# Estilo para los reportes
+CSS_REPORTE = """
+<style>
+    .report-card {
+        padding: 25px;
+        border-radius: 15px;
+        background-color: #f8f9fa;
+        border-left: 8px solid #2e7d32;
+        margin: 10px 0px;
+    }
+    .metric-box {
+        text-align: center;
+        padding: 10px;
+        background: white;
+        border-radius: 10px;
+        box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
+    }
+</style>
+"""
+st.markdown(CSS_REPORTE, unsafe_allow_html=True)
 
 # =================================================================
-# 3. LÓGICA DE INTERFAZ
+# 2. TU LÓGICA MATEMÁTICA (Mantenida al 100%)
 # =================================================================
-st.title("🎾 Tennis IA Predictor")
 
-nombres, total_f = cargar_jugadores_recursivo()
+def normalizar(n):
+    if pd.isna(n): return ""
+    n = str(n).upper()
+    n = re.sub(r'[^A-Z\s]', '', n)
+    return " ".join(n.split())
 
-tab1, tab2, tab3 = st.tabs(["📡 API En Vivo", "📂 Modo Manual", "🛠 Status"])
+def mapear_superficie(s):
+    s = s.upper()
+    if any(x in s for x in ['TIERRA', 'CLAY', 'ARCILLA']): return 'Clay'
+    if any(x in s for x in ['HIERBA', 'GRASS', 'CESPED']): return 'Grass'
+    return 'Hard'
 
-with tab1:
-    st.subheader("Partidos Programados para Hoy")
-    if st.button("🔄 ACTUALIZAR CARTELERA"):
-        headers = {"x-rapidapi-host": API_HOST, "x-rapidapi-key": API_KEY}
-        url = f"https://{API_HOST}/api/v1/events/date/{datetime.now().strftime('%Y-%m-%d')}"
-        
-        try:
-            with st.spinner("Conectando con el servidor..."):
-                r = requests.get(url, headers=headers, params={"sport_id": "2"}, timeout=10)
-                r.raise_for_status() # Lanza error si la API falla
-                res_json = r.json()
-                data = res_json.get('data', [])
-                
-                if data:
-                    for p in data:
-                        h = p.get('home_team', {}).get('name', 'TBD')
-                        a = p.get('away_team', {}).get('name', 'TBD')
-                        status = p.get('status_more', 'Programado')
-                        st.markdown(f"✅ **{h}** vs **{a}** | *({status})*")
+@st.cache_data
+def cargar_big_data():
+    ruta_base = 'datos'
+    stats_jugador = {} 
+    if not os.path.exists(ruta_base): return {}
+
+    for root, _, files in os.walk(ruta_base):
+        folder_name = os.path.basename(root).upper()
+        peso_nivel = 1.0  
+        if 'ATP' in folder_name: peso_nivel = 2.5
+        elif 'WTA' in folder_name: peso_nivel = 2.0
+        elif 'CHALLENGER' in folder_name: peso_nivel = 1.5
+
+        for f in files:
+            if not (f.endswith('.xlsx') or f.endswith('.csv')): continue
+            try:
+                if f.endswith('.csv'):
+                    df = pd.read_csv(os.path.join(root, f), engine='python', on_bad_lines='skip')
                 else:
-                    st.warning("No se encontraron partidos de tenis para hoy.")
-        except Exception as e:
-            st.error(f"Error de conexión: Verifica tu API Key o el límite de créditos.")
+                    df = pd.read_excel(os.path.join(root, f))
+                
+                df.columns = df.columns.str.lower().str.strip()
+                w_col = next((c for c in df.columns if c in ['winner', 'winner_name']), None)
+                l_col = next((c for c in df.columns if c in ['loser', 'loser_name']), None)
+                surf_col = next((c for c in df.columns if 'surface' in c), 'surface')
 
-with tab2:
-    if not nombres:
-        st.error("⚠️ No se encontraron datos en la carpeta /datos.")
-        st.info("Estructura esperada: `datos/atp/archivo.csv` o similar.")
-    else:
-        st.success(f"Sistema listo: {len(nombres)} jugadores en base de datos.")
-        col1, col2 = st.columns(2)
-        with col1:
-            j1 = st.selectbox("Selecciona Jugador 1", nombres, index=0)
-        with col2:
-            j2 = st.selectbox("Selecciona Jugador 2", nombres, index=min(1, len(nombres)-1))
-        
-        if st.button("🚀 LANZAR PREDICCIÓN"):
-            if j1 == j2:
-                st.warning("¡Selecciona dos jugadores distintos!")
-            else:
-                st.balloons()
-                st.markdown(f"""
-                <div style="padding:20px; border-radius:15px; background:#f0f2f6; border-left:5px solid #2e7d32;">
-                    <h3 style="color:#2e7d32; margin-top:0;">📊 Reporte de Análisis</h3>
-                    <p><b>Match:</b> {j1} vs {j2}</p>
-                    <p><b>Estado:</b> Procesando métricas históricas y superficie...</p>
-                    <hr>
-                    <p style="font-size: 0.8em; color: gray;">IA Model v1.0 - Basado en {total_f} archivos de datos.</p>
-                </div>
-                """, unsafe_allow_html=True)
+                if w_col and l_col:
+                    for _, row in df.iterrows():
+                        w, l = normalizar(row[w_col]), normalizar(row[l_col])
+                        surf = mapear_superficie(str(row.get(surf_col, 'Hard')))
+                        for p in [w, l]:
+                            if p not in stats_jugador: 
+                                stats_jugador[p] = {'power_score': 0, 'total': 0, 'surf_stats': {}}
+                            stats_jugador[p]['total'] += 1
+                            if surf not in stats_jugador[p]['surf_stats']:
+                                stats_jugador[p]['surf_stats'][surf] = {'wins': 0, 'total': 0}
+                            stats_jugador[p]['surf_stats'][surf]['total'] += 1
+                            if p == w: 
+                                stats_jugador[p]['power_score'] += (10 * peso_nivel)
+                                stats_jugador[p]['surf_stats'][surf]['wins'] += 1
+                            else:
+                                stats_jugador[p]['power_score'] -= (6 / peso_nivel)
+            except: continue
+    return stats_jugador
 
-with tab3:
-    st.subheader("Panel de Control del Sistema")
-    st.write(f"📂 **Archivos procesados:** `{total_f}`")
-    st.write(f"👥 **Jugadores detectados:** `{len(nombres)}`")
+def calcular_poder_real(nombre, superficie, circuito, stats_ia):
+    suelo_min = 1750 if circuito in ['ATP', 'WTA'] else 1400
+    stats = stats_ia.get(nombre, {'power_score': 0, 'total': 0, 'surf_stats': {}})
+    pts_score = stats['power_score']
+    s_stats = stats['surf_stats'].get(superficie, {'wins': 0, 'total': 0})
     
-    if st.checkbox("🔍 Mostrar rutas de archivos cargados"):
-        for root, dirs, files in os.walk('datos'):
-            for f in files:
-                if not f.startswith('.'):
-                    st.code(os.path.join(root, f))
+    surf_bonus = 0
+    if s_stats['total'] > 0:
+        surf_rate = s_stats['wins'] / s_stats['total']
+        surf_bonus = (surf_rate - 0.5) * 400
+    
+    poder_final = 1200 + pts_score + surf_bonus
+    return max(poder_final, suelo_min)
+
+def calcular_probabilidades_saque(pow1, pow2, superficie, circuito):
+    if circuito == 'WTA':
+        base_h = {'Clay': 0.58, 'Hard': 0.64, 'Grass': 0.70}.get(superficie, 0.62)
+        suelo_tenis = 0.45
+    else:
+        base_h = {'Clay': 0.68, 'Hard': 0.76, 'Grass': 0.82}.get(superficie, 0.74)
+        suelo_tenis = 0.55
+
+    if pow1 <= 1410 and pow2 <= 1410:
+        base_h -= 0.08
+        suelo_tenis -= 0.10
+
+    raw_diff = (pow1 - pow2)
+    diff_log = np.sign(raw_diff) * (np.log1p(abs(raw_diff)) / 25) 
+    
+    p1_hold = base_h + (diff_log * 0.35)
+    p2_hold = base_h - (diff_log * 0.35)
+    
+    return np.clip(p1_hold, suelo_tenis, 0.97), np.clip(p2_hold, suelo_tenis, 0.97)
+
+def simular_set(p1_h, p2_h):
+    j1, j2 = 0, 0
+    servidor = 1 if random.random() > 0.5 else 2
+    while True:
+        prob = p1_h if servidor == 1 else (1 - p2_h)
+        if random.random() < prob: j1 += 1
+        else: j2 += 1
+        if (j1 >= 6 or j2 >= 6) and abs(j1 - j2) >= 2: return j1, j2
+        if j1 == 7 or j2 == 7: return j1, j2
+        servidor = 3 - servidor
+
+# =================================================================
+# 3. INTERFAZ STREAMLIT
+# =================================================================
+
+st.title("🎾 Tennis IA: Simulador Pro")
+
+stats_ia = cargar_big_data()
+lista_jugadores = sorted(list(stats_ia.keys()))
+
+if not stats_ia:
+    st.error("❌ No se encontraron archivos de datos en la carpeta /datos")
+else:
+    with st.sidebar:
+        st.header("Configuración del Partido")
+        circ = st.selectbox("Circuito", ["ATP", "WTA", "CHALLENGER"])
+        surf_in = st.selectbox("Superficie", ["Dura", "Tierra", "Hierba"])
+        sims = st.slider("Número de Simulaciones", 1000, 20000, 10000)
+        
+    col1, col2 = st.columns(2)
+    with col1:
+        p1_in = st.selectbox("Jugador 1", lista_jugadores, index=0)
+    with col2:
+        p2_in = st.selectbox("Jugador 2", lista_jugadores, index=min(1, len(lista_jugadores)-1))
+
+    if st.button("🚀 INICIAR SIMULACIÓN DE ALTO RENDIMIENTO"):
+        superficie = mapear_superficie(surf_in)
+        
+        # Cálculos
+        pow1 = calcular_poder_real(p1_in, superficie, circ, stats_ia)
+        pow2 = calcular_poder_real(p2_in, superficie, circ, stats_ia)
+        p1_h, p2_h = calcular_probabilidades_saque(pow1, pow2, superficie, circ)
+
+        juegos_totales, sets_p1, tres_sets = [], 0, 0
+
+        # Barra de progreso para las simulaciones
+        progreso = st.progress(0)
+        for i in range(sims):
+            if i % 1000 == 0: progreso.progress(i/sims)
+            s1, s2, j_tot = 0, 0, 0
+            while s1 < 2 and s2 < 2:
+                res1, res2 = simular_set(p1_h, p2_h)
+                j_tot += (res1 + res2)
+                if res1 > res2: s1 += 1
+                else: s2 += 1
+            juegos_totales.append(j_tot)
+            if s1 == 2: sets_p1 += 1
+            if (s1 + s2) == 3: tres_sets += 1
+        progreso.empty()
+
+        # Resultados
+        prob_p1 = sets_p1 / sims
+        p_win = max(prob_p1, 1-prob_p1)
+        o18 = sum(1 for j in juegos_totales if j > 18.5) / sims
+        u24 = sum(1 for j in juegos_totales if j < 24.5) / sims
+        p3s = tres_sets / sims
+
+        # Lógica de Símbolos
+        s_win = "🔥" if p_win > 0.85 else ("✅" if p_win > 0.75 else "")
+        s_3s = "⚔️" if p3s > 0.40 else ""
+        s_o18 = "🚀" if o18 > 0.75 else ("✅" if o18 > 0.65 else "")
+        ganador = p1_in if prob_p1 > 0.5 else p2_in
+
+        # VISUALIZACIÓN DE RESULTADOS
+        st.markdown(f"""
+        <div class="report-card">
+            <h2>🏆 Pronóstico: {ganador} {p_win:.1%} {s_win}</h2>
+            <p>Diferencia de Power: {abs(pow1-pow2):.0f} pts | Prob. Saque: {p1_h:.1%} vs {p2_h:.1%}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("Prob. 3 Sets", f"{p3s:.1%}", s_3s)
+        with m2:
+            st.metric("Over 18.5 Juegos", f"{o18:.1%}", s_o18)
+        with m3:
+            st.metric("Under 24.5 Juegos", f"{u24:.1%}")
+
+        # Mensajes Premium
+        if s_win == "🔥" and u24 > 0.75:
+            st.success("🌟 PRONÓSTICO PREMIUM: Victoria clara del favorito + Under de juegos.")
+        elif s_3s == "⚔️" and o18 > 0.75:
+            st.warning("🌟 PRONÓSTICO PREMIUM: Partido de alta intensidad / Over de juegos.")
 
 st.divider()
-st.caption(f"Última sincronización: {datetime.now().strftime('%H:%M:%S')}")
+st.caption("Estructura de datos detectada: Carpeta 'datos' con subcarpetas ATP/WTA/CHALLENGER.")
