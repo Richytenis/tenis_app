@@ -8,174 +8,131 @@ import os
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor Ultra v2", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor Ultra v3", page_icon="🎾", layout="wide")
 
-# =========================================================
-# UTILIDADES DE LIMPIEZA Y CARGA
-# =========================================================
 def normalizar(n):
-    """Limpia nombres eliminando espacios de no ruptura y caracteres especiales."""
     if pd.isna(n): return ""
-    # Eliminar espacios especiales de Excel (\xa0)
-    n = str(n).replace('\xa0', ' ').replace('\u00a0', ' ')
-    n = n.upper()
+    n = str(n).replace('\xa0', ' ').replace('\u00a0', ' ').upper()
     n = re.sub(r'[^A-Z\s]', '', n)
     return " ".join(n.split()).strip()
 
 @st.cache_data
 def cargar_base_elos():
-    """Carga Elos específicos de subcarpetas datos/atp y datos/wta."""
     elos = {}
-    archivos = {
-        "ATP": "datos/atp/atp_elo.xlsx", 
-        "WTA": "datos/wta/wta_elo.xlsx"
-    }
+    archivos = {"ATP": "datos/atp/atp_elo.xlsx", "WTA": "datos/wta/wta_elo.xlsx"}
     errores = []
-    
     for circuito, ruta in archivos.items():
         if os.path.exists(ruta):
             try:
                 df = pd.read_excel(ruta, engine='openpyxl')
-                # Limpiar nombres de las columnas (quitando \xa0)
                 df.columns = [c.replace('\xa0', ' ').strip() for c in df.columns]
-                
-                col_player = "Player"
-                col_hard = "hElo"
-                col_clay = "cElo"
-                col_grass = "gElo"
-                col_gen = "Elo"
-
                 for _, row in df.iterrows():
-                    nombre_limpio = normalizar(row[col_player])
-                    if nombre_limpio:
-                        elos[nombre_limpio] = {
-                            "Hard": row.get(col_hard),
-                            "Clay": row.get(col_clay),
-                            "Grass": row.get(col_grass),
-                            "General": row.get(col_gen),
+                    nombre = normalizar(row['Player'])
+                    if nombre:
+                        elos[nombre] = {
+                            "Hard": row.get('hElo'), "Clay": row.get('cElo'),
+                            "Grass": row.get('gElo'), "General": row.get('Elo'),
                             "Circuito": circuito
                         }
-            except Exception as e:
-                errores.append(f"Error en {circuito}: {str(e)}")
-        else:
-            errores.append(f"Archivo no encontrado: {ruta}")
-            
+            except Exception as e: errores.append(f"Error en {circuito}: {e}")
+        else: errores.append(f"No existe: {ruta}")
     return elos, errores
 
-def mapear_superficie(s):
-    if "Tierra" in s: return "Clay"
-    if "Hierba" in s: return "Grass"
-    return "Hard"
-
 # =========================================================
-# MOTOR DE PROBABILIDAD Y SIMULACIÓN (AJUSTADO)
+# MOTOR MEJORADO CON CATEGORÍA DE TORNEO
 # =========================================================
-def calcular_probabilidad_base(j1, j2, superficie, elos):
-    """Fórmula oficial ELO para determinar probabilidad de victoria."""
-    d1 = elos.get(j1, {"General": 1500})
-    d2 = elos.get(j2, {"General": 1500})
-    
-    # Prioridad: ELO de superficie -> ELO General -> 1500
-    e1 = d1.get(superficie) or d1.get("General") or 1500
-    e2 = d2.get(superficie) or d2.get("General") or 1500
-    
-    prob_j1 = 1 / (1 + 10**((e2 - e1) / 400))
-    return prob_j1, e1, e2
-
-def obtener_hold_rate(e1, e2, circuito, superficie):
-    """Hold Rate con sensibilidad aumentada para evitar exceso de Over."""
-    # Bases de saque: ATP es más fuerte sacando que WTA
+def obtener_hold_rate(e1, e2, circuito, superficie, nivel_torneo):
+    # Base por Circuito
     base = 0.81 if circuito == "ATP" else 0.66
     
-    # En Tierra (Clay), el saque es menos efectivo
-    if superficie == "Clay": 
-        base -= 0.08
+    # Ajuste por Superficie
+    if superficie == "Clay": base -= 0.08
+    elif superficie == "Grass": base += 0.04
     
-    # AJUSTE CRÍTICO: Bajamos el divisor a 850 para que la diferencia de nivel 
-    # se note mucho más en los quiebres de servicio.
-    diff = (e1 - e2) / 850 
-    
-    p1_hold = np.clip(base + diff, 0.30, 0.95)
-    p2_hold = np.clip(base - diff, 0.30, 0.95)
+    # AJUSTE POR NIVEL DE TORNEO (La gran mejora)
+    if nivel_torneo == "Challenger / ITF":
+        base -= 0.05 # Más breaks en niveles bajos
+        divisor = 750 # La diferencia de nivel pesa mucho más
+    elif nivel_torneo == "Grand Slam (5 sets)":
+        base += 0.02 # Saque más concentrado
+        divisor = 950
+    else: # ATP / WTA Tour Standard
+        divisor = 850
+        
+    diff = (e1 - e2) / divisor
+    p1_hold = np.clip(base + diff, 0.25, 0.96)
+    p2_hold = np.clip(base - diff, 0.25, 0.96)
     return p1_hold, p2_hold
 
-def sim_set_profesional(p1_hold, p2_hold):
-    """Simula un set juego a juego con alternancia de saque."""
+def sim_set(p1_h, p2_h):
     g1 = g2 = 0
     sacador = 1
     while True:
-        prob = p1_hold if sacador == 1 else (1 - p2_hold)
+        prob = p1_h if sacador == 1 else (1 - p2_h)
         if random.random() < prob: g1 += 1
         else: g2 += 1
-        
         if (g1 >= 6 and g1-g2 >= 2) or g1 == 7: return g1, g2
         if (g2 >= 6 and g2-g1 >= 2) or g2 == 7: return g1, g2
         sacador = 3 - sacador
 
 # =========================================================
-# INTERFAZ (UI)
+# INTERFAZ
 # =========================================================
-st.title("🎾 Tennis IA Predictor Ultra v2")
+st.title("🎾 Tennis IA Predictor Ultra v3")
 
-base_elos, logs_error = cargar_base_elos()
+base_elos, logs = cargar_base_elos()
 lista_jugadores = sorted(list(base_elos.keys()))
 
 if not lista_jugadores:
-    st.error("❌ NO SE CARGARON JUGADORES")
-    st.write("### Diagnóstico de rutas:")
-    for err in logs_error: st.write(f"- {err}")
+    st.error("Error cargando base de datos.")
 else:
     with st.sidebar:
-        st.header("⚙️ Configuración")
+        st.header("⚙️ Ajustes")
+        # NUEVO SELECTOR
+        nivel_torneo = st.radio("Nivel del Torneo", ["ATP / WTA Tour", "Challenger / ITF", "Grand Slam (5 sets)"])
+        
         superficie_ui = st.selectbox("Superficie", ["Tierra (Clay)", "Dura (Hard)", "Hierba (Grass)"])
-        surf_key = mapear_superficie(superficie_ui)
+        surf_key = "Clay" if "Tierra" in superficie_ui else ("Grass" if "Hierba" in superficie_ui else "Hard")
+        
         n_sims = st.select_slider("Simulaciones", options=[5000, 10000, 20000], value=10000)
         linea_ou = st.number_input("Línea O/U Juegos", value=21.5, step=0.5)
 
-    col_j1, col_j2 = st.columns(2)
-    with col_j1:
-        j1 = st.selectbox("Jugador 1", lista_jugadores)
-    with col_j2:
-        j2 = st.selectbox("Jugador 2", lista_jugadores, index=min(1, len(lista_jugadores)-1))
+    c1, c2 = st.columns(2)
+    with c1: j1 = st.selectbox("Jugador 1", lista_jugadores)
+    with c2: j2 = st.selectbox("Jugador 2", lista_jugadores, index=min(1, len(lista_jugadores)-1))
 
-    if st.button("🚀 CALCULAR PREDICCIÓN", use_container_width=True):
-        p_win_base, elo1, elo2 = calcular_probabilidad_base(j1, j2, surf_key, base_elos)
-        circuito = base_elos[j1]["Circuito"]
-        h1, h2 = obtener_hold_rate(elo1, elo2, circuito, surf_key)
+    if st.button("🚀 PREDECIR PARTIDO", use_container_width=True):
+        # Lógica de simulación
+        d1, d2 = base_elos[j1], base_elos[j2]
+        # Elo superficie -> Elo General
+        e1 = d1.get(surf_key) or d1.get("General") or 1500
+        e2 = d2.get(surf_key) or d2.get("General") or 1500
         
-        wins_j1 = 0
-        juegos = []
-        sets_3 = 0
+        # El circuito se toma del J1 (asumiendo que juegan el mismo)
+        circuito = d1["Circuito"]
+        h1, h2 = obtener_hold_rate(e1, e2, circuito, surf_key, nivel_torneo)
         
-        prog = st.progress(0)
-        for i in range(n_sims):
-            s1 = s2 = 0
-            match_games = 0
-            while s1 < 2 and s2 < 2:
-                g1, g2 = sim_set_profesional(h1, h2)
-                match_games += (g1 + g2)
+        # Simulación de partidos
+        j1_wins = 0; juegos = []; sets3 = 0
+        sets_necesarios = 3 if nivel_torneo == "Grand Slam (5 sets)" and circuito == "ATP" else 2
+        
+        for _ in range(n_sims):
+            s1 = s2 = 0; m_games = 0
+            while s1 < sets_necesarios and s2 < sets_necesarios:
+                g1, g2 = sim_set(h1, h2)
+                m_games += (g1 + g2)
                 if g1 > g2: s1 += 1
                 else: s2 += 1
+            if s1 == sets_necesarios: j1_wins += 1
+            if (s1 + s2) >= 3: sets3 += 1
+            juegos.append(m_games)
             
-            if s1 == 2: wins_j1 += 1
-            if (s1 + s2) == 3: sets_3 += 1
-            juegos.append(match_games)
-            if i % 1000 == 0: prog.progress(i/n_sims)
-        prog.empty()
-
-        # RESULTADOS
+        # UI DE RESULTADOS
         st.divider()
-        r1, r2, r3 = st.columns(3)
+        res1, res2, res3 = st.columns(3)
+        res1.metric(f"Victoria {j1}", f"{j1_wins/n_sims:.1%}")
+        res2.metric(f"Victoria {j2}", f"{(n_sims-j1_wins)/n_sims:.1%}")
+        p_over = sum(g > linea_ou for g in juegos) / n_sims
+        res3.metric(f"Over {linea_ou}", f"{p_over:.1%}")
         
-        with r1:
-            st.metric(f"Victoria {j1}", f"{wins_j1/n_sims:.1%}")
-            st.caption(f"Elo {surf_key}: {elo1:.1f}")
-        with r2:
-            st.metric(f"Victoria {j2}", f"{(n_sims-wins_j1)/n_sims:.1%}")
-            st.caption(f"Elo {surf_key}: {elo2:.1f}")
-        with r3:
-            p_over = sum(g > linea_ou for g in juegos) / n_sims
-            st.metric(f"Over {linea_ou}", f"{p_over:.1%}")
-            st.progress(p_over)
-
-        st.markdown(f"**Análisis Final:** Promedio juegos: **{sum(juegos)/n_sims:.1f}** | Probabilidad 3 sets: **{sets_3/n_sims:.1%}**")
+        st.info(f"**Análisis:** Elo {surf_key}: {e1:.0f} vs {e2:.0f} | Promedio Juegos: {sum(juegos)/n_sims:.1f}")
