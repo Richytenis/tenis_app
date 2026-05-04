@@ -99,7 +99,7 @@ def cargar_big_data():
 
         for f in files:
 
-            # 🔥 IGNORAR RANKING
+            # ignorar ranking
             if f.lower() == "atp.xlsx":
                 continue
 
@@ -137,14 +137,12 @@ def cargar_big_data():
                                 "recent":[]
                             }
 
-                    # power
                     stats[w]["power"] += 3 * peso
                     stats[l]["power"] -= 2 / peso
 
                     stats[w]["total"] += 1
                     stats[l]["total"] += 1
 
-                    # superficie
                     for p in [w,l]:
                         if surf not in stats[p]["surf"]:
                             stats[p]["surf"][surf] = {"wins":0,"total":0}
@@ -152,14 +150,12 @@ def cargar_big_data():
 
                     stats[w]["surf"][surf]["wins"] += 1
 
-                    # forma reciente
                     stats[w]["recent"].append(1)
                     stats[l]["recent"].append(0)
 
                     stats[w]["recent"] = stats[w]["recent"][-10:]
                     stats[l]["recent"] = stats[l]["recent"][-10:]
 
-                    # h2h
                     key = tuple(sorted([w,l]))
                     if key not in h2h:
                         h2h[key] = {}
@@ -190,12 +186,12 @@ def diagnostico(nombre, superficie, stats):
     return f"✅ OK ({total} partidos, {surf} en {superficie})"
 
 # =========================================================
-# FEATURES
+# FEATURES (AJUSTADAS)
 # =========================================================
 def forma(nombre, stats):
     r = stats.get(nombre, {}).get("recent", [])
     if not r: return 0
-    return (sum(r)/len(r) - 0.5) * 300
+    return (sum(r)/len(r) - 0.5) * 120   # 🔽 reducido
 
 
 def h2h_bonus(j1, j2, h2h):
@@ -213,7 +209,7 @@ def h2h_bonus(j1, j2, h2h):
 def ranking_bonus(nombre, rankings):
     r = rankings.get(nombre)
     if r is None: return 0
-    return (200 - r) * 2
+    return (150 - r) * 1.2   # 🔽 reducido
 
 # =========================================================
 # MOTOR
@@ -241,7 +237,9 @@ def calcular_poder(nombre, rival, superficie, circuito, stats, rankings, h2h):
 
 def calcular_hold(pow1, pow2, circuito):
     base = 0.76 if circuito == "ATP" else 0.64
-    diff = np.tanh((pow1 - pow2)/400)
+
+    # 🔥 aplanado
+    diff = np.tanh((pow1 - pow2)/700)
 
     p1 = np.clip(base + diff*0.30, 0.55, 0.97)
     p2 = np.clip(base - diff*0.30, 0.55, 0.97)
@@ -279,7 +277,6 @@ st.title("🎾 Tennis IA Predictor PRO")
 
 tab1, tab2 = st.tabs(["Simulador","Historial"])
 
-# ---------------- SIMULADOR ----------------
 with tab1:
     circuito = st.selectbox("Circuito", ["ATP","WTA","CHALLENGER"])
     superficie = mapear_superficie(st.selectbox("Superficie", ["Dura","Tierra","Hierba"]))
@@ -322,6 +319,10 @@ with tab1:
             diffs.append(g1-g2)
 
         res_win = wins1/sims
+
+        # 🔥 freno anti-extremos
+        res_win = np.clip(res_win, 0.05, 0.95)
+
         res_over = sum(x>ou_line for x in totals)/sims
         res_hcap = sum(x+hcap>0 for x in diffs)/sims
 
@@ -330,7 +331,6 @@ with tab1:
         st.metric(f"Over {ou_line}", f"{res_over:.1%}")
         st.metric(f"Hándicap {hcap}", f"{res_hcap:.1%}")
 
-# ---------------- HISTORIAL ----------------
 with tab2:
     df = cargar_apuestas()
     st.dataframe(df)
