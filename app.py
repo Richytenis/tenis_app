@@ -25,9 +25,13 @@ def normalizar(n):
 
 @st.cache_data
 def cargar_base_elos():
-    """Carga Elos específicos de archivos Excel y unifica la base de datos."""
+    """Carga Elos específicos de subcarpetas datos/atp y datos/wta."""
     elos = {}
-    archivos = {"ATP": "atp_elo.xlsx", "WTA": "wta_elo.xlsx"}
+    # RUTAS ACTUALIZADAS A TUS SUBCARPETAS
+    archivos = {
+        "ATP": "datos/atp/atp_elo.xlsx", 
+        "WTA": "datos/wta/wta_elo.xlsx"
+    }
     errores = []
     
     for circuito, ruta in archivos.items():
@@ -57,9 +61,9 @@ def cargar_base_elos():
                             "Circuito": circuito
                         }
             except Exception as e:
-                errores.append(f"Error en {circuito}: {str(e)}")
+                errores.append(f"Error en {circuito} ({ruta}): {str(e)}")
         else:
-            errores.append(f"Archivo no encontrado: {ruta}")
+            errores.append(f"Archivo no encontrado en la ruta: {ruta}")
             
     return elos, errores
 
@@ -119,9 +123,14 @@ lista_jugadores = sorted(list(base_elos.keys()))
 
 if not lista_jugadores:
     st.error("❌ NO SE CARGARON JUGADORES")
+    st.write("### Diagnóstico de rutas:")
     for err in logs_error:
         st.write(f"- {err}")
-    st.info("Asegúrate de que 'atp_elo.xlsx' y 'wta_elo.xlsx' están en la misma carpeta que este script.")
+    st.info("Estructura de carpetas esperada:\n\n"
+            "- tu_script.py\n"
+            "- datos/\n"
+            "  - atp/atp_elo.xlsx\n"
+            "  - wta/wta_elo.xlsx")
 else:
     with st.sidebar:
         st.header("⚙️ Configuración")
@@ -145,7 +154,7 @@ else:
         juegos = []
         sets_3 = 0
         
-        # Barra de progreso para simulaciones largas
+        # Barra de progreso
         prog = st.progress(0)
         for i in range(n_sims):
             s1 = s2 = 0
@@ -162,7 +171,7 @@ else:
             if i % 1000 == 0: prog.progress(i/n_sims)
         prog.empty()
 
-        # RESULTADOS VISUALES
+        # RESULTADOS
         st.divider()
         r1, r2, r3 = st.columns(3)
         
@@ -179,4 +188,4 @@ else:
             st.metric(f"Over {linea_ou}", f"{p_over:.1%}")
             st.progress(p_over)
 
-        st.markdown(f"**Análisis Final:** Promedio de juegos: **{sum(juegos)/n_sims:.1f}** | Probabilidad 3 sets: **{sets_3/n_sims:.1% Rose}**")
+        st.markdown(f"**Análisis Final:** Promedio juegos: **{sum(juegos)/n_sims:.1f}** | Probabilidad 3 sets: **{sets_3/n_sims:.1%}**")
