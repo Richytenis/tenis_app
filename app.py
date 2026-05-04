@@ -99,7 +99,6 @@ def cargar_big_data():
 
         for f in files:
 
-            # ignorar ranking
             if f.lower() == "atp.xlsx":
                 continue
 
@@ -186,12 +185,12 @@ def diagnostico(nombre, superficie, stats):
     return f"✅ OK ({total} partidos, {surf} en {superficie})"
 
 # =========================================================
-# FEATURES (AJUSTADAS)
+# FEATURES AJUSTADAS
 # =========================================================
 def forma(nombre, stats):
     r = stats.get(nombre, {}).get("recent", [])
     if not r: return 0
-    return (sum(r)/len(r) - 0.5) * 120   # 🔽 reducido
+    return (sum(r)/len(r) - 0.5) * 120
 
 
 def h2h_bonus(j1, j2, h2h):
@@ -209,10 +208,10 @@ def h2h_bonus(j1, j2, h2h):
 def ranking_bonus(nombre, rankings):
     r = rankings.get(nombre)
     if r is None: return 0
-    return (150 - r) * 1.2   # 🔽 reducido
+    return (150 - r) * 1.2
 
 # =========================================================
-# MOTOR
+# MOTOR FINAL
 # =========================================================
 def calcular_poder(nombre, rival, superficie, circuito, stats, rankings, h2h):
     s = stats.get(nombre, {"power":0,"total":0,"surf":{}})
@@ -225,21 +224,23 @@ def calcular_poder(nombre, rival, superficie, circuito, stats, rankings, h2h):
     if surf_stats["total"] > 0:
         surf_bonus = ((surf_stats["wins"]/surf_stats["total"]) - 0.5) * 200
 
-    return (
-        1200
-        + power
+    raw = (
+        power
         + surf_bonus
         + forma(nombre, stats)
         + h2h_bonus(nombre, rival, h2h)
         + ranking_bonus(nombre, rankings)
     )
 
+    raw *= 0.65  # 🔥 compresión global
+
+    return 1200 + raw
+
 
 def calcular_hold(pow1, pow2, circuito):
     base = 0.76 if circuito == "ATP" else 0.64
 
-    # 🔥 aplanado
-    diff = np.tanh((pow1 - pow2)/700)
+    diff = np.tanh((pow1 - pow2)/900)  # 🔥 suavizado fuerte
 
     p1 = np.clip(base + diff*0.30, 0.55, 0.97)
     p2 = np.clip(base - diff*0.30, 0.55, 0.97)
@@ -264,6 +265,17 @@ def simular_set(p1_hold, p2_hold):
             return j1,j2
 
         server = 3 - server
+
+# =========================================================
+# INDICADOR VISUAL
+# =========================================================
+def etiqueta_prob(p):
+    if p >= 0.70:
+        return "🟢 Alta"
+    elif p >= 0.55:
+        return "🟡 Media"
+    else:
+        return "🔴 Baja"
 
 # =========================================================
 # APP
@@ -319,17 +331,15 @@ with tab1:
             diffs.append(g1-g2)
 
         res_win = wins1/sims
-
-        # 🔥 freno anti-extremos
-        res_win = np.clip(res_win, 0.05, 0.95)
+        res_win = np.clip(res_win, 0.10, 0.90)
 
         res_over = sum(x>ou_line for x in totals)/sims
         res_hcap = sum(x+hcap>0 for x in diffs)/sims
 
-        st.metric(f"Ganador {j1}", f"{res_win:.1%}")
-        st.metric(f"Ganador {j2}", f"{1-res_win:.1%}")
-        st.metric(f"Over {ou_line}", f"{res_over:.1%}")
-        st.metric(f"Hándicap {hcap}", f"{res_hcap:.1%}")
+        st.metric(f"Ganador {j1}", f"{res_win:.1%} ({etiqueta_prob(res_win)})")
+        st.metric(f"Ganador {j2}", f"{1-res_win:.1%} ({etiqueta_prob(1-res_win)})")
+        st.metric(f"Over {ou_line}", f"{res_over:.1%} ({etiqueta_prob(res_over)})")
+        st.metric(f"Hándicap {hcap}", f"{res_hcap:.1%} ({etiqueta_prob(res_hcap)})")
 
 with tab2:
     df = cargar_apuestas()
