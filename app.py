@@ -8,7 +8,7 @@ import os
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor Ultra", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor Ultra v2", page_icon="🎾", layout="wide")
 
 # =========================================================
 # UTILIDADES DE LIMPIEZA Y CARGA
@@ -19,7 +19,6 @@ def normalizar(n):
     # Eliminar espacios especiales de Excel (\xa0)
     n = str(n).replace('\xa0', ' ').replace('\u00a0', ' ')
     n = n.upper()
-    # Solo letras y espacios
     n = re.sub(r'[^A-Z\s]', '', n)
     return " ".join(n.split()).strip()
 
@@ -27,7 +26,6 @@ def normalizar(n):
 def cargar_base_elos():
     """Carga Elos específicos de subcarpetas datos/atp y datos/wta."""
     elos = {}
-    # RUTAS ACTUALIZADAS A TUS SUBCARPETAS
     archivos = {
         "ATP": "datos/atp/atp_elo.xlsx", 
         "WTA": "datos/wta/wta_elo.xlsx"
@@ -37,13 +35,10 @@ def cargar_base_elos():
     for circuito, ruta in archivos.items():
         if os.path.exists(ruta):
             try:
-                # Cargamos el Excel
                 df = pd.read_excel(ruta, engine='openpyxl')
-                
-                # Limpiamos los nombres de las columnas (quitando \xa0)
+                # Limpiar nombres de las columnas (quitando \xa0)
                 df.columns = [c.replace('\xa0', ' ').strip() for c in df.columns]
                 
-                # Columnas requeridas según tu archivo
                 col_player = "Player"
                 col_hard = "hElo"
                 col_clay = "cElo"
@@ -61,9 +56,9 @@ def cargar_base_elos():
                             "Circuito": circuito
                         }
             except Exception as e:
-                errores.append(f"Error en {circuito} ({ruta}): {str(e)}")
+                errores.append(f"Error en {circuito}: {str(e)}")
         else:
-            errores.append(f"Archivo no encontrado en la ruta: {ruta}")
+            errores.append(f"Archivo no encontrado: {ruta}")
             
     return elos, errores
 
@@ -73,7 +68,7 @@ def mapear_superficie(s):
     return "Hard"
 
 # =========================================================
-# MOTOR DE PROBABILIDAD Y SIMULACIÓN
+# MOTOR DE PROBABILIDAD Y SIMULACIÓN (AJUSTADO)
 # =========================================================
 def calcular_probabilidad_base(j1, j2, superficie, elos):
     """Fórmula oficial ELO para determinar probabilidad de victoria."""
@@ -88,15 +83,20 @@ def calcular_probabilidad_base(j1, j2, superficie, elos):
     return prob_j1, e1, e2
 
 def obtener_hold_rate(e1, e2, circuito, superficie):
-    """Hold Rate dinámico para ATP/WTA y superficie."""
+    """Hold Rate con sensibilidad aumentada para evitar exceso de Over."""
+    # Bases de saque: ATP es más fuerte sacando que WTA
     base = 0.81 if circuito == "ATP" else 0.66
-    if superficie == "Clay": 
-        base -= 0.07
     
-    # Ajuste por brecha de calidad
-    diff = (e1 - e2) / 1200
-    p1_hold = np.clip(base + diff, 0.35, 0.94)
-    p2_hold = np.clip(base - diff, 0.35, 0.94)
+    # En Tierra (Clay), el saque es menos efectivo
+    if superficie == "Clay": 
+        base -= 0.08
+    
+    # AJUSTE CRÍTICO: Bajamos el divisor a 850 para que la diferencia de nivel 
+    # se note mucho más en los quiebres de servicio.
+    diff = (e1 - e2) / 850 
+    
+    p1_hold = np.clip(base + diff, 0.30, 0.95)
+    p2_hold = np.clip(base - diff, 0.30, 0.95)
     return p1_hold, p2_hold
 
 def sim_set_profesional(p1_hold, p2_hold):
@@ -115,26 +115,19 @@ def sim_set_profesional(p1_hold, p2_hold):
 # =========================================================
 # INTERFAZ (UI)
 # =========================================================
-st.title("🎾 Tennis IA Predictor Ultra")
+st.title("🎾 Tennis IA Predictor Ultra v2")
 
-# Carga de datos con diagnóstico
 base_elos, logs_error = cargar_base_elos()
 lista_jugadores = sorted(list(base_elos.keys()))
 
 if not lista_jugadores:
     st.error("❌ NO SE CARGARON JUGADORES")
     st.write("### Diagnóstico de rutas:")
-    for err in logs_error:
-        st.write(f"- {err}")
-    st.info("Estructura de carpetas esperada:\n\n"
-            "- tu_script.py\n"
-            "- datos/\n"
-            "  - atp/atp_elo.xlsx\n"
-            "  - wta/wta_elo.xlsx")
+    for err in logs_error: st.write(f"- {err}")
 else:
     with st.sidebar:
         st.header("⚙️ Configuración")
-        superficie_ui = st.selectbox("Superficie", ["Dura (Hard)", "Tierra (Clay)", "Hierba (Grass)"])
+        superficie_ui = st.selectbox("Superficie", ["Tierra (Clay)", "Dura (Hard)", "Hierba (Grass)"])
         surf_key = mapear_superficie(superficie_ui)
         n_sims = st.select_slider("Simulaciones", options=[5000, 10000, 20000], value=10000)
         linea_ou = st.number_input("Línea O/U Juegos", value=21.5, step=0.5)
@@ -154,7 +147,6 @@ else:
         juegos = []
         sets_3 = 0
         
-        # Barra de progreso
         prog = st.progress(0)
         for i in range(n_sims):
             s1 = s2 = 0
@@ -176,13 +168,11 @@ else:
         r1, r2, r3 = st.columns(3)
         
         with r1:
-            st.metric(f"Ganador {j1}", f"{wins_j1/n_sims:.1%}")
+            st.metric(f"Victoria {j1}", f"{wins_j1/n_sims:.1%}")
             st.caption(f"Elo {surf_key}: {elo1:.1f}")
-        
         with r2:
-            st.metric(f"Ganador {j2}", f"{(n_sims-wins_j1)/n_sims:.1%}")
+            st.metric(f"Victoria {j2}", f"{(n_sims-wins_j1)/n_sims:.1%}")
             st.caption(f"Elo {surf_key}: {elo2:.1f}")
-            
         with r3:
             p_over = sum(g > linea_ou for g in juegos) / n_sims
             st.metric(f"Over {linea_ou}", f"{p_over:.1%}")
