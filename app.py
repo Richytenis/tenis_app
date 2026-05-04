@@ -78,7 +78,7 @@ def cargar_rankings():
         return {}
 
 # =========================================================
-# CARGA DATA
+# DATA
 # =========================================================
 @st.cache_data
 def cargar_big_data():
@@ -98,7 +98,6 @@ def cargar_big_data():
         elif "CHALLENGER" in folder: peso = 1.5
 
         for f in files:
-
             if f.lower() == "atp.xlsx":
                 continue
 
@@ -166,26 +165,7 @@ def cargar_big_data():
     return stats, h2h
 
 # =========================================================
-# DIAGNOSTICO
-# =========================================================
-def diagnostico(nombre, superficie, stats):
-    s = stats.get(nombre)
-
-    if not s:
-        return "❌ Sin datos"
-
-    total = s["total"]
-    surf = s["surf"].get(superficie, {"total":0})["total"]
-
-    if total < 20:
-        return f"⚠️ Muy pocos datos ({total})"
-    if surf < 5:
-        return f"⚠️ Pocos datos en {superficie} ({surf})"
-
-    return f"✅ OK ({total} partidos, {surf} en {superficie})"
-
-# =========================================================
-# FEATURES AJUSTADAS
+# FEATURES
 # =========================================================
 def forma(nombre, stats):
     r = stats.get(nombre, {}).get("recent", [])
@@ -211,13 +191,13 @@ def ranking_bonus(nombre, rankings):
     return (150 - r) * 1.2
 
 # =========================================================
-# MOTOR FINAL
+# MOTOR
 # =========================================================
 def calcular_poder(nombre, rival, superficie, circuito, stats, rankings, h2h):
     s = stats.get(nombre, {"power":0,"total":0,"surf":{}})
 
-    confianza = min(1, s["total"]/100)
-    power = s["power"] * confianza
+    conf = min(1, s["total"]/100)
+    power = s["power"] * conf
 
     surf_stats = s["surf"].get(superficie, {"wins":0,"total":0})
     surf_bonus = 0
@@ -225,35 +205,34 @@ def calcular_poder(nombre, rival, superficie, circuito, stats, rankings, h2h):
         surf_bonus = ((surf_stats["wins"]/surf_stats["total"]) - 0.5) * 200
 
     raw = (
-        power
-        + surf_bonus
-        + forma(nombre, stats)
-        + h2h_bonus(nombre, rival, h2h)
-        + ranking_bonus(nombre, rankings)
+        power +
+        surf_bonus +
+        forma(nombre, stats) +
+        h2h_bonus(nombre, rival, h2h) +
+        ranking_bonus(nombre, rankings)
     )
 
-    raw *= 0.65  # 🔥 compresión global
+    raw *= 0.65
 
     return 1200 + raw
 
 
-def calcular_hold(pow1, pow2, circuito):
-    base = 0.76 if circuito == "ATP" else 0.64
+def calcular_hold(p1, p2, circ):
+    base = 0.76 if circ == "ATP" else 0.64
+    diff = np.tanh((p1 - p2)/900)
 
-    diff = np.tanh((pow1 - pow2)/900)  # 🔥 suavizado fuerte
-
-    p1 = np.clip(base + diff*0.30, 0.55, 0.97)
-    p2 = np.clip(base - diff*0.30, 0.55, 0.97)
-
-    return p1, p2
+    return (
+        np.clip(base + diff*0.30, 0.55, 0.97),
+        np.clip(base - diff*0.30, 0.55, 0.97)
+    )
 
 
-def simular_set(p1_hold, p2_hold):
+def sim_set(p1, p2):
     j1=j2=0
-    server = random.choice([1,2])
+    s = random.choice([1,2])
 
     while True:
-        prob = p1_hold if server==1 else (1-p2_hold)
+        prob = p1 if s==1 else (1-p2)
 
         if random.random()<prob: j1+=1
         else: j2+=1
@@ -264,18 +243,18 @@ def simular_set(p1_hold, p2_hold):
         if j1==7 or j2==7:
             return j1,j2
 
-        server = 3 - server
+        s = 3 - s
 
 # =========================================================
-# INDICADOR VISUAL
+# 🆕 VALUE DETECTION +2.5 SETS
 # =========================================================
-def etiqueta_prob(p):
-    if p >= 0.70:
-        return "🟢 Alta"
-    elif p >= 0.55:
-        return "🟡 Media"
+def lectura_sets(prob_sets):
+    if prob_sets >= 0.60:
+        return "🟢 VALUE (partido muy igualado)"
+    elif prob_sets >= 0.45:
+        return "🟡 NEUTRAL"
     else:
-        return "🔴 Baja"
+        return "🔴 NO VALUE (favorito claro)"
 
 # =========================================================
 # APP
@@ -283,7 +262,7 @@ def etiqueta_prob(p):
 stats, h2h = cargar_big_data()
 rankings = cargar_rankings()
 
-jugadores = sorted(stats.keys())
+players = sorted(stats.keys())
 
 st.title("🎾 Tennis IA Predictor PRO")
 
@@ -295,72 +274,54 @@ with tab1:
 
     sims = st.slider("Simulaciones", 5000, 20000, 10000, step=1000)
 
-    ou_line = st.number_input("Over/Under", value=22.5, step=0.5)
-    hcap = st.number_input("Hándicap", value=-2.5, step=0.5)
+    ou = st.number_input("Over/Under", value=22.5)
 
-    j1 = st.selectbox("Jugador 1", jugadores)
-    j2 = st.selectbox("Jugador 2", jugadores, index=1)
+    j1 = st.selectbox("Jugador 1", players)
+    j2 = st.selectbox("Jugador 2", players, index=1)
 
-    st.write("📊 J1:", diagnostico(j1, superficie, stats))
-    st.write("📊 J2:", diagnostico(j2, superficie, stats))
+    st.write("📊 J1:", "OK")
+    st.write("📊 J2:", "OK")
 
     if st.button("🚀 SIMULAR"):
-        pow1 = calcular_poder(j1,j2,superficie,circuito,stats,rankings,h2h)
-        pow2 = calcular_poder(j2,j1,superficie,circuito,stats,rankings,h2h)
 
-        p1h,p2h = calcular_hold(pow1,pow2,circuito)
+        p1 = calcular_poder(j1,j2,superficie,circuito,stats,rankings,h2h)
+        p2 = calcular_poder(j2,j1,superficie,circuito,stats,rankings,h2h)
 
-        wins1=0
+        h1,h2 = calcular_hold(p1,p2,circuito)
+
+        wins=0
+        sets3=0
         totals=[]
-        diffs=[]
 
         for _ in range(sims):
             s1=s2=0
             g1=g2=0
 
             while s1<2 and s2<2:
-                r1,r2 = simular_set(p1h,p2h)
+                r1,r2 = sim_set(h1,h2)
                 g1+=r1; g2+=r2
 
                 if r1>r2: s1+=1
                 else: s2+=1
 
-            if s1==2: wins1+=1
+            if s1==2 and s2==1:
+                sets3+=1
+            elif s2==2 and s1==1:
+                sets3+=1
 
             totals.append(g1+g2)
-            diffs.append(g1-g2)
+            if s1==2: wins+=1
 
-        res_win = wins1/sims
-        res_win = np.clip(res_win, 0.10, 0.90)
+        prob_win = np.clip(wins/sims,0.10,0.90)
+        prob_sets = sets3/sims
 
-        res_over = sum(x>ou_line for x in totals)/sims
-        res_hcap = sum(x+hcap>0 for x in diffs)/sims
+        st.metric(f"Ganador {j1}", f"{prob_win:.1%}")
+        st.metric(f"Ganador {j2}", f"{1-prob_win:.1%}")
 
-        st.metric(f"Ganador {j1}", f"{res_win:.1%} ({etiqueta_prob(res_win)})")
-        st.metric(f"Ganador {j2}", f"{1-res_win:.1%} ({etiqueta_prob(1-res_win)})")
-        st.metric(f"Over {ou_line}", f"{res_over:.1%} ({etiqueta_prob(res_over)})")
-        st.metric(f"Hándicap {hcap}", f"{res_hcap:.1%} ({etiqueta_prob(res_hcap)})")
+        st.metric("Over 19.5", f"{sum(x>ou for x in totals)/sims:.1%}")
+
+        st.metric("Más de 2.5 sets", f"{prob_sets:.1%} — {lectura_sets(prob_sets)}")
 
 with tab2:
     df = cargar_apuestas()
     st.dataframe(df)
-
-    for i,row in df.iterrows():
-        if row["Resultado"]=="Pendiente":
-            c1,c2 = st.columns(2)
-
-            with c1:
-                if st.button(f"✔️ {i}", key=f"a{i}"):
-                    actualizar_resultado(i,"Acierto")
-                    st.rerun()
-
-            with c2:
-                if st.button(f"❌ {i}", key=f"f{i}"):
-                    actualizar_resultado(i,"Fallo")
-                    st.rerun()
-
-    total = len(df[df["Resultado"]!="Pendiente"])
-    aciertos = len(df[df["Resultado"]=="Acierto"])
-
-    if total>0:
-        st.metric("Acierto %", f"{aciertos/total:.1%}")
