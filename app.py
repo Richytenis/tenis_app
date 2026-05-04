@@ -5,16 +5,16 @@ import random
 import re
 import os
 
-# =================================================================
-# 0. REGISTRO DE APUESTAS
-# =================================================================
-
 ARCHIVO_APUESTAS = "registro_apuestas.csv"
 
-def guardar_apuesta(jugador1, jugador2, apuesta, prob):
+# ================================================================
+# REGISTRO APUESTAS
+# ================================================================
+
+def guardar_apuesta(j1, j2, apuesta, prob):
     df_nuevo = pd.DataFrame([{
-        "Jugador1": jugador1,
-        "Jugador2": jugador2,
+        "Jugador1": j1,
+        "Jugador2": j2,
         "Apuesta": apuesta,
         "Probabilidad": prob,
         "Resultado": "Pendiente"
@@ -32,23 +32,17 @@ def guardar_apuesta(jugador1, jugador2, apuesta, prob):
 def cargar_apuestas():
     if os.path.exists(ARCHIVO_APUESTAS):
         return pd.read_csv(ARCHIVO_APUESTAS)
-    return pd.DataFrame(columns=["Jugador1", "Jugador2", "Apuesta", "Probabilidad", "Resultado"])
+    return pd.DataFrame()
 
 
-def actualizar_resultado(index, resultado):
+def actualizar_resultado(i, res):
     df = cargar_apuestas()
-    df.loc[index, "Resultado"] = resultado
+    df.loc[i, "Resultado"] = res
     df.to_csv(ARCHIVO_APUESTAS, index=False)
 
-# =================================================================
-# 1. CONFIG
-# =================================================================
-
-st.set_page_config(page_title="Tennis IA Predictor Pro", page_icon="🎾", layout="wide")
-
-# =================================================================
-# 2. FUNCIONES IA (IGUAL)
-# =================================================================
+# ================================================================
+# UTILS
+# ================================================================
 
 def normalizar(n):
     if pd.isna(n): return ""
@@ -58,187 +52,202 @@ def normalizar(n):
 
 def mapear_superficie(s):
     s = s.upper()
-    if any(x in s for x in ['TIERRA', 'CLAY', 'ARCILLA']): return 'Clay'
-    if any(x in s for x in ['HIERBA', 'GRASS', 'CESPED']): return 'Grass'
+    if 'CLAY' in s or 'TIERRA' in s: return 'Clay'
+    if 'GRASS' in s or 'HIERBA' in s: return 'Grass'
     return 'Hard'
+
+# ================================================================
+# RANKING ATP
+# ================================================================
+
+def cargar_rankings():
+    try:
+        df = pd.read_excel("datos/atp.xlsx")
+        df.columns = df.columns.str.lower()
+
+        col_player = next(c for c in df.columns if c in ["player", "name"])
+        col_rank = next(c for c in df.columns if "rank" in c)
+
+        df[col_player] = df[col_player].apply(normalizar)
+
+        return dict(zip(df[col_player], df[col_rank]))
+    except:
+        return {}
+
+# ================================================================
+# DATA IA
+# ================================================================
 
 @st.cache_data
 def cargar_big_data():
-    ruta_base = 'datos'
-    stats_jugador = {} 
-    if not os.path.exists(ruta_base): return {}
+    ruta = "datos"
+    stats = {}
+    h2h = {}
 
-    for root, _, files in os.walk(ruta_base):
-        folder_name = os.path.basename(root).upper()
-        peso_nivel = 1.0  
-        if 'ATP' in folder_name: peso_nivel = 2.5
-        elif 'WTA' in folder_name: peso_nivel = 2.0
-        elif 'CHALLENGER' in folder_name: peso_nivel = 1.5
+    for root, _, files in os.walk(ruta):
+        peso = 1
+        if "ATP" in root.upper(): peso = 2.5
+        elif "WTA" in root.upper(): peso = 2
+        elif "CHALLENGER" in root.upper(): peso = 1.5
 
         for f in files:
-            if not (f.endswith('.xlsx') or f.endswith('.csv')): continue
+            if not (f.endswith(".csv") or f.endswith(".xlsx")):
+                continue
+
             try:
-                if f.endswith('.csv'):
-                    df = pd.read_csv(os.path.join(root, f), engine='python', on_bad_lines='skip', encoding_errors='ignore')
-                else:
-                    df = pd.read_excel(os.path.join(root, f))
-                
-                df.columns = df.columns.str.lower().str.strip()
-                w_col = next((c for c in df.columns if c in ['winner', 'winner_name']), None)
-                l_col = next((c for c in df.columns if c in ['loser', 'loser_name']), None)
-                surf_col = next((c for c in df.columns if 'surface' in c), 'surface')
+                path = os.path.join(root, f)
+                df = pd.read_csv(path, on_bad_lines="skip") if f.endswith(".csv") else pd.read_excel(path)
 
-                if w_col and l_col:
-                    for _, row in df.iterrows():
-                        w, l = normalizar(row[w_col]), normalizar(row[l_col])
-                        surf = mapear_superficie(str(row.get(surf_col, 'Hard')))
-                        for p in [w, l]:
-                            if p not in stats_jugador: 
-                                stats_jugador[p] = {'power_score': 0, 'total': 0, 'surf_stats': {}}
-                            stats_jugador[p]['total'] += 1
-                            if surf not in stats_jugador[p]['surf_stats']:
-                                stats_jugador[p]['surf_stats'][surf] = {'wins': 0, 'total': 0}
-                            stats_jugador[p]['surf_stats'][surf]['total'] += 1
-                            if p == w: 
-                                stats_jugador[p]['power_score'] += (10 * peso_nivel)
-                                stats_jugador[p]['surf_stats'][surf]['wins'] += 1
-                            else:
-                                stats_jugador[p]['power_score'] -= (6 / peso_nivel)
-            except: continue
-    return stats_jugador
+                df.columns = df.columns.str.lower()
 
-def calcular_poder_real(nombre, superficie, circuito, stats_ia):
-    suelo_min = 1750 if circuito in ['ATP', 'WTA'] else 1400
-    stats = stats_ia.get(nombre, {'power_score': 0, 'total': 0, 'surf_stats': {}})
-    pts_score = stats['power_score']
-    s_stats = stats['surf_stats'].get(superficie, {'wins': 0, 'total': 0})
-    surf_bonus = 0
-    if s_stats['total'] > 0:
-        surf_rate = s_stats['wins'] / s_stats['total']
-        surf_bonus = (surf_rate - 0.5) * 400
-    poder_final = 1200 + pts_score + surf_bonus
-    return max(poder_final, suelo_min)
+                w = next((c for c in df.columns if "winner" in c), None)
+                l = next((c for c in df.columns if "loser" in c), None)
+                surf_col = next((c for c in df.columns if "surface" in c), None)
 
-def calcular_probabilidades_saque(pow1, pow2, superficie, circuito):
-    if circuito == 'WTA':
-        base_h = {'Clay': 0.58, 'Hard': 0.64, 'Grass': 0.70}.get(superficie, 0.62)
-        suelo_tenis = 0.45
-    else:
-        base_h = {'Clay': 0.68, 'Hard': 0.76, 'Grass': 0.82}.get(superficie, 0.74)
-        suelo_tenis = 0.55
+                if not w or not l:
+                    continue
 
-    raw_diff = (pow1 - pow2)
-    diff_log = np.sign(raw_diff) * (np.log1p(abs(raw_diff)) / 25)
-    p1_hold = base_h + (diff_log * 0.35)
-    p2_hold = base_h - (diff_log * 0.35)
-    return np.clip(p1_hold, suelo_tenis, 0.97), np.clip(p2_hold, suelo_tenis, 0.97)
+                for _, row in df.iterrows():
+                    jw = normalizar(row[w])
+                    jl = normalizar(row[l])
+                    surf = mapear_superficie(str(row.get(surf_col, "Hard")))
 
-def simular_set(p1_h, p2_h):
-    j1, j2 = 0, 0
-    servidor = 1 if random.random() > 0.5 else 2
+                    for p in [jw, jl]:
+                        if p not in stats:
+                            stats[p] = {
+                                "power": 0,
+                                "total": 0,
+                                "surf": {},
+                                "recent": []
+                            }
+
+                    # power
+                    stats[jw]["power"] += 3 * peso
+                    stats[jl]["power"] -= 2 / peso
+
+                    stats[jw]["total"] += 1
+                    stats[jl]["total"] += 1
+
+                    # superficie
+                    for p in [jw, jl]:
+                        if surf not in stats[p]["surf"]:
+                            stats[p]["surf"][surf] = {"w": 0, "t": 0}
+                        stats[p]["surf"][surf]["t"] += 1
+
+                    stats[jw]["surf"][surf]["w"] += 1
+
+                    # forma
+                    stats[jw]["recent"].append(1)
+                    stats[jl]["recent"].append(0)
+                    stats[jw]["recent"] = stats[jw]["recent"][-10:]
+                    stats[jl]["recent"] = stats[jl]["recent"][-10:]
+
+                    # h2h
+                    key = tuple(sorted([jw, jl]))
+                    if key not in h2h:
+                        h2h[key] = {}
+                    h2h[key][jw] = h2h[key].get(jw, 0) + 1
+
+            except:
+                continue
+
+    return stats, h2h
+
+# ================================================================
+# COMPONENTES MODELO
+# ================================================================
+
+def forma(nombre, stats):
+    r = stats.get(nombre, {}).get("recent", [])
+    if not r: return 0
+    return (sum(r)/len(r) - 0.5) * 300
+
+def h2h_bonus(j1, j2, h2h):
+    key = tuple(sorted([j1, j2]))
+    if key not in h2h: return 0
+
+    w1 = h2h[key].get(j1, 0)
+    w2 = h2h[key].get(j2, 0)
+    t = w1 + w2
+    if t == 0: return 0
+
+    return ((w1/t) - 0.5) * 200
+
+def ranking_bonus(nombre, rankings):
+    r = rankings.get(nombre)
+    if r is None: return 0
+    return (200 - r) * 2
+
+def poder(nombre, rival, surf, circ, stats, rankings, h2h):
+    s = stats.get(nombre, {"power":0,"total":0,"surf":{}})
+
+    conf = min(1, s["total"]/100)
+    base = s["power"] * conf
+
+    surf_stats = s["surf"].get(surf, {"w":0,"t":0})
+    surf_b = 0
+    if surf_stats["t"] > 0:
+        surf_b = ((surf_stats["w"]/surf_stats["t"]) - 0.5) * 200
+
+    return 1200 + base + surf_b + forma(nombre, stats) + h2h_bonus(nombre, rival, h2h) + ranking_bonus(nombre, rankings)
+
+def probs(p1, p2, surf, circ):
+    base = 0.76 if circ=="ATP" else 0.64
+    diff = np.tanh((p1 - p2)/400)
+
+    p1h = np.clip(base + diff*0.3, 0.55, 0.97)
+    p2h = np.clip(base - diff*0.3, 0.55, 0.97)
+
+    return p1h, p2h
+
+def sim_set(p1h, p2h):
+    j1=j2=0
+    s = random.choice([1,2])
     while True:
-        prob = p1_h if servidor == 1 else (1 - p2_h)
-        if random.random() < prob: j1 += 1
-        else: j2 += 1
-        if (j1 >= 6 or j2 >= 6) and abs(j1 - j2) >= 2: return j1, j2
-        if j1 == 7 or j2 == 7: return j1, j2
-        servidor = 3 - servidor
+        p = p1h if s==1 else (1-p2h)
+        if random.random()<p: j1+=1
+        else: j2+=1
 
-# =================================================================
+        if (j1>=6 or j2>=6) and abs(j1-j2)>=2: return j1,j2
+        if j1==7 or j2==7: return j1,j2
+        s=3-s
+
+# ================================================================
 # APP
-# =================================================================
+# ================================================================
 
-stats_ia = cargar_big_data()
-lista_jugadores = sorted(list(stats_ia.keys()))
+st.set_page_config(layout="wide")
 
-st.title("🎾 Tennis IA")
+stats, h2h = cargar_big_data()
+rankings = cargar_rankings()
 
-tab1, tab2 = st.tabs(["Simulador", "Historial"])
+players = sorted(stats.keys())
 
-# ---------------- TAB 1 ----------------
-with tab1:
+st.title("🎾 Tennis Predictor PRO")
 
-    circ = st.selectbox("Circuito", ["ATP", "WTA", "CHALLENGER"])
-    surf_in = st.selectbox("Superficie", ["Dura", "Tierra", "Hierba"])
-    sims = st.slider("Simulaciones", 5000, 20000, 10000)
+circ = st.selectbox("Circuito", ["ATP","WTA","CHALLENGER"])
+surf = mapear_superficie(st.selectbox("Superficie", ["Hard","Clay","Grass"]))
 
-    umbral_ou = st.number_input("Over/Under", value=22.5, step=0.5)
-    h_val = st.number_input("Hándicap", value=-2.5, step=0.5)
+p1 = st.selectbox("Jugador 1", players)
+p2 = st.selectbox("Jugador 2", players, index=1)
 
-    p1_in = st.selectbox("Jugador 1", lista_jugadores)
-    p2_in = st.selectbox("Jugador 2", lista_jugadores, index=1)
+if st.button("SIMULAR"):
+    pow1 = poder(p1,p2,surf,circ,stats,rankings,h2h)
+    pow2 = poder(p2,p1,surf,circ,stats,rankings,h2h)
 
-    if st.button("🚀 SIMULAR"):
-        superficie = mapear_superficie(surf_in)
-        pow1 = calcular_poder_real(p1_in, superficie, circ, stats_ia)
-        pow2 = calcular_poder_real(p2_in, superficie, circ, stats_ia)
-        p1_h, p2_h = calcular_probabilidades_saque(pow1, pow2, superficie, circ)
+    p1h,p2h = probs(pow1,pow2,surf,circ)
 
-        sets_p1 = 0
-        j_totales, d_juegos = [], []
+    wins=0
+    sims=10000
 
-        for _ in range(sims):
-            s1, s2, jp1, jp2 = 0, 0, 0, 0
-            while s1 < 2 and s2 < 2:
-                r1, r2 = simular_set(p1_h, p2_h)
-                jp1 += r1; jp2 += r2
-                if r1 > r2: s1 += 1
-                else: s2 += 1
-            j_totales.append(jp1 + jp2)
-            d_juegos.append(jp1 - jp2)
-            if s1 == 2: sets_p1 += 1
+    for _ in range(sims):
+        s1=s2=0
+        while s1<2 and s2<2:
+            r1,r2 = sim_set(p1h,p2h)
+            if r1>r2: s1+=1
+            else: s2+=1
+        if s1==2: wins+=1
 
-        st.session_state["res"] = {
-            "p1": p1_in, "p2": p2_in,
-            "win": sets_p1 / sims,
-            "over": sum(j > umbral_ou for j in j_totales) / sims,
-            "hcap": sum(d + h_val > 0 for d in d_juegos) / sims,
-            "ou": umbral_ou,
-            "h": h_val
-        }
+    prob = wins/sims
 
-    if "res" in st.session_state:
-        r = st.session_state["res"]
-
-        st.metric(f"Ganador {r['p1']}", f"{r['win']:.1%}")
-        st.metric(f"Over {r['ou']}", f"{r['over']:.1%}")
-        st.metric(f"Hcap {r['h']}", f"{r['hcap']:.1%}")
-
-        opcion = st.selectbox("Apuesta", [
-            f"Ganador {r['p1']}",
-            f"Ganador {r['p2']}",
-            f"Over {r['ou']}",
-            f"Hándicap {r['h']}"
-        ])
-
-        if st.button("Guardar"):
-            prob_map = {
-                f"Ganador {r['p1']}": r["win"],
-                f"Ganador {r['p2']}": 1 - r["win"],
-                f"Over {r['ou']}": r["over"],
-                f"Hándicap {r['h']}": r["hcap"]
-            }
-
-            guardar_apuesta(r["p1"], r["p2"], opcion, prob_map[opcion])
-            st.success("Guardado")
-
-# ---------------- TAB 2 ----------------
-with tab2:
-
-    df = cargar_apuestas()
-    st.dataframe(df)
-
-    for i, row in df.iterrows():
-        if row["Resultado"] == "Pendiente":
-            if st.button(f"✔️ {i}", key=f"a{i}"):
-                actualizar_resultado(i, "Acierto")
-                st.rerun()
-            if st.button(f"❌ {i}", key=f"f{i}"):
-                actualizar_resultado(i, "Fallo")
-                st.rerun()
-
-    total = len(df[df["Resultado"] != "Pendiente"])
-    aciertos = len(df[df["Resultado"] == "Acierto"])
-
-    if total > 0:
-        st.metric("Acierto %", f"{(aciertos/total):.1%}")
+    st.metric("Probabilidad P1", f"{prob:.1%}")
