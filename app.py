@@ -6,9 +6,9 @@ import re
 import os
 
 # =========================================================
-# CONFIGURACIÓN Y MOTOR (v5.4 - DATA VERIFIER)
+# CONFIGURACIÓN Y MOTOR (v5.5 - ATP RANK FIX)
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor v5.4", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor v5.5", page_icon="🎾", layout="wide")
 
 def normalizar(n):
     if pd.isna(n): return ""
@@ -23,14 +23,18 @@ def cargar_base_elos():
         if os.path.exists(ruta):
             try:
                 df = pd.read_excel(ruta, engine='openpyxl')
-                # Normalizar nombres de columnas para evitar errores de espacios
+                # LIMPIEZA DE COLUMNAS: Quitamos espacios raros
                 df.columns = [c.strip() for c in df.columns]
+                
                 for _, row in df.iterrows():
                     nombre = normalizar(row['Player'])
                     if nombre:
+                        # BUSQUEDA ESPECÍFICA: ATP Rank, Rank o RK
+                        ranking = row.get('ATP Rank') or row.get('Rank') or row.get('RK') or 'N/A'
+                        
                         elos[f"{nombre} ({circuito})"] = {
                             "Player": nombre, 
-                            "Rank": row.get('Rank', row.get('RK', 'N/A')),
+                            "Rank": ranking,
                             "Hard": row.get('hElo'), 
                             "Clay": row.get('cElo'),
                             "Grass": row.get('gElo'), 
@@ -40,6 +44,7 @@ def cargar_base_elos():
             except Exception: pass
     return elos
 
+# --- MOTOR DE CÁLCULO CLÁSICO (RESTAURADO SEGÚN PREFERENCIA) ---
 def obtener_hold_rate(e1, e2, circuito_ui, superficie):
     if circuito_ui == "ATP":
         base = 0.81
@@ -88,7 +93,7 @@ with st.sidebar:
     n_sims = 10000
 
 if not jugadores:
-    st.error("⚠️ Error: No se detectan datos en las carpetas /datos/")
+    st.error("⚠️ Error: No se detectan datos.")
 else:
     c1, c2 = st.columns(2)
     with c1: j1_n = st.selectbox("Jugador 1", jugadores)
@@ -97,22 +102,20 @@ else:
     if st.button("🚀 CALCULAR PREDICCIÓN", use_container_width=True):
         d1, d2 = base_elos[j1_n], base_elos[j2_n]
         
-        # Extraer Elos específicos para la verificación
         e1 = d1.get(superficie) or d1.get("General") or 1500
         e2 = d2.get(superficie) or d2.get("General") or 1500
-        
         h1, h2 = obtener_hold_rate(e1, e2, circuito, superficie)
         
-        # --- NUEVA LÍNEA DE VERIFICACIÓN DE DATOS ---
+        # --- VERIFICACIÓN DE DATOS (AHORA CON ATP RANK) ---
         st.divider()
-        st.markdown("### 🔍 Verificación de Datos (Base de Datos)")
+        st.markdown("### 🔍 Datos del Archivo Excel")
         col_data1, col_data2 = st.columns(2)
         with col_data1:
-            st.write(f"**{d1['Player']}**")
-            st.write(f"Rank: `{d1['Rank']}` | Elo {superficie}: `{e1:.0f}`")
+            st.metric(f"{d1['Player']}", f"Rank: {d1['Rank']}")
+            st.caption(f"Elo {superficie}: {e1:.0f}")
         with col_data2:
-            st.write(f"**{d2['Player']}**")
-            st.write(f"Rank: `{d2['Rank']}` | Elo {superficie}: `{e2:.0f}`")
+            st.metric(f"{d2['Player']}", f"Rank: {d2['Rank']}")
+            st.caption(f"Elo {superficie}: {e2:.0f}")
 
         # --- SIMULACIÓN ---
         results = {"j1_win":0, "j1_set1":0, "j1_any":0, "j2_any":0, "games":[]}
@@ -131,25 +134,23 @@ else:
             if s2 >= 1: results["j2_any"] += 1
             results["games"].append(g_m)
 
-        # --- LÍNEA 1: VICTORIA ---
+        # --- RESULTADOS EN TRES LÍNEAS ---
         st.divider()
         st.markdown("#### 🏆 Probabilidades de Victoria")
         v1, v2, v3 = st.columns(3)
         p1 = results["j1_win"]/n_sims
-        v1.metric(f"Ganador: {d1['Player']}", f"{p1:.1%}")
-        v2.metric(f"Ganador: {d2['Player']}", f"{(1-p1):.1%}")
-        v3.metric("Favorito", d1['Player'] if p1 > 0.5 else d2['Player'])
+        v1.metric("Prob. Victoria P1", f"{p1:.1%}")
+        v2.metric("Prob. Victoria P2", f"{(1-p1):.1%}")
+        v3.metric("Favorito IA", d1['Player'] if p1 > 0.5 else d2['Player'])
 
-        # --- LÍNEA 2: OVER/UNDER ---
         st.markdown("#### 📊 Líneas de Juegos")
         o1, o2, o3 = st.columns(3)
         o1.metric("Over 18.5", f"{sum(g > 18.5 for g in results['games'])/n_sims:.1%}")
         o2.metric("Over 19.5", f"{sum(g > 19.5 for g in results['games'])/n_sims:.1%}")
-        o3.metric("Promedio Total", f"{sum(results['games'])/n_sims:.1f} j.")
+        o3.metric("Promedio Juegos", f"{sum(results['games'])/n_sims:.1f}")
 
-        # --- LÍNEA 3: MERCADOS DE SETS ---
         st.markdown("#### 🎾 Mercados de Sets")
         s1, s2, s3 = st.columns(3)
         s1.metric("Gana 1er Set (P1)", f"{results['j1_set1']/n_sims:.1%}")
-        s2.metric(f"{d1['Player']} gana +1 set", f"{results['j1_any']/n_sims:.1%}")
-        s3.metric(f"{d2['Player']} gana +1 set", f"{results['j2_any']/n_sims:.1%}")
+        s2.metric(f"P1 gana +1 set", f"{results['j1_any']/n_sims:.1%}")
+        s3.metric(f"P2 gana +1 set", f"{results['j2_any']/n_sims:.1%}")
