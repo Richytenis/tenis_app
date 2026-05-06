@@ -7,9 +7,9 @@ import os
 import unicodedata
 
 # =========================================================
-# MOTOR v8.3 - TOTAL DATA INTEGRATION (Aces, Age, Peak)
+# MOTOR v8.4 - CLAY SPECIALIST & MOMENTUM LOGIC
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor v8.3", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor v8.4", page_icon="🎾", layout="wide")
 
 def limpieza_extrema(texto):
     if pd.isna(texto): return ""
@@ -22,7 +22,6 @@ def cargar_todo():
     base_datos = {}
     stats_detalladas = {}
     
-    # 1. CARGAR STATS (atp_completa.xlsx)
     if os.path.exists('atp_completa.xlsx'):
         df_s = pd.read_excel('atp_completa.xlsx')
         for _, row in df_s.iterrows():
@@ -33,25 +32,21 @@ def cargar_todo():
                     "df": float(str(row.get('DF%', '3')).replace('%',''))/100,
                     "1in": float(str(row.get('1stIn', '62')).replace('%',''))/100,
                     "1w": float(str(row.get('1st%', '72')).replace('%',''))/100,
-                    "2w": float(str(row.get('2nd%', '50')).replace('%',''))/100
+                    "2w": float(str(row.get('2nd%', '50')).replace('%',''))/100,
+                    "hld": float(str(row.get('Hld%', '75')).replace('%',''))/100
                 }
             except: pass
 
-    # 2. CARGAR ELOS Y EDAD (atp_elo.xlsx)
     if os.path.exists('atp_elo.xlsx'):
         df_elo = pd.read_excel('atp_elo.xlsx')
-        # Limpiar nombres de columnas (quita \xa0)
         df_elo.columns = [limpieza_extrema(c) for c in df_elo.columns]
-        
         for _, row in df_elo.iterrows():
             nombre_raw = str(row.get('PLAYER', 'Unknown')).replace('\xa0', ' ').strip()
             nid = limpieza_extrema(nombre_raw)
             s = stats_detalladas.get(nid, {})
-            
             base_datos[f"{nombre_raw}"] = {
                 "Player": nombre_raw,
                 "Age": row.get('AGE', 25),
-                "Peak": row.get('PEAKELO', 1500),
                 "Rank": row.get('ATPRANK') or 'N/A',
                 "Hard": row.get('HELO') or row.get('ELO'),
                 "Clay": row.get('CELO') or row.get('ELO'),
@@ -63,26 +58,33 @@ def cargar_todo():
 
 def sim_game(s_data, r_data, elo_diff, surface):
     p1_pts = p2_pts = 0
-    s_stats = s_data['Stats']
+    s_stats = s_data.get('Stats', {})
     
-    # Ajuste de jerarquía (Elo)
-    elo_adj = elo_diff / 5000 
+    # --- MODIFICADORES DE SUPERFICIE ---
+    ace_mod = 0.75 if surface == "Clay" else 1.1 if surface == "Grass" else 1.0
+    second_serve_penalty = 1.15 if surface == "Clay" else 1.0
+    
+    elo_adj = elo_diff / 4500 # Un poco más sensible que antes
     
     while True:
-        # --- Lógica de Punto ---
-        # 1. Ace o Doble Falta (Resolución inmediata)
-        if random.random() < s_stats.get('ace', 0.05):
+        # 1. Ace / Doble Falta
+        prob_ace = s_stats.get('ace', 0.06) * ace_mod
+        prob_df = s_stats.get('df', 0.03)
+        
+        if random.random() < prob_ace:
             p1_pts += 1
-        elif random.random() < s_stats.get('df', 0.03):
+        elif random.random() < prob_df:
             p2_pts += 1
         else:
-            # 2. Intercambio (Saque In/Out)
-            is_clutch = (p1_pts >= 3 or p2_pts >= 3) and abs(p1_pts - p2_pts) <= 1
-            clutch_adj = 0.02 if (elo_diff > 0 and is_clutch) else 0
+            # 2. Peloteo
+            is_break_point = (p2_pts >= 3 and p2_pts > p1_pts)
+            # Bono clutch para el mejor rankeado en puntos de break
+            clutch = 0.03 if (elo_diff > 0 and is_break_point) else -0.02 if (elo_diff < 0 and is_break_point) else 0
             
             p_in = s_stats.get("1in", 0.62)
-            p_w1 = np.clip(s_stats.get("1w", 0.70) + elo_adj + clutch_adj, 0.4, 0.9)
-            p_w2 = np.clip(s_stats.get("2w", 0.50) + elo_adj, 0.3, 0.75)
+            p_w1 = np.clip(s_stats.get("1w", 0.70) + elo_adj + clutch, 0.35, 0.92)
+            # El segundo saque en clay es más castigado
+            p_w2 = np.clip(s_stats.get("2w", 0.50) + elo_adj - (0.05 if surface == "Clay" else 0), 0.25, 0.80)
 
             if random.random() < p_in:
                 if random.random() < p_w1: p1_pts += 1
@@ -107,10 +109,10 @@ def sim_set(d1, d2, elo_diff, surface):
         if (g1 >= 6 and g1-g2 >= 2) or g1 == 7: return g1, g2
         if (g2 >= 6 and g2-g1 >= 2) or g2 == 7: return g1, g2
 
-# --- UI ---
+# --- APP ---
 base_datos = cargar_todo()
 with st.sidebar:
-    st.header("🎾 Tennis IA v8.3")
+    st.header("🎾 Tennis IA v8.4")
     lista = sorted(list(base_datos.keys()))
     superficie = st.selectbox("Superficie", ["Hard", "Clay", "Grass"])
     formato = st.radio("Formato", ["Tour (3 sets)", "Grand Slam (5 sets)"])
@@ -127,22 +129,25 @@ if lista:
         elo_diff = e1 - e2
         prob_elo = 1 / (1 + 10 ** ((e2 - e1) / 400))
 
-        # Simulación
         res = {"j1_w":0, "j1_s1":0, "j1_any":0, "j2_any":0, "over18":0, "over19":0, "gms":[], "set3":0}
         sets_to_win = 3 if "5 sets" in formato else 2
         
         for _ in range(10000):
             s1 = s2 = gt = 0
-            # Copias locales para decaimiento por edad/cansancio
-            stats_p1 = d1.copy(); stats_p2 = d2.copy()
+            # Copias para efectos de momentum
+            p1_eff = d1.copy(); p2_eff = d2.copy()
             
             set_n = 0
             while s1 < sets_to_win and s2 < sets_to_win:
-                # Decaimiento por cansancio (más severo si > 30 años)
-                fatiga = 1.0 - (gt * 0.001) if d1['Age'] < 30 else 1.0 - (gt * 0.002)
-                
-                g1, g2 = sim_set(stats_p1, stats_p2, elo_diff, superficie)
+                g1, g2 = sim_set(p1_eff, p2_eff, elo_diff, superficie)
                 gt += (g1 + g2)
+                
+                # Efecto Momentum: si ganas facil (6-2 o menos), el rival baja stats
+                if g1 >= 6 and g2 <= 2: 
+                    p2_eff['Stats']['2w'] = p2_eff.get('Stats', {}).get('2w', 0.5) * 0.92
+                if g2 >= 6 and g1 <= 2:
+                    p1_eff['Stats']['2w'] = p1_eff.get('Stats', {}).get('2w', 0.5) * 0.92
+
                 if set_n == 0 and g1 > g2: res["j1_s1"] += 1
                 if g1 > g2: s1 += 1
                 else: s2 += 1
@@ -156,24 +161,24 @@ if lista:
             if set_n >= 3: res["set3"] += 1
             res["gms"].append(gt)
 
-        p_final = (res["j1_w"]/10000 * 0.3) + (prob_elo * 0.7)
+        p_final = (res["j1_w"]/10000 * 0.25) + (prob_elo * 0.75)
 
-        # --- SALIDA VISUAL v8.3 ---
+        # UI DE SALIDA
         st.divider()
         st.subheader("🏆 Probabilidad de Victoria")
-        l1_1, l1_2 = st.columns(2)
-        l1_1.metric(f"Ganador: {d1['Player']}", f"{p_final:.1%}")
-        l1_2.metric(f"Ganador: {d2['Player']}", f"{(1-p_final):.1%}")
+        l1, l2 = st.columns(2)
+        l1.metric(f"{d1['Player']}", f"{p_final:.1%}")
+        l2.metric(f"{d2['Player']}", f"{(1-p_final):.1%}")
 
         st.subheader("🎾 Sets y Rendimiento")
-        l2_1, l2_2, l2_3, l2_4 = st.columns(4)
-        l2_1.metric("Irán a 3 sets?", f"{res['set3']/10000:.1%}")
-        l2_2.metric("Gana 1er Set P1", f"{res['j1_s1']/10000:.1%}")
-        l2_3.metric("P1 Gana +1 Set", f"{res['j1_any']/10000:.1%}")
-        l2_4.metric("P2 Gana +1 Set", f"{res['j2_any']/10000:.1%}")
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("¿Habrá 3 sets?", f"{res['set3']/10000:.1%}")
+        s2.metric("Gana 1er Set P1", f"{res['j1_s1']/10000:.1%}")
+        s3.metric("P1 gana +1 set", f"{res['j1_any']/10000:.1%}")
+        s4.metric("P2 gana +1 set", f"{res['j2_any']/10000:.1%}")
 
-        st.subheader("📊 Mercados Over / Under")
-        l3_1, l3_2, l3_3 = st.columns(3)
-        l3_1.metric("Over 18.5 Games", f"{res['over18']/10000:.1%}")
-        l3_2.metric("Over 19.5 Games", f"{res['over19']/10000:.1%}")
-        l3_3.metric("Promedio Games", f"{np.mean(res['gms']):.1f}")
+        st.subheader("📊 Mercados de Games")
+        g1, g2, g3 = st.columns(3)
+        g1.metric("Over 18.5", f"{res['over18']/10000:.1%}")
+        g2.metric("Over 19.5", f"{res['over19']/10000:.1%}")
+        g3.metric("Promedio Games", f"{np.mean(res['gms']):.1f}")
