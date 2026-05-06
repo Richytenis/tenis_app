@@ -7,9 +7,9 @@ import os
 import unicodedata
 
 # =========================================================
-# MOTOR v8.7 - THE KILL ZONE (Final Clay Tuning)
+# MOTOR v8.8 - THE DUELIST (Bifurcated Logic)
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor v8.7", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor v8.8", page_icon="⚔️", layout="wide")
 
 def limpieza_extrema(texto):
     if pd.isna(texto): return ""
@@ -32,7 +32,8 @@ def cargar_todo():
                     "df": float(str(row.get('DF%', '3')).replace('%',''))/100,
                     "1in": float(str(row.get('1stIn', '62')).replace('%',''))/100,
                     "1w": float(str(row.get('1st%', '72')).replace('%',''))/100,
-                    "2w": float(str(row.get('2nd%', '50')).replace('%',''))/100
+                    "2w": float(str(row.get('2nd%', '50')).replace('%',''))/100,
+                    "hld": float(str(row.get('Hld%', '75')).replace('%',''))/100
                 }
             except: pass
 
@@ -43,69 +44,57 @@ def cargar_todo():
             nombre_raw = str(row.get('PLAYER', 'Unknown')).replace('\xa0', ' ').strip()
             nid = limpieza_extrema(nombre_raw)
             s = stats_detalladas.get(nid, {})
+            elos = [row.get('HELO', 0), row.get('CELO', 0), row.get('GELO', 0), row.get('ELO', 0)]
+            max_e = max([float(e) for e in elos if e is not None and str(e).replace('.','').isdigit()] or [1500])
+            
             base_datos[f"{nombre_raw}"] = {
                 "Player": nombre_raw,
-                "Age": row.get('AGE', 25),
-                "Rank": row.get('ATPRANK') or '999',
+                "Rank": str(row.get('ATPRANK', '999')),
                 "Hard": row.get('HELO') or row.get('ELO'),
                 "Clay": row.get('CELO') or row.get('ELO'),
                 "Grass": row.get('GELO') or row.get('ELO'),
                 "General": row.get('ELO', 1500),
-                "MaxElo": max([row.get('HELO', 0), row.get('CELO', 0), row.get('GELO', 0), row.get('ELO', 0)]),
+                "MaxElo": max_e,
                 "Stats": s
             }
     return base_datos
 
-def sim_game(s_data, r_data, elo_diff, surface, momentum=1.0, breaks_in_set=0):
+def sim_game(s_data, r_data, elo_diff, surface, momentum=1.0, b_in_set=0, is_duelist=False):
     p1_pts = p2_pts = 0
     s_stats = s_data.get('Stats', {})
     
-    # Penalización por breaks previos en el set (Efecto moral)
-    moral_penalty = 0.95 ** breaks_in_set if surface == "Clay" else 1.0
+    # Si son duelistas, la moral cae menos tras ser quebrado
+    moral_decay = 0.97 if is_duelist else 0.94
+    moral_adj = moral_decay ** b_in_set if surface == "Clay" else 1.0
     
-    ace_mod = 0.60 if surface == "Clay" else 1.25 if surface == "Grass" else 1.0
-    elo_adj = (elo_diff / 4000) * momentum * moral_penalty
+    elo_adj = (elo_diff / 4000) * momentum * moral_adj
     
     while True:
-        if random.random() < s_stats.get('ace', 0.05) * ace_mod: p1_pts += 1
+        if random.random() < s_stats.get('ace', 0.05) * (0.6 if surface == "Clay" else 1.0): p1_pts += 1
         elif random.random() < s_stats.get('df', 0.03): p2_pts += 1
         else:
-            is_bp = (p2_pts >= 3 and p2_pts > p1_pts)
-            clutch = 0.06 if (elo_diff > 40 and is_bp) else -0.05 if (elo_diff < -40 and is_bp) else 0
-            
             p_in = s_stats.get("1in", 0.62)
-            # En "Kill Zone", el favorito castiga más el 2º saque
-            p_w1 = np.clip(s_stats.get("1w", 0.70) + elo_adj + clutch, 0.20, 0.96)
-            p_w2 = np.clip(s_stats.get("2w", 0.50) + elo_adj - (0.05 if surface == "Clay" else 0), 0.10, 0.88)
-
+            p_w1 = np.clip(s_stats.get("1w", 0.70) + elo_adj, 0.25, 0.95)
+            p_w2 = np.clip(s_stats.get("2w", 0.50) + elo_adj, 0.15, 0.85)
             if random.random() < p_in:
                 if random.random() < p_w1: p1_pts += 1
                 else: p2_pts += 1
             else:
                 if random.random() < p_w2: p1_pts += 1
                 else: p2_pts += 1
-        
         if p1_pts >= 4 and p1_pts - p2_pts >= 2: return 1
         if p2_pts >= 4 and p2_pts - p1_pts >= 2: return 0
 
-def sim_set(d1, d2, elo_diff, surface, p1_m=1.0, p2_m=1.0):
+def sim_set(d1, d2, elo_diff, surface, p1_m, p2_m, is_duelist):
     g1 = g2 = 0; sacador = 1 if random.random() > 0.5 else 2
-    b1 = b2 = 0 # Contador de breaks
-    
+    b1 = b2 = 0
     while True:
         if sacador == 1:
-            res = sim_game(d1, d2, elo_diff, surface, p1_m, b1)
-            if res: g1 += 1
-            else: 
-                g2 += 1
-                b1 += 1 # P1 perdió su saque
+            if sim_game(d1, d2, elo_diff, surface, p1_m, b1, is_duelist): g1 += 1
+            else: g1, g2, b1 = g1, g2+1, b1+1
         else:
-            res = sim_game(d2, d1, -elo_diff, surface, p2_m, b2)
-            if res: g2 += 1
-            else: 
-                g1 += 1
-                b2 += 1 # P2 perdió su saque
-        
+            if sim_game(d2, d1, -elo_diff, surface, p2_m, b2, is_duelist): g2 += 1
+            else: g2, g1, b2 = g2, g1+1, b2+1
         sacador = 3 - sacador
         if (g1 >= 6 and g1-g2 >= 2) or g1 == 7: return g1, g2
         if (g2 >= 6 and g2-g1 >= 2) or g2 == 7: return g1, g2
@@ -113,7 +102,7 @@ def sim_set(d1, d2, elo_diff, surface, p1_m=1.0, p2_m=1.0):
 # --- UI ---
 base_datos = cargar_todo()
 with st.sidebar:
-    st.header("🎾 Predictor v8.7")
+    st.header("🎾 Predictor v8.8")
     lista = sorted(list(base_datos.keys()))
     superficie = st.selectbox("Superficie", ["Hard", "Clay", "Grass"])
     formato = st.radio("Formato", ["Tour (3 sets)", "Grand Slam (5 sets)"])
@@ -127,11 +116,11 @@ if lista:
         d1, d2 = base_datos[j1_n], base_datos[j2_n]
         e1 = d1.get(superficie) or d1.get("General") or 1500
         e2 = d2.get(superficie) or d2.get("General") or 1500
-        elo_diff = e1 - e2
         
-        # Alergia a superficie
+        # Lógica Duelista: ¿Ambos están cómodos en esta superficie?
         a1 = (d1['MaxElo'] - e1) > 90
         a2 = (d2['MaxElo'] - e2) > 90
+        is_duelist = not a1 and not a2
 
         res = {"j1_w":0, "j1_s1":0, "j2_s1":0, "j1_any":0, "j2_any":0, "over18":0, "over19":0, "gms":[], "set3":0}
         sets_to_win = 3 if "5 sets" in formato else 2
@@ -141,25 +130,18 @@ if lista:
             p1_m = p2_m = 1.0
             set_n = 0
             while s1 < sets_to_win and s2 < sets_to_win:
-                # Si un jugador ya va ganando y es favorito, recibe bono de confianza
-                if s1 > s2 and elo_diff > 0: p1_m = 1.05
-                if s2 > s1 and elo_diff < 0: p2_m = 1.05
-                
-                g1, g2 = sim_set(d1, d2, elo_diff, superficie, p1_m, p2_m)
+                g1, g2 = sim_set(d1, d2, (e1-e2), superficie, p1_m, p2_m, is_duelist)
                 gt += (g1 + g2)
-                
                 if set_n == 0:
                     if g1 > g2: 
                         res["j1_s1"] += 1
-                        p2_m = 0.70 if a2 else 0.85 # Kill Zone penalty
+                        p2_m = 0.92 if is_duelist else 0.75
                     else: 
                         res["j2_s1"] += 1
-                        p1_m = 0.70 if a1 else 0.85
-
+                        p1_m = 0.92 if is_duelist else 0.75
                 if g1 > g2: s1 += 1
                 else: s2 += 1
                 set_n += 1
-            
             if s1 == sets_to_win: res["j1_w"] += 1
             if s1 >= 1: res["j1_any"] += 1
             if s2 >= 1: res["j2_any"] += 1
@@ -169,7 +151,7 @@ if lista:
             res["gms"].append(gt)
 
         prob_elo = 1 / (1 + 10 ** ((e2 - e1) / 400))
-        p_final = (res["j1_w"]/10000 * 0.15) + (prob_elo * 0.85)
+        p_final = (res["j1_w"]/10000 * 0.2) + (prob_elo * 0.8)
 
         st.divider()
         st.subheader("🏆 Probabilidad de Victoria")
