@@ -6,9 +6,9 @@ import re
 import os
 
 # =========================================================
-# CONFIGURACIÓN Y MOTOR (v5.3 - REGRESO AL ATP CLÁSICO)
+# CONFIGURACIÓN Y MOTOR (v5.4 - DATA VERIFIER)
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor v5.3", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor v5.4", page_icon="🎾", layout="wide")
 
 def normalizar(n):
     if pd.isna(n): return ""
@@ -23,31 +23,35 @@ def cargar_base_elos():
         if os.path.exists(ruta):
             try:
                 df = pd.read_excel(ruta, engine='openpyxl')
+                # Normalizar nombres de columnas para evitar errores de espacios
+                df.columns = [c.strip() for c in df.columns]
                 for _, row in df.iterrows():
                     nombre = normalizar(row['Player'])
                     if nombre:
                         elos[f"{nombre} ({circuito})"] = {
-                            "Player": nombre, "Hard": row.get('hElo'), "Clay": row.get('cElo'),
-                            "Grass": row.get('gElo'), "General": row.get('Elo'), "Circuito": circuito
+                            "Player": nombre, 
+                            "Rank": row.get('Rank', row.get('RK', 'N/A')),
+                            "Hard": row.get('hElo'), 
+                            "Clay": row.get('cElo'),
+                            "Grass": row.get('gElo'), 
+                            "General": row.get('Elo'), 
+                            "Circuito": circuito
                         }
             except Exception: pass
     return elos
 
 def obtener_hold_rate(e1, e2, circuito_ui, superficie):
-    # --- VOLVEMOS A LA LÓGICA QUE TE FUNCIONABA BIEN ---
     if circuito_ui == "ATP":
         base = 0.81
         if superficie == "Clay": base -= 0.08
         elif superficie == "Grass": base += 0.04
-        divisor = 850  # EL DIVISOR ORIGINAL
-        min_h = 0.25   # EL MÍNIMO ORIGINAL
-    
+        divisor = 850
+        min_h = 0.25
     elif circuito_ui == "WTA":
         base = 0.74
         if superficie == "Clay": base -= 0.04
         divisor = 3500 
         min_h = 0.55
-        
     else: # CHALLENGER
         base = 0.76 
         if superficie == "Clay": base -= 0.04
@@ -61,7 +65,6 @@ def sim_set(p1_h, p2_h):
     g1 = g2 = 0
     sacador = 1
     while True:
-        # Boost original de la v4.4 para no alterar los Over
         boost = 0.02 if abs(g1 - g2) >= 2 else 0
         prob = (p1_h + boost) if sacador == 1 else (1 - p2_h - boost)
         if random.random() < prob: g1 += 1
@@ -71,7 +74,7 @@ def sim_set(p1_h, p2_h):
         sacador = 3 - sacador
 
 # =========================================================
-# INTERFAZ (DISEÑO PRO DE 3 LÍNEAS)
+# INTERFAZ
 # =========================================================
 base_elos = cargar_base_elos()
 
@@ -85,7 +88,7 @@ with st.sidebar:
     n_sims = 10000
 
 if not jugadores:
-    st.error("⚠️ No se encontraron datos.")
+    st.error("⚠️ Error: No se detectan datos en las carpetas /datos/")
 else:
     c1, c2 = st.columns(2)
     with c1: j1_n = st.selectbox("Jugador 1", jugadores)
@@ -93,9 +96,25 @@ else:
 
     if st.button("🚀 CALCULAR PREDICCIÓN", use_container_width=True):
         d1, d2 = base_elos[j1_n], base_elos[j2_n]
-        e1, e2 = d1.get(superficie, 1500), d2.get(superficie, 1500)
+        
+        # Extraer Elos específicos para la verificación
+        e1 = d1.get(superficie) or d1.get("General") or 1500
+        e2 = d2.get(superficie) or d2.get("General") or 1500
+        
         h1, h2 = obtener_hold_rate(e1, e2, circuito, superficie)
         
+        # --- NUEVA LÍNEA DE VERIFICACIÓN DE DATOS ---
+        st.divider()
+        st.markdown("### 🔍 Verificación de Datos (Base de Datos)")
+        col_data1, col_data2 = st.columns(2)
+        with col_data1:
+            st.write(f"**{d1['Player']}**")
+            st.write(f"Rank: `{d1['Rank']}` | Elo {superficie}: `{e1:.0f}`")
+        with col_data2:
+            st.write(f"**{d2['Player']}**")
+            st.write(f"Rank: `{d2['Rank']}` | Elo {superficie}: `{e2:.0f}`")
+
+        # --- SIMULACIÓN ---
         results = {"j1_win":0, "j1_set1":0, "j1_any":0, "j2_any":0, "games":[]}
         sets_n = 3 if (nivel == "Grand Slam (5 sets)" and circuito == "ATP") else 2
         
@@ -112,7 +131,7 @@ else:
             if s2 >= 1: results["j2_any"] += 1
             results["games"].append(g_m)
 
-        # --- VISUALIZACIÓN ---
+        # --- LÍNEA 1: VICTORIA ---
         st.divider()
         st.markdown("#### 🏆 Probabilidades de Victoria")
         v1, v2, v3 = st.columns(3)
@@ -121,16 +140,16 @@ else:
         v2.metric(f"Ganador: {d2['Player']}", f"{(1-p1):.1%}")
         v3.metric("Favorito", d1['Player'] if p1 > 0.5 else d2['Player'])
 
+        # --- LÍNEA 2: OVER/UNDER ---
         st.markdown("#### 📊 Líneas de Juegos")
         o1, o2, o3 = st.columns(3)
         o1.metric("Over 18.5", f"{sum(g > 18.5 for g in results['games'])/n_sims:.1%}")
         o2.metric("Over 19.5", f"{sum(g > 19.5 for g in results['games'])/n_sims:.1%}")
         o3.metric("Promedio Total", f"{sum(results['games'])/n_sims:.1f} j.")
 
+        # --- LÍNEA 3: MERCADOS DE SETS ---
         st.markdown("#### 🎾 Mercados de Sets")
         s1, s2, s3 = st.columns(3)
         s1.metric("Gana 1er Set (P1)", f"{results['j1_set1']/n_sims:.1%}")
         s2.metric(f"{d1['Player']} gana +1 set", f"{results['j1_any']/n_sims:.1%}")
         s3.metric(f"{d2['Player']} gana +1 set", f"{results['j2_any']/n_sims:.1%}")
-
-        st.info(f"Análisis v5.3 | ATP Engine Clásico Restaurado | Saque: {h1:.1%} vs {h2:.1%}")
