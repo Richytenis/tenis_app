@@ -8,7 +8,7 @@ import os
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor Ultra v4.1", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor Ultra v4.2", page_icon="🎾", layout="wide")
 
 def normalizar(n):
     if pd.isna(n): return ""
@@ -19,7 +19,7 @@ def normalizar(n):
 @st.cache_data
 def cargar_base_elos():
     elos = {}
-    # Rutas de archivos (ajusta si tus carpetas tienen otros nombres)
+    # Rutas de archivos
     archivos = {"ATP": "datos/atp/atp_elo.xlsx", "WTA": "datos/wta/wta_elo.xlsx"}
     errores = []
     for circuito, ruta in archivos.items():
@@ -30,7 +30,6 @@ def cargar_base_elos():
                 for _, row in df.iterrows():
                     nombre = normalizar(row['Player'])
                     if nombre:
-                        # Identificador único para evitar cruces
                         key = f"{nombre} ({circuito})"
                         elos[key] = {
                             "Player": nombre,
@@ -42,7 +41,7 @@ def cargar_base_elos():
     return elos, errores
 
 # =========================================================
-# MOTOR DE CÁLCULO AFINADO
+# MOTOR DE CÁLCULO MAESTRO (DINÁMICO)
 # =========================================================
 def obtener_hold_rate(e1, e2, circuito_ui, superficie, nivel_torneo):
     # --- LÓGICA ATP (TU ESTRUCTURA ORIGINAL INTACTA) ---
@@ -61,22 +60,27 @@ def obtener_hold_rate(e1, e2, circuito_ui, superficie, nivel_torneo):
             divisor = 850
         min_h = 0.25
 
-    # --- LÓGICA WTA (SUAVIZADA: CASO ZAKHAROVA/YASTREMSKA) ---
+    # --- LÓGICA WTA (SUAVIZADA PARA MAYOR REALISMO) ---
     elif circuito_ui == "WTA":
-        base = 0.70 
+        base = 0.71 
         if superficie == "Clay": base -= 0.05
-        # Divisor 1400: diferencias de Elo no disparan el % de victoria tan rápido
-        divisor = 1400 
-        min_h = 0.40 
-
-    # --- LÓGICA CHALLENGER (ESTABILIZADA: CASO BARRENA/HOLMGREN) ---
-    else: 
-        # Base más alta para evitar promedios de juegos irreales (24.0)
-        base = 0.78 
-        if superficie == "Clay": base -= 0.06
-        # Divisor 1800: ideal para Elos bajos (rango 1400)
+        # Divisor amplio para que diferencias de 150 pts no den 99%
         divisor = 1800 
-        min_h = 0.48 
+        min_h = 0.42 
+
+    # --- LÓGICA CHALLENGER (CORRECCIÓN DINÁMICA DE SENSIBILIDAD) ---
+    else: 
+        # Subimos la base para evitar promedios de juegos inflados
+        base = 0.80 
+        if superficie == "Clay": base -= 0.05
+        
+        # DIVISOR DINÁMICO: Evita que 38 puntos en nivel 1400 parezcan una paliza
+        avg_elo = (e1 + e2) / 2
+        # Si los jugadores son de nivel bajo (CH/ITF), el divisor debe ser mayor 
+        # para que la probabilidad sea más cercana al 50/50
+        divisor = 2500 if avg_elo < 1600 else 1800
+        
+        min_h = 0.50 # Saque más estable para permitir resultados de 2 sets rápidos
 
     diff = (e1 - e2) / divisor
     p1_hold = np.clip(base + diff, min_h, 0.96)
@@ -97,17 +101,17 @@ def sim_set(p1_h, p2_h):
 # =========================================================
 # INTERFAZ STREAMLIT
 # =========================================================
-st.title("🎾 Tennis IA Predictor Ultra v4.1")
+st.title("🎾 Tennis IA Predictor Ultra v4.2")
 
 base_elos, logs = cargar_base_elos()
 
 with st.sidebar:
     st.header("⚙️ Ajustes de Análisis")
     
-    # 1. Selector de Circuito (Separa la lógica y los jugadores)
-    circuito_seleccionado = st.selectbox("Circuito a analizar", ["ATP", "WTA", "CHALLENGER"])
+    # Selector de Circuito
+    circuito_seleccionado = st.selectbox("Elija Circuito", ["ATP", "WTA", "CHALLENGER"])
     
-    # Filtrar jugadores: Challenger usa la base de datos ATP
+    # Filtrado inteligente
     tag_busqueda = "WTA" if circuito_seleccionado == "WTA" else "ATP"
     jugadores_filtrados = [k for k, v in base_elos.items() if v["Circuito"] == tag_busqueda]
     
@@ -120,44 +124,40 @@ with st.sidebar:
     linea_ou = st.number_input("Línea O/U Juegos", value=21.5, step=0.5)
 
 if not jugadores_filtrados:
-    st.error(f"No se encontraron datos para {circuito_seleccionado}. Revisa tus archivos Excel.")
+    st.error(f"No hay jugadores cargados para {circuito_seleccionado}.")
 else:
     c1, c2 = st.columns(2)
-    with c1: j1_key = st.selectbox("Jugador 1", jugadores_filtrados)
-    with c2: j2_key = st.selectbox("Jugador 2", jugadores_filtrados, index=min(1, len(jugadores_filtrados)-1))
+    with c1: j1_k = st.selectbox("Jugador 1", jugadores_filtrados)
+    with c2: j2_k = st.selectbox("Jugador 2", jugadores_filtrados, index=min(1, len(jugadores_filtrados)-1))
 
     if st.button("🚀 PREDECIR PARTIDO", use_container_width=True):
-        d1, d2 = base_elos[j1_key], base_elos[j2_key]
+        d1, d2 = base_elos[j1_k], base_elos[j2_k]
         
-        # Selección de Elo por superficie
         e1 = d1.get(surf_key) or d1.get("General") or 1500
         e2 = d2.get(surf_key) or d2.get("General") or 1500
         
-        # Obtener tasas de saque ajustadas
         h1, h2 = obtener_hold_rate(e1, e2, circuito_seleccionado, surf_key, nivel_torneo)
         
-        # Simulación de partidos
         j1_wins = 0; juegos = []
-        # Sets necesarios: ATP Grand Slam es el único a 5 sets
-        sets_necesarios = 3 if (nivel_torneo == "Grand Slam (5 sets)" and circuito_seleccionado == "ATP") else 2
+        sets_n = 3 if (nivel_torneo == "Grand Slam (5 sets)" and circuito_seleccionado == "ATP") else 2
         
         for _ in range(n_sims):
-            s1 = s2 = 0; m_games = 0
-            while s1 < sets_necesarios and s2 < sets_necesarios:
+            s1 = s2 = 0; m_g = 0
+            while s1 < sets_n and s2 < sets_n:
                 g1, g2 = sim_set(h1, h2)
-                m_games += (g1 + g2)
+                m_g += (g1 + g2)
                 if g1 > g2: s1 += 1
                 else: s2 += 1
-            if s1 == sets_necesarios: j1_wins += 1
-            juegos.append(m_games)
+            if s1 == sets_n: j1_wins += 1
+            juegos.append(m_g)
             
-        # UI DE RESULTADOS
+        # RESULTADOS
         st.divider()
         res1, res2, res3 = st.columns(3)
         
-        prob_j1 = j1_wins / n_sims
-        res1.metric(f"Victoria {d1['Player']}", f"{prob_j1:.1%}")
-        res2.metric(f"Victoria {d2['Player']}", f"{(1 - prob_j1):.1%}")
+        p1_perc = j1_wins / n_sims
+        res1.metric(f"Victoria {d1['Player']}", f"{p1_perc:.1%}")
+        res2.metric(f"Victoria {d2['Player']}", f"{(1 - p1_perc):.1%}")
         
         p_over = sum(g > linea_ou for g in juegos) / n_sims
         res3.metric(f"Over {linea_ou}", f"{p_over:.1%}")
