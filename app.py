@@ -1,10 +1,14 @@
 import streamlit as st
-import pd, np, random, re, os # Simplificado para el motor
+import pandas as pd
+import numpy as np
+import random
+import re
+import os
 
 # =========================================================
-# CONFIGURACIÓN Y MOTOR (v5.0)
+# CONFIGURACIÓN Y MOTOR (v5.1 - CORREGIDO)
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor v5.0", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor v5.1", page_icon="🎾", layout="wide")
 
 def normalizar(n):
     if pd.isna(n): return ""
@@ -17,14 +21,16 @@ def cargar_base_elos():
     archivos = {"ATP": "datos/atp/atp_elo.xlsx", "WTA": "datos/wta/wta_elo.xlsx"}
     for circuito, ruta in archivos.items():
         if os.path.exists(ruta):
-            df = pd.read_excel(ruta)
-            for _, row in df.iterrows():
-                nombre = normalizar(row['Player'])
-                if nombre:
-                    elos[f"{nombre} ({circuito})"] = {
-                        "Player": nombre, "Hard": row.get('hElo'), "Clay": row.get('cElo'),
-                        "Grass": row.get('gElo'), "General": row.get('Elo'), "Circuito": circuito
-                    }
+            try:
+                df = pd.read_excel(ruta, engine='openpyxl')
+                for _, row in df.iterrows():
+                    nombre = normalizar(row['Player'])
+                    if nombre:
+                        elos[f"{nombre} ({circuito})"] = {
+                            "Player": nombre, "Hard": row.get('hElo'), "Clay": row.get('cElo'),
+                            "Grass": row.get('gElo'), "General": row.get('Elo'), "Circuito": circuito
+                        }
+            except Exception: pass
     return elos
 
 def obtener_hold_rate(e1, e2, circuito_ui, superficie):
@@ -71,15 +77,16 @@ with st.sidebar:
     n_sims = 10000
 
 if not jugadores:
-    st.error("Base de datos no encontrada.")
+    st.error("⚠️ No se encontraron archivos de Excel en /datos/atp o /datos/wta")
 else:
     c1, c2 = st.columns(2)
     with c1: j1_n = st.selectbox("Jugador 1", jugadores)
-    with c2: j2_n = st.selectbox("Jugador 2", jugadores, index=1)
+    with c2: j2_n = st.selectbox("Jugador 2", jugadores, index=min(1, len(jugadores)-1))
 
     if st.button("🚀 CALCULAR PREDICCIÓN", use_container_width=True):
         d1, d2 = base_elos[j1_n], base_elos[j2_n]
-        e1, e2 = d1.get(superficie, 1500), d2.get(superficie, 1500)
+        e1 = d1.get(superficie) or d1.get("General") or 1500
+        e2 = d2.get(superficie) or d2.get("General") or 1500
         h1, h2 = obtener_hold_rate(e1, e2, circuito, superficie)
         
         results = {"j1_win":0, "j1_set1":0, "j1_any":0, "j2_any":0, "games":[]}
@@ -101,26 +108,26 @@ else:
         # --- VISUALIZACIÓN EN 3 LÍNEAS ---
         st.divider()
         
-        # Fila 1: Probabilidades de Victoria
-        st.markdown("### 🏆 Probabilidades de Victoria")
+        # Línea 1: Victoria
+        st.markdown("#### 🏆 Probabilidades de Victoria")
         v1, v2, v3 = st.columns(3)
         p1 = results["j1_win"]/n_sims
         v1.metric(f"Ganador: {d1['Player']}", f"{p1:.1%}")
         v2.metric(f"Ganador: {d2['Player']}", f"{(1-p1):.1%}")
         v3.metric("Favorito", d1['Player'] if p1 > 0.5 else d2['Player'])
 
-        # Fila 2: Líneas de Over / Under
-        st.markdown("### 📊 Líneas de Juegos")
+        # Línea 2: Over/Under
+        st.markdown("#### 📊 Líneas de Juegos")
         o1, o2, o3 = st.columns(3)
         o1.metric("Over 18.5", f"{sum(g > 18.5 for g in results['games'])/n_sims:.1%}")
         o2.metric("Over 19.5", f"{sum(g > 19.5 for g in results['games'])/n_sims:.1%}")
         o3.metric("Promedio Total", f"{sum(results['games'])/n_sims:.1f} j.")
 
-        # Fila 3: Mercados de Sets
-        st.markdown("### 🎾 Mercados de Sets")
+        # Línea 3: Mercados de Sets
+        st.markdown("#### 🎾 Mercados de Sets")
         s1, s2, s3 = st.columns(3)
         s1.metric("Gana 1er Set (P1)", f"{results['j1_set1']/n_sims:.1%}")
-        s2.metric(f"{d1['Player']} gana 1 set", f"{results['j1_any']/n_sims:.1%}")
-        s3.metric(f"{d2['Player']} gana 1 set", f"{results['j2_any']/n_sims:.1%}")
+        s2.metric(f"{d1['Player']} gana +1 set", f"{results['j1_any']/n_sims:.1%}")
+        s3.metric(f"{d2['Player']} gana +1 set", f"{results['j2_any']/n_sims:.1%}")
 
-        st.info(f"Análisis basado en Elo {superficie}. Saque: {h1:.1%} vs {h2:.1%}")
+        st.info(f"Análisis basado en Elo {superficie}. Saque estimado: {h1:.1%} vs {h2:.1%}")
