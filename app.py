@@ -7,9 +7,9 @@ import os
 import unicodedata
 
 # =========================================================
-# MOTOR v8.5 - PSYCHOLOGICAL COLLAPSE & NEW UI
+# MOTOR v8.6 - THE SURFACE TRAP (Anti-Parity Bias)
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor v8.5", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor v8.6", page_icon="🎾", layout="wide")
 
 def limpieza_extrema(texto):
     if pd.isna(texto): return ""
@@ -43,6 +43,10 @@ def cargar_todo():
             nombre_raw = str(row.get('PLAYER', 'Unknown')).replace('\xa0', ' ').strip()
             nid = limpieza_extrema(nombre_raw)
             s = stats_detalladas.get(nid, {})
+            # Guardamos todos los Elos para detectar disparidad
+            elos = [row.get('HELO', 1500), row.get('CELO', 1500), row.get('GELO', 1500)]
+            max_elo = max([e for e in elos if e is not None] or [1500])
+            
             base_datos[f"{nombre_raw}"] = {
                 "Player": nombre_raw,
                 "Age": row.get('AGE', 25),
@@ -51,30 +55,32 @@ def cargar_todo():
                 "Clay": row.get('CELO') or row.get('ELO'),
                 "Grass": row.get('GELO') or row.get('ELO'),
                 "General": row.get('ELO', 1500),
+                "MaxElo": max_elo,
                 "Stats": s
             }
     return base_datos
 
-def sim_game(s_data, r_data, elo_diff, surface, momentum_penalty=1.0):
+def sim_game(s_data, r_data, elo_diff, surface, momentum=1.0):
     p1_pts = p2_pts = 0
     s_stats = s_data.get('Stats', {})
     
-    ace_mod = 0.70 if surface == "Clay" else 1.15 if surface == "Grass" else 1.0
-    elo_adj = (elo_diff / 4800) * momentum_penalty
+    # Reducción de ventaja de saque en Clay
+    ace_mod = 0.65 if surface == "Clay" else 1.2 if surface == "Grass" else 1.0
+    # Elo adj más agresivo para evitar sets infinitos
+    elo_adj = (elo_diff / 4200) * momentum
     
     while True:
-        prob_ace = s_stats.get('ace', 0.06) * ace_mod
-        prob_df = s_stats.get('df', 0.03)
-        
-        if random.random() < prob_ace: p1_pts += 1
-        elif random.random() < prob_df: p2_pts += 1
+        p_ace = s_stats.get('ace', 0.06) * ace_mod
+        if random.random() < p_ace: p1_pts += 1
+        elif random.random() < s_stats.get('df', 0.03): p2_pts += 1
         else:
             is_bp = (p2_pts >= 3 and p2_pts > p1_pts)
-            clutch = 0.04 if (elo_diff > 0 and is_bp) else -0.03 if (elo_diff < 0 and is_bp) else 0
+            # Clutch factor v8.6: Más peso a la jerarquía
+            clutch = 0.05 if (elo_diff > 50 and is_bp) else -0.04 if (elo_diff < -50 and is_bp) else 0
             
             p_in = s_stats.get("1in", 0.62)
-            p_w1 = np.clip(s_stats.get("1w", 0.70) + elo_adj + clutch, 0.30, 0.95)
-            p_w2 = np.clip(s_stats.get("2w", 0.50) + elo_adj, 0.20, 0.85)
+            p_w1 = np.clip(s_stats.get("1w", 0.70) + elo_adj + clutch, 0.25, 0.95)
+            p_w2 = np.clip(s_stats.get("2w", 0.50) + elo_adj, 0.15, 0.85)
 
             if random.random() < p_in:
                 if random.random() < p_w1: p1_pts += 1
@@ -86,28 +92,23 @@ def sim_game(s_data, r_data, elo_diff, surface, momentum_penalty=1.0):
         if p1_pts >= 4 and p1_pts - p2_pts >= 2: return 1
         if p2_pts >= 4 and p2_pts - p1_pts >= 2: return 0
 
-def sim_set(d1, d2, elo_diff, surface, p1_penalty=1.0, p2_penalty=1.0):
+def sim_set(d1, d2, elo_diff, surface, p1_m=1.0, p2_m=1.0):
     g1 = g2 = 0; sacador = 1 if random.random() > 0.5 else 2
-    # En Clay es más difícil llegar al tie-break (reducción de paridad)
-    clay_break_force = 0.05 if surface == "Clay" else 0.0
-    
     while True:
         if sacador == 1:
-            if sim_game(d1, d2, elo_diff, surface, p1_penalty): g1 += 1
+            if sim_game(d1, d2, elo_diff, surface, p1_m): g1 += 1
             else: g2 += 1
         else:
-            if sim_game(d2, d1, -elo_diff, surface, p2_penalty): g2 += 1
+            if sim_game(d2, d1, -elo_diff, surface, p2_m): g2 += 1
             else: g1 += 1
         sacador = 3 - sacador
-        
-        # Lógica de fin de set
         if (g1 >= 6 and g1-g2 >= 2) or g1 == 7: return g1, g2
         if (g2 >= 6 and g2-g1 >= 2) or g2 == 7: return g1, g2
 
 # --- UI ---
 base_datos = cargar_todo()
 with st.sidebar:
-    st.header("🎾 IA Predictor v8.5")
+    st.header("🎾 IA Predictor v8.6")
     lista = sorted(list(base_datos.keys()))
     superficie = st.selectbox("Superficie", ["Hard", "Clay", "Grass"])
     formato = st.radio("Formato", ["Tour (3 sets)", "Grand Slam (5 sets)"])
@@ -122,25 +123,30 @@ if lista:
         e1 = d1.get(superficie) or d1.get("General") or 1500
         e2 = d2.get(superficie) or d2.get("General") or 1500
         elo_diff = e1 - e2
-        prob_elo = 1 / (1 + 10 ** ((e2 - e1) / 400))
+        
+        # Detección de "Alergia"
+        a1 = (d1['MaxElo'] - e1) > 80
+        a2 = (d2['MaxElo'] - e2) > 80
 
         res = {"j1_w":0, "j1_s1":0, "j2_s1":0, "j1_any":0, "j2_any":0, "over18":0, "over19":0, "gms":[], "set3":0}
         sets_to_win = 3 if "5 sets" in formato else 2
         
         for _ in range(10000):
             s1 = s2 = gt = 0
-            p1_penalty = p2_penalty = 1.0
+            p1_m = p2_m = 1.0
             set_n = 0
             while s1 < sets_to_win and s2 < sets_to_win:
-                g1, g2 = sim_set(d1, d2, elo_diff, superficie, p1_penalty, p2_penalty)
+                g1, g2 = sim_set(d1, d2, elo_diff, superficie, p1_m, p2_m)
                 gt += (g1 + g2)
                 
                 if set_n == 0:
-                    if g1 > g2: res["j1_s1"] += 1
-                    else: res["j2_s1"] += 1
-                    # Efecto colapso psicológico v8.5
-                    if g1 >= 6 and g2 <= 2: p2_penalty = 0.85
-                    if g2 >= 6 and g1 <= 2: p1_penalty = 0.85
+                    if g1 > g2: 
+                        res["j1_s1"] += 1
+                        # Si P2 es alérgico a la superficie y pierde el 1ero, colapsa más
+                        p2_m = 0.75 if a2 else 0.88
+                    else: 
+                        res["j2_s1"] += 1
+                        p1_m = 0.75 if a1 else 0.88
 
                 if g1 > g2: s1 += 1
                 else: s2 += 1
@@ -154,7 +160,8 @@ if lista:
             if set_n >= 3: res["set3"] += 1
             res["gms"].append(gt)
 
-        p_final = (res["j1_w"]/10000 * 0.25) + (prob_elo * 0.75)
+        prob_elo = 1 / (1 + 10 ** ((e2 - e1) / 400))
+        p_final = (res["j1_w"]/10000 * 0.20) + (prob_elo * 0.80)
 
         st.divider()
         st.subheader("🏆 Probabilidad de Victoria")
