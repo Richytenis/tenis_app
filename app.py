@@ -8,9 +8,9 @@ import unicodedata
 import plotly.express as px
 
 # =========================================================
-# MOTOR v8.0 - SURFACE ELO & STATS INTEGRATION
+# MOTOR v8.1 - SURFACE ELO & POINT SIMULATION (STABLE)
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor v8.0", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor v8.1", page_icon="🎾", layout="wide")
 
 def limpieza_extrema(texto):
     if pd.isna(texto): return ""
@@ -42,15 +42,16 @@ def cargar_todo():
     # 2. CARGAR ELOS POR SUPERFICIE (atp_elo.xlsx)
     if os.path.exists('atp_elo.xlsx'):
         df_elo = pd.read_excel('atp_elo.xlsx')
-        # Limpieza de columnas para evitar problemas con \xa0
+        # Limpieza de nombres de columnas para evitar problemas con espacios invisibles
         df_elo.columns = [limpieza_extrema(c) for c in df_elo.columns]
         
         for _, row in df_elo.iterrows():
             nombre_raw = str(row.get('PLAYER', 'Unknown')).replace('\xa0', ' ').strip()
             nid = limpieza_extrema(nombre_raw)
             
+            # Vinculamos con las estadísticas si existen, si no, diccionario vacío
             s = stats_detalladas.get(nid, {})
-            # Buscamos columnas según limpieza_extrema (HELO, CELO, GELO)
+            
             base_datos[f"{nombre_raw}"] = {
                 "Player": nombre_raw,
                 "Rank": row.get('ATPRANK') or 'N/A',
@@ -66,10 +67,11 @@ def sim_game(s_stats, r_elo_diff):
     p1_pts = 0
     p2_pts = 0
     # Ajuste de punto basado en diferencia de Elo
-    adj = r_elo_diff / 4500 
+    adj = r_elo_diff / 5000 
     
+    # Usamos .get() con valores por defecto para evitar caídas del script
     p_in = s_stats.get("1in", 0.62)
-    p_w1 = np.clip(s_stats.get("1w", 0.72) + adj, 0.40, 0.90)
+    p_w1 = np.clip(s_stats.get("1w", 0.70) + adj, 0.40, 0.90)
     p_w2 = np.clip(s_stats.get("2w", 0.50) + adj, 0.30, 0.75)
 
     while True:
@@ -83,7 +85,7 @@ def sim_game(s_stats, r_elo_diff):
         if p1_pts >= 4 and p1_pts - p2_pts >= 2: return 1
         if p2_pts >= 4 and p2_pts - p1_pts >= 2: return 0
 
-def sim_set(d1, d2, elo_diff, stats1, stats2):
+def sim_set(elo_diff, stats1, stats2):
     g1 = g2 = 0
     sacador = 1 if random.random() > 0.5 else 2
     while True:
@@ -100,88 +102,98 @@ def sim_set(d1, d2, elo_diff, stats1, stats2):
 # --- INTERFAZ ---
 base_datos = cargar_todo()
 with st.sidebar:
-    st.header("🎾 IA Tennis v8.0")
+    st.header("🎾 Tennis IA v8.1")
     lista = sorted(list(base_datos.keys()))
     superficie = st.selectbox("Superficie del Partido", ["Hard", "Clay", "Grass"])
-    nivel = st.radio("Formato de Partido", ["Tour (3 sets)", "Grand Slam (5 sets)"])
+    formato = st.radio("Formato de Partido", ["Tour (3 sets)", "Grand Slam (5 sets)"])
 
 if lista:
     c1, c2 = st.columns(2)
-    with c1: j1_n = st.selectbox("Jugador 1 (Favorito/Local)", lista)
-    with c2: j2_n = st.selectbox("Jugador 2 (Rival)", lista, index=min(1, len(lista)-1))
+    with c1: j1_n = st.selectbox("Jugador 1", lista)
+    with c2: j2_n = st.selectbox("Jugador 2", lista, index=min(1, len(lista)-1))
 
-    if st.button("🚀 ANALIZAR PARTIDO CON ELO ESPECÍFICO", use_container_width=True):
+    if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
         d1, d2 = base_datos[j1_n], base_datos[j2_n]
         
-        # 1. Obtener Elos de la superficie elegida
+        # 1. Obtener Elos específicos
         e1 = d1.get(superficie) or d1.get("General") or 1500
         e2 = d2.get(superficie) or d2.get("General") or 1500
         elo_diff = e1 - e2
         prob_elo = 1 / (1 + 10 ** ((e2 - e1) / 400))
 
-        # 2. Mostrar Verificación de Datos
+        # 2. Verificador de Datos
         st.markdown(f"### 🔍 Verificador de Datos: {superficie}")
         v1, v2 = st.columns(2)
         with v1:
-            st.metric(d1['Player'], f"Rank: {int(d1['Rank']) if d1['Rank'] != 'N/A' else 'N/A'}")
-            st.caption(f"Elo {superficie}: **{e1:.1f}** | 1stW: {d1['Stats'].get('1w',0.70):.1%}")
+            st.metric(d1['Player'], f"Rank: {str(d1['Rank']).split('.')[0] if d1['Rank'] != 'N/A' else 'N/A'}")
+            st.caption(f"Elo {superficie}: **{e1:.1f}**")
         with v2:
-            st.metric(d2['Player'], f"Rank: {int(d2['Rank']) if d2['Rank'] != 'N/A' else 'N/A'}")
-            st.caption(f"Elo {superficie}: **{e2:.1f}** | 1stW: {d2['Stats'].get('1w',0.70):.1%}")
+            st.metric(d2['Player'], f"Rank: {str(d2['Rank']).split('.')[0] if d2['Rank'] != 'N/A' else 'N/A'}")
+            st.caption(f"Elo {superficie}: **{e2:.1f}**")
 
         # 3. Simulación Monte Carlo
         res = {"j1_w":0, "j1_s1":0, "j1_any":0, "j2_any":0, "over18":0, "over19":0, "gms":[]}
-        sets_target = 3 if "5 sets" in nivel else 2
+        sets_to_win = 3 if "5 sets" in formato else 2
         
+        # Stats por defecto por si falla el match con atp_completa
+        default_stats = {"hld": 0.75, "1in": 0.62, "1w": 0.70, "2w": 0.50}
+
         for _ in range(10000):
             s1 = s2 = gt = 0
-            # Copiamos stats para aplicar factor fatiga/desplome por set
-            curr_stats1 = d1["Stats"].copy()
-            curr_stats2 = d2["Stats"].copy()
+            # Preparar stats para el partido (y asegurar que tienen las claves necesarias)
+            c_s1 = d1.get("Stats", {}).copy()
+            if not c_s1: c_s1 = default_stats.copy()
+            c_s2 = d2.get("Stats", {}).copy()
+            if not c_s2: c_s2 = default_stats.copy()
+            
+            # Asegurar que todas las claves están presentes (evita KeyError)
+            for key in default_stats:
+                if key not in c_s1: c_s1[key] = default_stats[key]
+                if key not in c_s2: c_s2[key] = default_stats[key]
             
             set_n = 0
-            while s1 < sets_target and s2 < sets_target:
-                g1, g2 = sim_set(d1, d2, elo_diff, curr_stats1, curr_stats2)
+            while s1 < sets_to_win and s2 < sets_to_win:
+                g1, g2 = sim_set(elo_diff, c_s1, c_s2)
                 gt += (g1 + g2)
                 
                 if set_n == 0:
                     if g1 > g2: res["j1_s1"] += 1
                 
-                # Lógica de Desplome: si pierde un set muy fácil (6-0, 6-1, 6-2)
-                if g1 >= 6 and g2 <= 2: curr_stats2["2w"] *= 0.85
-                if g2 >= 6 and g1 <= 2: curr_stats1["2w"] *= 0.85
+                # Lógica de Desplome: pérdida de rendimiento tras set humillante
+                if g1 >= 6 and g2 <= 2: c_s2["2w"] *= 0.88
+                if g2 >= 6 and g1 <= 2: c_s1["2w"] *= 0.88
                 
                 if g1 > g2: s1 += 1
                 else: s2 += 1
                 set_n += 1
             
-            if s1 == sets_target: res["j1_w"] += 1
+            if s1 == sets_to_win: res["j1_w"] += 1
             if s1 >= 1: res["j1_any"] += 1
             if s2 >= 1: res["j2_any"] += 1
             if gt > 18.5: res["over18"] += 1
             if gt > 19.5: res["over19"] += 1
             res["gms"].append(gt)
 
-        # 4. Resultados Finales
+        # 4. Mostrar Resultados Finales
         st.divider()
         p_final = (res["j1_w"]/10000 * 0.4) + (prob_elo * 0.6)
         
-        c_res1, c_res2, c_res3, c_res4 = st.columns(4)
-        c_res1.metric("Win Prob P1", f"{p_final:.1%}")
-        c_res2.metric("Gana 1er Set P1", f"{res['j1_s1']/10000:.1%}")
-        c_res3.metric("Gana +1 Set P1", f"{res['j1_any']/10000:.1%}")
-        c_res4.metric("Gana +1 Set P2", f"{res['j2_any']/10000:.1%}")
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Win Prob P1", f"{p_final:.1%}")
+        r2.metric("Gana 1er Set P1", f"{res['j1_s1']/10000:.1%}")
+        r3.metric("Gana +1 Set P1", f"{res['j1_any']/10000:.1%}")
+        r4.metric("Gana +1 Set P2", f"{res['j2_any']/10000:.1%}")
 
-        st.markdown("#### 📊 Mercados de Probabilidad")
+        st.markdown("#### 📊 Mercados de Games")
         o1, o2, o3 = st.columns(3)
         o1.metric("Over 18.5", f"{res['over18']/10000:.1%}")
         o2.metric("Over 19.5", f"{res['over19']/10000:.1%}")
         o3.metric("Promedio Games", f"{np.mean(res['gms']):.1f}")
 
-        # Filtro de alerta para Overs peligrosos
-        if (res["j1_any"]/10000 < 0.65 or res["j2_any"]/10000 < 0.65) and (res["over19"]/10000 > 0.70):
-            st.warning("⚠️ **ALERTA DE VOLATILIDAD:** La probabilidad de Over es alta, pero un jugador tiene pocas opciones de ganar un set. Riesgo de resultado corto (6-2, 6-1).")
+        # Alerta de riesgo (filtro de seguridad para apostadores)
+        if (res["j2_any"]/10000 < 0.60) and (res["over19"]/10000 > 0.70):
+            st.warning("⚠️ **AVISO DE VOLATILIDAD:** Probabilidad alta de Over pero el rival apenas tiene opciones de ganar un set. Riesgo de resultado corto (Under).")
 
-        fig = px.histogram(res["gms"], nbins=15, title="Frecuencia de Juegos Totales", 
-                           labels={'value':'Games'}, color_discrete_sequence=['#27ae60'])
+        fig = px.histogram(res["gms"], nbins=15, title="Frecuencia de Juegos Totales",
+                           color_discrete_sequence=['#2ecc71'])
         st.plotly_chart(fig, use_container_width=True)
