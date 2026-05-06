@@ -7,9 +7,9 @@ import os
 import unicodedata
 
 # =========================================================
-# MOTOR v8.4 - CLAY SPECIALIST & MOMENTUM LOGIC
+# MOTOR v8.5 - PSYCHOLOGICAL COLLAPSE & NEW UI
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor v8.4", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor v8.5", page_icon="🎾", layout="wide")
 
 def limpieza_extrema(texto):
     if pd.isna(texto): return ""
@@ -32,8 +32,7 @@ def cargar_todo():
                     "df": float(str(row.get('DF%', '3')).replace('%',''))/100,
                     "1in": float(str(row.get('1stIn', '62')).replace('%',''))/100,
                     "1w": float(str(row.get('1st%', '72')).replace('%',''))/100,
-                    "2w": float(str(row.get('2nd%', '50')).replace('%',''))/100,
-                    "hld": float(str(row.get('Hld%', '75')).replace('%',''))/100
+                    "2w": float(str(row.get('2nd%', '50')).replace('%',''))/100
                 }
             except: pass
 
@@ -56,35 +55,26 @@ def cargar_todo():
             }
     return base_datos
 
-def sim_game(s_data, r_data, elo_diff, surface):
+def sim_game(s_data, r_data, elo_diff, surface, momentum_penalty=1.0):
     p1_pts = p2_pts = 0
     s_stats = s_data.get('Stats', {})
     
-    # --- MODIFICADORES DE SUPERFICIE ---
-    ace_mod = 0.75 if surface == "Clay" else 1.1 if surface == "Grass" else 1.0
-    second_serve_penalty = 1.15 if surface == "Clay" else 1.0
-    
-    elo_adj = elo_diff / 4500 # Un poco más sensible que antes
+    ace_mod = 0.70 if surface == "Clay" else 1.15 if surface == "Grass" else 1.0
+    elo_adj = (elo_diff / 4800) * momentum_penalty
     
     while True:
-        # 1. Ace / Doble Falta
         prob_ace = s_stats.get('ace', 0.06) * ace_mod
         prob_df = s_stats.get('df', 0.03)
         
-        if random.random() < prob_ace:
-            p1_pts += 1
-        elif random.random() < prob_df:
-            p2_pts += 1
+        if random.random() < prob_ace: p1_pts += 1
+        elif random.random() < prob_df: p2_pts += 1
         else:
-            # 2. Peloteo
-            is_break_point = (p2_pts >= 3 and p2_pts > p1_pts)
-            # Bono clutch para el mejor rankeado en puntos de break
-            clutch = 0.03 if (elo_diff > 0 and is_break_point) else -0.02 if (elo_diff < 0 and is_break_point) else 0
+            is_bp = (p2_pts >= 3 and p2_pts > p1_pts)
+            clutch = 0.04 if (elo_diff > 0 and is_bp) else -0.03 if (elo_diff < 0 and is_bp) else 0
             
             p_in = s_stats.get("1in", 0.62)
-            p_w1 = np.clip(s_stats.get("1w", 0.70) + elo_adj + clutch, 0.35, 0.92)
-            # El segundo saque en clay es más castigado
-            p_w2 = np.clip(s_stats.get("2w", 0.50) + elo_adj - (0.05 if surface == "Clay" else 0), 0.25, 0.80)
+            p_w1 = np.clip(s_stats.get("1w", 0.70) + elo_adj + clutch, 0.30, 0.95)
+            p_w2 = np.clip(s_stats.get("2w", 0.50) + elo_adj, 0.20, 0.85)
 
             if random.random() < p_in:
                 if random.random() < p_w1: p1_pts += 1
@@ -96,23 +86,28 @@ def sim_game(s_data, r_data, elo_diff, surface):
         if p1_pts >= 4 and p1_pts - p2_pts >= 2: return 1
         if p2_pts >= 4 and p2_pts - p1_pts >= 2: return 0
 
-def sim_set(d1, d2, elo_diff, surface):
+def sim_set(d1, d2, elo_diff, surface, p1_penalty=1.0, p2_penalty=1.0):
     g1 = g2 = 0; sacador = 1 if random.random() > 0.5 else 2
+    # En Clay es más difícil llegar al tie-break (reducción de paridad)
+    clay_break_force = 0.05 if surface == "Clay" else 0.0
+    
     while True:
         if sacador == 1:
-            if sim_game(d1, d2, elo_diff, surface): g1 += 1
+            if sim_game(d1, d2, elo_diff, surface, p1_penalty): g1 += 1
             else: g2 += 1
         else:
-            if sim_game(d2, d1, -elo_diff, surface): g2 += 1
+            if sim_game(d2, d1, -elo_diff, surface, p2_penalty): g2 += 1
             else: g1 += 1
         sacador = 3 - sacador
+        
+        # Lógica de fin de set
         if (g1 >= 6 and g1-g2 >= 2) or g1 == 7: return g1, g2
         if (g2 >= 6 and g2-g1 >= 2) or g2 == 7: return g1, g2
 
-# --- APP ---
+# --- UI ---
 base_datos = cargar_todo()
 with st.sidebar:
-    st.header("🎾 Tennis IA v8.4")
+    st.header("🎾 IA Predictor v8.5")
     lista = sorted(list(base_datos.keys()))
     superficie = st.selectbox("Superficie", ["Hard", "Clay", "Grass"])
     formato = st.radio("Formato", ["Tour (3 sets)", "Grand Slam (5 sets)"])
@@ -129,26 +124,24 @@ if lista:
         elo_diff = e1 - e2
         prob_elo = 1 / (1 + 10 ** ((e2 - e1) / 400))
 
-        res = {"j1_w":0, "j1_s1":0, "j1_any":0, "j2_any":0, "over18":0, "over19":0, "gms":[], "set3":0}
+        res = {"j1_w":0, "j1_s1":0, "j2_s1":0, "j1_any":0, "j2_any":0, "over18":0, "over19":0, "gms":[], "set3":0}
         sets_to_win = 3 if "5 sets" in formato else 2
         
         for _ in range(10000):
             s1 = s2 = gt = 0
-            # Copias para efectos de momentum
-            p1_eff = d1.copy(); p2_eff = d2.copy()
-            
+            p1_penalty = p2_penalty = 1.0
             set_n = 0
             while s1 < sets_to_win and s2 < sets_to_win:
-                g1, g2 = sim_set(p1_eff, p2_eff, elo_diff, superficie)
+                g1, g2 = sim_set(d1, d2, elo_diff, superficie, p1_penalty, p2_penalty)
                 gt += (g1 + g2)
                 
-                # Efecto Momentum: si ganas facil (6-2 o menos), el rival baja stats
-                if g1 >= 6 and g2 <= 2: 
-                    p2_eff['Stats']['2w'] = p2_eff.get('Stats', {}).get('2w', 0.5) * 0.92
-                if g2 >= 6 and g1 <= 2:
-                    p1_eff['Stats']['2w'] = p1_eff.get('Stats', {}).get('2w', 0.5) * 0.92
+                if set_n == 0:
+                    if g1 > g2: res["j1_s1"] += 1
+                    else: res["j2_s1"] += 1
+                    # Efecto colapso psicológico v8.5
+                    if g1 >= 6 and g2 <= 2: p2_penalty = 0.85
+                    if g2 >= 6 and g1 <= 2: p1_penalty = 0.85
 
-                if set_n == 0 and g1 > g2: res["j1_s1"] += 1
                 if g1 > g2: s1 += 1
                 else: s2 += 1
                 set_n += 1
@@ -163,7 +156,6 @@ if lista:
 
         p_final = (res["j1_w"]/10000 * 0.25) + (prob_elo * 0.75)
 
-        # UI DE SALIDA
         st.divider()
         st.subheader("🏆 Probabilidad de Victoria")
         l1, l2 = st.columns(2)
@@ -171,11 +163,12 @@ if lista:
         l2.metric(f"{d2['Player']}", f"{(1-p_final):.1%}")
 
         st.subheader("🎾 Sets y Rendimiento")
-        s1, s2, s3, s4 = st.columns(4)
+        s1, s2, s3, s4, s5 = st.columns(5)
         s1.metric("¿Habrá 3 sets?", f"{res['set3']/10000:.1%}")
-        s2.metric("Gana 1er Set P1", f"{res['j1_s1']/10000:.1%}")
-        s3.metric("P1 gana +1 set", f"{res['j1_any']/10000:.1%}")
-        s4.metric("P2 gana +1 set", f"{res['j2_any']/10000:.1%}")
+        s2.metric("1er Set P1", f"{res['j1_s1']/10000:.1%}")
+        s3.metric("1er Set P2", f"{res['j2_s1']/10000:.1%}")
+        s4.metric("P1 Gana 1 Set", f"{res['j1_any']/10000:.1%}")
+        s5.metric("P2 Gana 1 Set", f"{res['j2_any']/10000:.1%}")
 
         st.subheader("📊 Mercados de Games")
         g1, g2, g3 = st.columns(3)
