@@ -6,9 +6,9 @@ import re
 import os
 
 # =========================================================
-# CONFIGURACIÓN Y MOTOR (v5.1 - CORREGIDO)
+# CONFIGURACIÓN Y MOTOR (v5.3 - REGRESO AL ATP CLÁSICO)
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor v5.1", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor v5.3", page_icon="🎾", layout="wide")
 
 def normalizar(n):
     if pd.isna(n): return ""
@@ -34,27 +34,35 @@ def cargar_base_elos():
     return elos
 
 def obtener_hold_rate(e1, e2, circuito_ui, superficie):
+    # --- VOLVEMOS A LA LÓGICA QUE TE FUNCIONABA BIEN ---
     if circuito_ui == "ATP":
-        base = 0.73 if superficie == "Clay" else 0.81
-        divisor = 850
-        min_h = 0.30
+        base = 0.81
+        if superficie == "Clay": base -= 0.08
+        elif superficie == "Grass": base += 0.04
+        divisor = 850  # EL DIVISOR ORIGINAL
+        min_h = 0.25   # EL MÍNIMO ORIGINAL
+    
     elif circuito_ui == "WTA":
-        base = 0.70 if superficie == "Clay" else 0.74
+        base = 0.74
+        if superficie == "Clay": base -= 0.04
         divisor = 3500 
         min_h = 0.55
-    else: # Challenger
-        base = 0.73 if superficie == "Clay" else 0.78
-        divisor = 4000
-        min_h = 0.48
+        
+    else: # CHALLENGER
+        base = 0.76 
+        if superficie == "Clay": base -= 0.04
+        divisor = 4500 if (e1+e2)/2 < 1600 else 2500
+        min_h = 0.45 
     
     diff = (e1 - e2) / divisor
-    return np.clip(base + diff, min_h, 0.95), np.clip(base - diff, min_h, 0.95)
+    return np.clip(base + diff, min_h, 0.96), np.clip(base - diff, min_h, 0.96)
 
 def sim_set(p1_h, p2_h):
     g1 = g2 = 0
     sacador = 1
     while True:
-        boost = 0.06 if abs(g1 - g2) >= 2 else 0
+        # Boost original de la v4.4 para no alterar los Over
+        boost = 0.02 if abs(g1 - g2) >= 2 else 0
         prob = (p1_h + boost) if sacador == 1 else (1 - p2_h - boost)
         if random.random() < prob: g1 += 1
         else: g2 += 1
@@ -63,7 +71,7 @@ def sim_set(p1_h, p2_h):
         sacador = 3 - sacador
 
 # =========================================================
-# INTERFAZ DE USUARIO
+# INTERFAZ (DISEÑO PRO DE 3 LÍNEAS)
 # =========================================================
 base_elos = cargar_base_elos()
 
@@ -77,7 +85,7 @@ with st.sidebar:
     n_sims = 10000
 
 if not jugadores:
-    st.error("⚠️ No se encontraron archivos de Excel en /datos/atp o /datos/wta")
+    st.error("⚠️ No se encontraron datos.")
 else:
     c1, c2 = st.columns(2)
     with c1: j1_n = st.selectbox("Jugador 1", jugadores)
@@ -85,8 +93,7 @@ else:
 
     if st.button("🚀 CALCULAR PREDICCIÓN", use_container_width=True):
         d1, d2 = base_elos[j1_n], base_elos[j2_n]
-        e1 = d1.get(superficie) or d1.get("General") or 1500
-        e2 = d2.get(superficie) or d2.get("General") or 1500
+        e1, e2 = d1.get(superficie, 1500), d2.get(superficie, 1500)
         h1, h2 = obtener_hold_rate(e1, e2, circuito, superficie)
         
         results = {"j1_win":0, "j1_set1":0, "j1_any":0, "j2_any":0, "games":[]}
@@ -105,10 +112,8 @@ else:
             if s2 >= 1: results["j2_any"] += 1
             results["games"].append(g_m)
 
-        # --- VISUALIZACIÓN EN 3 LÍNEAS ---
+        # --- VISUALIZACIÓN ---
         st.divider()
-        
-        # Línea 1: Victoria
         st.markdown("#### 🏆 Probabilidades de Victoria")
         v1, v2, v3 = st.columns(3)
         p1 = results["j1_win"]/n_sims
@@ -116,18 +121,16 @@ else:
         v2.metric(f"Ganador: {d2['Player']}", f"{(1-p1):.1%}")
         v3.metric("Favorito", d1['Player'] if p1 > 0.5 else d2['Player'])
 
-        # Línea 2: Over/Under
         st.markdown("#### 📊 Líneas de Juegos")
         o1, o2, o3 = st.columns(3)
         o1.metric("Over 18.5", f"{sum(g > 18.5 for g in results['games'])/n_sims:.1%}")
         o2.metric("Over 19.5", f"{sum(g > 19.5 for g in results['games'])/n_sims:.1%}")
         o3.metric("Promedio Total", f"{sum(results['games'])/n_sims:.1f} j.")
 
-        # Línea 3: Mercados de Sets
         st.markdown("#### 🎾 Mercados de Sets")
         s1, s2, s3 = st.columns(3)
         s1.metric("Gana 1er Set (P1)", f"{results['j1_set1']/n_sims:.1%}")
         s2.metric(f"{d1['Player']} gana +1 set", f"{results['j1_any']/n_sims:.1%}")
         s3.metric(f"{d2['Player']} gana +1 set", f"{results['j2_any']/n_sims:.1%}")
 
-        st.info(f"Análisis basado en Elo {superficie}. Saque estimado: {h1:.1%} vs {h2:.1%}")
+        st.info(f"Análisis v5.3 | ATP Engine Clásico Restaurado | Saque: {h1:.1%} vs {h2:.1%}")
