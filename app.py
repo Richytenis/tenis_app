@@ -5,93 +5,109 @@ import random
 import re
 import os
 import unicodedata
+import plotly.express as px
 
 # =========================================================
-# MOTOR v6.5 - COLUMNS SHIELD & UNICODE MATCH
+# MOTOR v7.0 - POINT-BY-POINT MONTE CARLO
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor v6.5", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor v7.0", page_icon="🎾", layout="wide")
 
 def limpieza_extrema(texto):
     if pd.isna(texto): return ""
-    # Normalizar Unicode (mata espacios raros \xa0)
     t = unicodedata.normalize('NFKD', str(texto)).encode('ascii', 'ignore').decode('ascii')
-    # Quitar países y dejar solo letras pegadas
     t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
-    return re.sub(r'[^A-Z]', '', t.upper())
+    return re.sub(r'[^A-Z0-9]', '', t.upper())
 
 @st.cache_data
 def cargar_todo():
     base_datos = {}
-    stats_reales = {}
+    stats_detalladas = {}
     
-    # 1. CARGAR STATS (atp_completa.xlsx)
+    # 1. CARGAR STATS DETALLADAS (atp_completa.xlsx)
     if os.path.exists('atp_completa.xlsx'):
         df_s = pd.read_excel('atp_completa.xlsx')
-        # Limpiar nombres de columnas (quitar espacios raros)
-        df_s.columns = [limpieza_extrema(c) for c in df_s.columns]
+        # No limpiamos nombres de columnas aquí para mapear exacto lo que vimos en el log
         for _, row in df_s.iterrows():
-            nid = limpieza_extrema(row.get('PLAYER'))
+            nombre_raw = str(row.get('Player', ''))
+            nid = limpieza_extrema(nombre_raw)
             try:
-                # Buscamos la columna HLD% (que tras limpieza será HLD)
-                val = str(row.get('HLD', '75')).replace('%', '')
-                stats_reales[nid] = float(val) / 100.0 if float(val) > 1 else float(val)
+                # Extraemos métricas del archivo
+                stats_detalladas[nid] = {
+                    "hld": float(str(row.get('Hld%', '75')).replace('%', '')) / 100,
+                    "first_in": float(str(row.get('1stIn', '62')).replace('%', '')) / 100,
+                    "first_w": float(str(row.get('1st%', '72')).replace('%', '')) / 100,
+                    "second_w": float(str(row.get('2nd%', '50')).replace('%', '')) / 100,
+                    "rank": row.get('Rk', 'N/A')
+                }
             except: pass
 
     # 2. CARGAR ELOS (atp_elo.xlsx)
     if os.path.exists('atp_elo.xlsx'):
-        df = pd.read_excel('atp_elo.xlsx')
-        # Limpiar nombres de columnas del ELO
-        # 'ATP RANK' se convertirá en 'ATPRANK', 'CELO' en 'CELO', etc.
-        df.columns = [limpieza_extrema(c) for c in df.columns]
+        df_elo = pd.read_excel('atp_elo.xlsx')
+        df_elo.columns = [limpieza_extrema(c) for c in df_elo.columns]
         
-        for _, row in df.iterrows():
+        for _, row in df_elo.iterrows():
             nombre_raw = str(row.get('PLAYER', 'Unknown')).replace('\xa0', ' ').strip()
             nid = limpieza_extrema(nombre_raw)
-            hld_final = stats_reales.get(nid, None)
             
-            # Extraer valores con los nuevos nombres de columna limpios
-            base_datos[f"{nombre_raw} (ATP)"] = {
+            # Unimos los datos de ambos archivos
+            s = stats_detalladas.get(nid, {})
+            
+            base_datos[f"{nombre_raw}"] = {
                 "Player": nombre_raw,
-                "Rank": row.get('ATPRANK') or row.get('RANK') or 'N/A',
+                "Rank": s.get("rank") or row.get('ATPRANK') or 'N/A',
                 "Hard": row.get('HELO') or row.get('ELO'),
                 "Clay": row.get('CELO') or row.get('ELO'),
                 "Grass": row.get('GELO') or row.get('ELO'),
                 "General": row.get('ELO'),
-                "Hold_Real": hld_final
+                "Stats": s
             }
     return base_datos
 
-def obtener_probabilidades(d1, d2, superficie):
-    # Mapeo de superficie a la clave del diccionario
-    key = "CLAY" if superficie == "Clay" else ("HELO" if superficie == "Hard" else "GELO")
-    e1 = d1.get(superficie) or d1.get("General") or 1500
-    e2 = d2.get(superficie) or d2.get("General") or 1500
+def sim_game(s_stats, r_elo_diff):
+    """Simula un juego punto a punto"""
+    p1_pts = 0
+    p2_pts = 0
+    # Ajuste leve por diferencia de Elo en el éxito del punto
+    adj = r_elo_diff / 5000 
     
-    prob_v1_elo = 1 / (1 + 10 ** ((e2 - e1) / 300)) # Divisor más agresivo para mayor realismo
-    
-    h1 = d1["Hold_Real"] if d1["Hold_Real"] else (0.76 + (e1 - 1600)/2000)
-    h2 = d2["Hold_Real"] if d2["Hold_Real"] else (0.76 + (e2 - 1600)/2000)
-    
-    if superficie == "Clay": h1 -= 0.06; h2 -= 0.06
-    
-    p1_p = 0.62 + (h1 - 0.76)
-    p2_p = 0.62 + (h2 - 0.76)
-    return np.clip(p1_p, 0.50, 0.80), np.clip(p2_p, 0.50, 0.80), prob_v1_elo
+    p_in = s_stats.get("first_in", 0.62)
+    p_w1 = np.clip(s_stats.get("first_w", 0.72) + adj, 0.4, 0.9)
+    p_w2 = np.clip(s_stats.get("second_w", 0.50) + adj, 0.3, 0.7)
 
-def sim_set(p1_p, p2_p):
-    g1 = g2 = 0; sacador = 1
     while True:
-        prob_game = p1_p + 0.18 if sacador == 1 else (1 - p2_p - 0.18)
-        if random.random() < prob_game: g1 += 1
-        else: g2 += 1
+        # Lógica de punto
+        if random.random() < p_in:
+            if random.random() < p_w1: p1_pts += 1
+            else: p2_pts += 1
+        else:
+            if random.random() < p_w2: p1_pts += 1
+            else: p2_pts += 1
+        
+        if p1_pts >= 4 and p1_pts - p2_pts >= 2: return 1
+        if p2_pts >= 4 and p2_pts - p1_pts >= 2: return 0
+
+def sim_set(d1, d2, elo_diff):
+    g1 = g2 = 0
+    sacador = 1 if random.random() > 0.5 else 2
+    while True:
+        if sacador == 1:
+            res = sim_game(d1["Stats"], elo_diff)
+            if res == 1: g1 += 1
+            else: g2 += 1
+        else:
+            res = sim_game(d2["Stats"], -elo_diff)
+            if res == 1: g2 += 1
+            else: g1 += 1
+        
+        sacador = 3 - sacador
         if (g1 >= 6 and g1-g2 >= 2) or g1 == 7: return g1, g2
         if (g2 >= 6 and g2-g1 >= 2) or g2 == 7: return g1, g2
-        sacador = 3 - sacador
 
 # --- INTERFAZ ---
 base_datos = cargar_todo()
 with st.sidebar:
-    st.header("🏆 IA Tennis v6.5")
+    st.header("🎾 Tennis IA v7.0")
     lista = sorted(list(base_datos.keys()))
     superficie = st.selectbox("Superficie", ["Clay", "Hard", "Grass"])
     nivel = st.radio("Formato", ["Tour (3 sets)", "Grand Slam (5 sets)"])
@@ -101,51 +117,53 @@ if lista:
     with c1: j1_n = st.selectbox("Jugador 1", lista)
     with c2: j2_n = st.selectbox("Jugador 2", lista, index=min(1, len(lista)-1))
 
-    if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
+    if st.button("🚀 INICIAR SIMULACIÓN PROFESIONAL", use_container_width=True):
         d1, d2 = base_datos[j1_n], base_datos[j2_n]
-        p1_p, p2_p, p_elo = obtener_probabilidades(d1, d2, superficie)
         
-        st.divider()
-        st.markdown("### 🔍 Data Verifier (Final Shield)")
-        v1, v2 = st.columns(2)
-        with v1:
-            h_lab = f"✅ {d1['Hold_Real']:.1%}" if d1['Hold_Real'] else "⚠️ Estimado"
-            rk_val = str(d1['Rank']).split('.')[0] if d1['Rank'] != 'N/A' else 'N/A'
-            st.metric(d1['Player'], f"Rank: {rk_val}")
-            st.caption(f"Hold%: {h_lab} | Elo {superficie}: {d1.get(superficie, 1500):.0f}")
-        with v2:
-            h_lab2 = f"✅ {d2['Hold_Real']:.1%}" if d2['Hold_Real'] else "⚠️ Estimado"
-            rk_val2 = str(d2['Rank']).split('.')[0] if d2['Rank'] != 'N/A' else 'N/A'
-            st.metric(d2['Player'], f"Rank: {rk_val2}")
-            st.caption(f"Hold%: {h_lab2} | Elo {superficie}: {d2.get(superficie, 1500):.0f}")
+        # Diferencia de Elo para el ajuste de puntos
+        e1 = d1.get(superficie) or d1.get("General") or 1500
+        e2 = d2.get(superficie) or d2.get("General") or 1500
+        elo_diff = e1 - e2
+        prob_elo = 1 / (1 + 10 ** ((e2 - e1) / 400))
 
-        # SIMULACIÓN
-        res = {"j1_w":0, "j1_s1":0, "j1_any":0, "j2_any":0, "gms":[]}
+        # SIMULACIÓN MONTE CARLO
+        iteraciones = 10000
+        res = {"j1_w":0, "j1_s1":0, "j1_any":0, "j2_any":0, "over18":0, "over19":0, "gms":[]}
         sets_target = 3 if "5 sets" in nivel else 2
-        for _ in range(10000):
+        
+        for _ in range(iteraciones):
             s1 = s2 = gt = 0
             while s1 < sets_target and s2 < sets_target:
-                g1, g2 = sim_set(p1_p, p2_p)
+                g1, g2 = sim_set(d1, d2, elo_diff)
                 gt += (g1 + g2)
                 if (s1+s2) == 0 and g1 > g2: res["j1_s1"] += 1
                 if g1 > g2: s1 += 1
                 else: s2 += 1
+            
             if s1 == sets_target: res["j1_w"] += 1
             if s1 >= 1: res["j1_any"] += 1
             if s2 >= 1: res["j2_any"] += 1
+            if gt > 18.5: res["over18"] += 1
+            if gt > 19.5: res["over19"] += 1
             res["gms"].append(gt)
 
-        # RESULTADOS
+        # MOSTRAR RESULTADOS
         st.divider()
-        st.markdown("#### 🏆 Victoria")
-        m1, m2, m3 = st.columns(3)
-        p_final = (res["j1_w"]/10000 * 0.3) + (p_elo * 0.7)
-        m1.metric("Win P1", f"{p_final:.1%}")
-        m2.metric("Win P2", f"{(1-p_final):.1%}")
-        m3.metric("Favorito", d1['Player'] if p_final > 0.5 else d2['Player'])
+        p_final = (res["j1_w"]/iteraciones * 0.4) + (prob_elo * 0.6)
+        
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Win P1 (Final)", f"{p_final:.1%}")
+        m2.metric("1er Set P1", f"{res['j1_s1']/iteraciones:.1%}")
+        m3.metric("Gana +1 Set P1", f"{res['j1_any']/iteraciones:.1%}")
+        m4.metric("Gana +1 Set P2", f"{res['j2_any']/iteraciones:.1%}")
 
-        st.markdown("#### 📊 Mercados de Probabilidad")
-        l1, l2, l3 = st.columns(3)
-        l1.metric("Over 21.5", f"{sum(g > 21.5 for g in res['gms'])/10000:.1%}")
-        l2.metric("P1 gana 2-0 / 3-0", f"{res['j1_w']/10000:.1%}")
-        l3.metric("P2 gana +1 set", f"{res['j2_any']/10000:.1%}")
+        st.markdown("#### 📊 Mercados de Games (Over/Under)")
+        o1, o2, o3 = st.columns(3)
+        o1.metric("Over 18.5", f"{res['over18']/iteraciones:.1%}")
+        o2.metric("Over 19.5", f"{res['over19']/iteraciones:.1%}")
+        o3.metric("Promedio Games", f"{np.mean(res['gms']):.1f}")
+
+        # Gráfico de distribución
+        fig = px.histogram(res["gms"], nbins=20, title="Distribución de Games Totales", 
+                           labels={'value':'Games'}, color_discrete_sequence=['#3498db'])
+        st.plotly_chart(fig, use_container_width=True)
