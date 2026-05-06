@@ -8,7 +8,7 @@ import os
 # =========================================================
 # CONFIGURACIÓN DE PÁGINA
 # =========================================================
-st.set_page_config(page_title="Tennis IA Predictor Ultra v4.2", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA Predictor Ultra v4.3", page_icon="🎾", layout="wide")
 
 def normalizar(n):
     if pd.isna(n): return ""
@@ -19,7 +19,7 @@ def normalizar(n):
 @st.cache_data
 def cargar_base_elos():
     elos = {}
-    # Rutas de archivos
+    # Rutas de archivos (ajusta según tus carpetas)
     archivos = {"ATP": "datos/atp/atp_elo.xlsx", "WTA": "datos/wta/wta_elo.xlsx"}
     errores = []
     for circuito, ruta in archivos.items():
@@ -41,10 +41,10 @@ def cargar_base_elos():
     return elos, errores
 
 # =========================================================
-# MOTOR DE CÁLCULO MAESTRO (DINÁMICO)
+# MOTOR DE CÁLCULO MAESTRO (VERSION 4.3 - FINAL)
 # =========================================================
 def obtener_hold_rate(e1, e2, circuito_ui, superficie, nivel_torneo):
-    # --- LÓGICA ATP (TU ESTRUCTURA ORIGINAL INTACTA) ---
+    # --- LÓGICA ATP (TU ESTRUCTURA ORIGINAL - INTACTA) ---
     if circuito_ui == "ATP":
         base = 0.81
         if superficie == "Clay": base -= 0.08
@@ -60,27 +60,30 @@ def obtener_hold_rate(e1, e2, circuito_ui, superficie, nivel_torneo):
             divisor = 850
         min_h = 0.25
 
-    # --- LÓGICA WTA (SUAVIZADA PARA MAYOR REALISMO) ---
+    # --- LÓGICA WTA (EQUILIBRADA PARA EVITAR EL EFECTO 99%) ---
     elif circuito_ui == "WTA":
-        base = 0.71 
+        base = 0.72 # Subimos base para estabilidad
         if superficie == "Clay": base -= 0.05
-        # Divisor amplio para que diferencias de 150 pts no den 99%
-        divisor = 1800 
-        min_h = 0.42 
+        # Divisor amplio para que 100 puntos no sean una paliza teórica
+        divisor = 2000 
+        min_h = 0.45 
 
-    # --- LÓGICA CHALLENGER (CORRECCIÓN DINÁMICA DE SENSIBILIDAD) ---
+    # --- LÓGICA CHALLENGER (AJUSTE FINAL BARRENA/HOLMGREN) ---
     else: 
-        # Subimos la base para evitar promedios de juegos inflados
-        base = 0.80 
+        # Subimos base de saque significativamente (0.82)
+        # Esto reduce el promedio de juegos inflado (evita tantos 3 sets)
+        base = 0.82 
         if superficie == "Clay": base -= 0.05
         
-        # DIVISOR DINÁMICO: Evita que 38 puntos en nivel 1400 parezcan una paliza
+        # DIVISOR ULTRA-DINÁMICO: 
+        # A Elos bajos (rango 1400), la diferencia de puntos es menos significativa
         avg_elo = (e1 + e2) / 2
-        # Si los jugadores son de nivel bajo (CH/ITF), el divisor debe ser mayor 
-        # para que la probabilidad sea más cercana al 50/50
-        divisor = 2500 if avg_elo < 1600 else 1800
+        if avg_elo < 1550:
+            divisor = 3200 # Escala conservadora para niveles Challenger bajos
+        else:
+            divisor = 2000
         
-        min_h = 0.50 # Saque más estable para permitir resultados de 2 sets rápidos
+        min_h = 0.55 # Suelo de saque robusto
 
     diff = (e1 - e2) / divisor
     p1_hold = np.clip(base + diff, min_h, 0.96)
@@ -101,17 +104,17 @@ def sim_set(p1_h, p2_h):
 # =========================================================
 # INTERFAZ STREAMLIT
 # =========================================================
-st.title("🎾 Tennis IA Predictor Ultra v4.2")
+st.title("🎾 Tennis IA Predictor Ultra v4.3")
 
 base_elos, logs = cargar_base_elos()
 
 with st.sidebar:
     st.header("⚙️ Ajustes de Análisis")
     
-    # Selector de Circuito
+    # 1. Selector de Circuito (Separa la lógica de cálculo)
     circuito_seleccionado = st.selectbox("Elija Circuito", ["ATP", "WTA", "CHALLENGER"])
     
-    # Filtrado inteligente
+    # Filtrado: Challenger usa la base de ATP
     tag_busqueda = "WTA" if circuito_seleccionado == "WTA" else "ATP"
     jugadores_filtrados = [k for k, v in base_elos.items() if v["Circuito"] == tag_busqueda]
     
@@ -151,7 +154,7 @@ else:
             if s1 == sets_n: j1_wins += 1
             juegos.append(m_g)
             
-        # RESULTADOS
+        # UI DE RESULTADOS
         st.divider()
         res1, res2, res3 = st.columns(3)
         
@@ -162,4 +165,4 @@ else:
         p_over = sum(g > linea_ou for g in juegos) / n_sims
         res3.metric(f"Over {linea_ou}", f"{p_over:.1%}")
         
-        st.info(f"**Análisis de Datos:** Elo {surf_key}: {e1:.0f} vs {e2:.0f} | Promedio Juegos: {sum(juegos)/n_sims:.1f} | Saque: {h1:.1%} / {h2:.1%}")
+        st.info(f"**Análisis:** Elo {surf_key}: {e1:.0f} vs {e2:.0f} | Promedio Juegos: {sum(juegos)/n_sims:.1f} | Saque: {h1:.1%} / {h2:.1%}")
