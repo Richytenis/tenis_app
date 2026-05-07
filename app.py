@@ -8,12 +8,12 @@ import unicodedata
 from difflib import SequenceMatcher
 
 # =========================================================
-# TENNIS IA v11.1
-# ROBUST NAME MATCHING + CACHE FIX
+# TENNIS IA v11.2
+# ATP/WTA PATH FIX + BIG SERVER ENGINE
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v11.1",
+    page_title="Tennis IA v11.2",
     page_icon="🎾",
     layout="wide"
 )
@@ -213,18 +213,42 @@ def buscar_stats(nombre_elo, stats_map):
 
 
 # =========================================================
+# RUTAS
+# =========================================================
+
+def rutas_archivos(circuito):
+    circuito = circuito.lower()
+
+    if circuito == "atp":
+        return {
+            "stats": "datos/atp/atp_completa.xlsx",
+            "elo": "datos/atp/atp_elo.xlsx"
+        }
+
+    return {
+        "stats": "datos/wta/wta_completa.xlsx",
+        "elo": "datos/wta/wta_elo.xlsx"
+    }
+
+
+# =========================================================
 # CARGA DATOS
 # =========================================================
 
 @st.cache_data
-def cargar_datos():
+def cargar_datos(circuito):
+
+    rutas = rutas_archivos(circuito)
+
+    stats_path = rutas["stats"]
+    elo_path = rutas["elo"]
 
     stats_map = {}
     players = {}
 
-    if os.path.exists("atp_completa.xlsx"):
+    if os.path.exists(stats_path):
 
-        df_stats = pd.read_excel("atp_completa.xlsx")
+        df_stats = pd.read_excel(stats_path)
 
         col_player = buscar_columna(df_stats, ["Player", "Jugador", "Name"])
         col_hold = buscar_columna(df_stats, ["Hld%", "Hold%", "Hold"])
@@ -261,12 +285,12 @@ def cargar_datos():
                     "serve_profile": perfil_saque(ace)
                 }
 
-    if os.path.exists("atp_elo.xlsx"):
+    if os.path.exists(elo_path):
 
-        df_elo = pd.read_excel("atp_elo.xlsx")
+        df_elo = pd.read_excel(elo_path)
 
         col_player = buscar_columna(df_elo, ["Player", "Jugador", "Name"])
-        col_rank = buscar_columna(df_elo, ["ATP Rank", "ATPRank", "Rank"])
+        col_rank = buscar_columna(df_elo, ["ATP Rank", "WTA Rank", "ATPRank", "WTARank", "Rank"])
         col_elo = buscar_columna(df_elo, ["Elo"])
         col_helo = buscar_columna(df_elo, ["hElo", "HElo", "Hard Elo"])
         col_celo = buscar_columna(df_elo, ["cElo", "CElo", "Clay Elo"])
@@ -302,24 +326,31 @@ def cargar_datos():
                     "Stats": stats
                 }
 
-    return players
+    return players, stats_path, elo_path
 
 
 # =========================================================
 # HOLD CALIBRADO
 # =========================================================
 
-def calc_hold(stats, elo_diff, surface):
+def calc_hold(stats, elo_diff, surface, circuito):
 
     base_hold = stats.get("hold", 0.78)
     ace = stats.get("ace", 0.05)
     profile = stats.get("serve_profile", "normal")
 
-    surface_adj = {
-        "Hard": -0.010,
-        "Clay": -0.102,
-        "Grass": +0.015
-    }
+    if circuito == "ATP":
+        surface_adj = {
+            "Hard": -0.010,
+            "Clay": -0.102,
+            "Grass": +0.015
+        }
+    else:
+        surface_adj = {
+            "Hard": -0.015,
+            "Clay": -0.085,
+            "Grass": +0.010
+        }
 
     elo_adj = np.clip(
         elo_diff / 3900,
@@ -394,10 +425,7 @@ def sim_set(hold1, hold2, surface, match_shift, p1_big, p2_big):
         late_pressure = -0.018
         set_flow_scale = 0.014
 
-    set_shift = np.random.normal(
-        match_shift,
-        set_flow_scale
-    )
+    set_shift = np.random.normal(match_shift, set_flow_scale)
 
     while True:
 
@@ -453,7 +481,6 @@ def sim_set(hold1, hold2, surface, match_shift, p1_big, p2_big):
                 p_tb += 0.05
 
             p_tb += set_shift
-
             p_tb = np.clip(p_tb, 0.30, 0.70)
 
             if random.random() < p_tb:
@@ -466,7 +493,7 @@ def sim_set(hold1, hold2, surface, match_shift, p1_big, p2_big):
 # SIMULAR PARTIDO
 # =========================================================
 
-def sim_match(d1, d2, surface, best_of=3, n=10000):
+def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
 
     e1 = d1[surface]
     e2 = d2[surface]
@@ -476,8 +503,8 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
     stats1 = d1["Stats"]
     stats2 = d2["Stats"]
 
-    hold1 = calc_hold(stats1, elo_diff, surface)
-    hold2 = calc_hold(stats2, -elo_diff, surface)
+    hold1 = calc_hold(stats1, elo_diff, surface, circuito)
+    hold2 = calc_hold(stats2, -elo_diff, surface, circuito)
 
     p1_profile = stats1.get("serve_profile", "normal")
     p2_profile = stats2.get("serve_profile", "normal")
@@ -599,22 +626,32 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
 
 with st.sidebar:
 
-    st.header("🎾 Tennis IA v11.1")
-    st.caption("Robust Matching + Big Server Engine")
+    st.header("🎾 Tennis IA v11.2")
+    st.caption("ATP/WTA + rutas datos/")
 
     if st.button("🧹 Limpiar caché y recargar datos"):
         st.cache_data.clear()
-        st.success("Caché limpiada. Pulsa de nuevo Analizar.")
+        st.success("Caché limpiada. Vuelve a analizar.")
 
-db = cargar_datos()
+    circuito = st.radio(
+        "Circuito",
+        ["ATP", "WTA"]
+    )
+
+db, stats_path, elo_path = cargar_datos(circuito)
 
 if not db:
     st.error(
-        "No se encontraron archivos ATP. Coloca atp_elo.xlsx y atp_completa.xlsx en la misma carpeta que este script."
+        f"No se encontraron datos para {circuito}. Revisa estas rutas:\n\n"
+        f"{stats_path}\n\n"
+        f"{elo_path}"
     )
     st.stop()
 
 with st.sidebar:
+
+    st.caption(f"Stats: {stats_path}")
+    st.caption(f"Elo: {elo_path}")
 
     players = sorted(db.keys())
 
@@ -626,7 +663,7 @@ with st.sidebar:
     format_match = st.radio(
         "Formato",
         [
-            "ATP Tour (3 sets)",
+            "Tour (3 sets)",
             "Grand Slam (5 sets)"
         ]
     )
@@ -667,6 +704,7 @@ if st.button(
             d1,
             d2,
             surface,
+            circuito,
             best_of,
             sims
         )
@@ -748,25 +786,21 @@ if st.button(
     cc1, cc2 = st.columns(2)
 
     with cc1:
-
         st.metric(
             d1["Player"],
             f"{p1:.1%}",
             f"{nivel_prob(p1)}"
         )
-
         st.caption(
             f"Rank #{d1['Rank']} · Elo {surface}: {d1[surface]:.0f}"
         )
 
     with cc2:
-
         st.metric(
             d2["Player"],
             f"{p2:.1%}",
             f"{nivel_prob(p2)}"
         )
-
         st.caption(
             f"Rank #{d2['Rank']} · Elo {surface}: {d2[surface]:.0f}"
         )
@@ -899,14 +933,8 @@ if st.button(
     dcol1, dcol2 = st.columns(2)
 
     with dcol1:
-
         st.markdown(f"**{d1['Player']}**")
-
-        st.write(
-            "Stats encontradas:",
-            "✅ Sí" if d1["Stats"].get("found_stats", False) else "❌ No"
-        )
-
+        st.write("Stats encontradas:", "✅ Sí" if d1["Stats"].get("found_stats", False) else "❌ No")
         st.write("Tipo cruce:", d1["Stats"].get("match_type", "N/A"))
         st.write("Score cruce:", f"{d1['Stats'].get('match_score', 0):.2f}")
         st.write("Nombre stats:", d1["Stats"].get("raw_name_stats", "N/A"))
@@ -915,14 +943,8 @@ if st.button(
         st.write("CleanID:", d1.get("CleanID", ""))
 
     with dcol2:
-
         st.markdown(f"**{d2['Player']}**")
-
-        st.write(
-            "Stats encontradas:",
-            "✅ Sí" if d2["Stats"].get("found_stats", False) else "❌ No"
-        )
-
+        st.write("Stats encontradas:", "✅ Sí" if d2["Stats"].get("found_stats", False) else "❌ No")
         st.write("Tipo cruce:", d2["Stats"].get("match_type", "N/A"))
         st.write("Score cruce:", f"{d2['Stats'].get('match_score', 0):.2f}")
         st.write("Nombre stats:", d2["Stats"].get("raw_name_stats", "N/A"))
@@ -950,5 +972,5 @@ if st.button(
     st.divider()
 
     st.caption(
-        f"Tennis IA v11.1 · Robust Matching + Big Server Engine · {sims:,} simulaciones Monte Carlo"
+        f"Tennis IA v11.2 · ATP/WTA rutas datos/ · Big Server Engine · {sims:,} simulaciones Monte Carlo"
     )
