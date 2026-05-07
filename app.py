@@ -7,12 +7,12 @@ import os
 import unicodedata
 
 # =========================================================
-# TENNIS IA v10.5
-# ATP REALISTIC ENGINE - MARKET VIEW
+# TENNIS IA v10.6
+# ATP REALISTIC ENGINE - PRO MARKET VIEW
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v10.5",
+    page_title="Tennis IA v10.6",
     page_icon="🎾",
     layout="wide"
 )
@@ -24,11 +24,9 @@ st.set_page_config(
 def limpiar(txt):
     if pd.isna(txt):
         return ""
-
     t = unicodedata.normalize("NFKD", str(txt))
     t = t.encode("ascii", "ignore").decode("ascii")
     t = re.sub(r"\[.*?\]|\(.*?\)", "", t)
-
     return re.sub(r"[^A-Z0-9]", "", t.upper())
 
 
@@ -45,6 +43,21 @@ def nivel_prob(p):
         return "⚖️ Ajustada"
     else:
         return "⚠️ Baja"
+
+
+def cuota_justa(p):
+    if p <= 0:
+        return "-"
+    return f"{1 / p:.2f}"
+
+
+def riesgo_partido(set3, std_games, p_fav):
+    if set3 > 0.48 or std_games > 6.2 or p_fav < 0.55:
+        return "🔴 Riesgo alto"
+    elif set3 > 0.40 or std_games > 5.4 or p_fav < 0.62:
+        return "🟡 Riesgo medio"
+    else:
+        return "🟢 Riesgo bajo"
 
 
 # =========================================================
@@ -142,22 +155,22 @@ def calc_hold(stats, elo_diff, surface):
 
     surface_adj = {
         "Hard": -0.010,
-        "Clay": -0.085,
+        "Clay": -0.088,
         "Grass": +0.010
     }
 
     elo_adj = np.clip(
-        elo_diff / 3600,
-        -0.045,
-        0.045
+        elo_diff / 3700,
+        -0.043,
+        0.043
     )
 
-    ace_bonus = stats.get("ace", 0.05) * 0.018
+    ace_bonus = stats.get("ace", 0.05) * 0.016
 
     first_bonus = (
-        stats.get("1in", 0.62) * 0.004 +
-        stats.get("1w", 0.70) * 0.007 +
-        stats.get("2w", 0.50) * 0.004
+        stats.get("1in", 0.62) * 0.003 +
+        stats.get("1w", 0.70) * 0.006 +
+        stats.get("2w", 0.50) * 0.003
     )
 
     hold = (
@@ -168,7 +181,7 @@ def calc_hold(stats, elo_diff, surface):
         + first_bonus
     )
 
-    return np.clip(hold, 0.50, 0.87)
+    return np.clip(hold, 0.49, 0.87)
 
 
 # =========================================================
@@ -179,13 +192,13 @@ def sim_set(hold1, hold2, surface, match_shift):
 
     g1 = 0
     g2 = 0
-
     server = random.choice([1, 2])
+    had_tiebreak = False
 
     if surface == "Clay":
-        noise_scale = 0.062
-        late_pressure = -0.065
-        set_flow_scale = 0.034
+        noise_scale = 0.064
+        late_pressure = -0.070
+        set_flow_scale = 0.037
     elif surface == "Hard":
         noise_scale = 0.038
         late_pressure = -0.030
@@ -206,13 +219,13 @@ def sim_set(hold1, hold2, surface, match_shift):
 
         current_hold1 = np.clip(
             np.random.normal(hold1 + set_shift, noise_scale) + pressure,
-            0.35,
+            0.34,
             0.92
         )
 
         current_hold2 = np.clip(
             np.random.normal(hold2 - set_shift, noise_scale) + pressure,
-            0.35,
+            0.34,
             0.92
         )
 
@@ -230,24 +243,26 @@ def sim_set(hold1, hold2, surface, match_shift):
         server = 1 if server == 2 else 2
 
         if g1 >= 6 and g1 - g2 >= 2:
-            return g1, g2
+            return g1, g2, had_tiebreak
 
         if g2 >= 6 and g2 - g1 >= 2:
-            return g1, g2
+            return g1, g2, had_tiebreak
 
         if g1 == 6 and g2 == 6:
 
+            had_tiebreak = True
+
             if surface == "Clay":
-                p_tb = 0.45 + ((hold1 - hold2) * 1.0) + set_shift
+                p_tb = 0.45 + ((hold1 - hold2) * 0.95) + set_shift
             else:
                 p_tb = hold1 / (hold1 + hold2) + set_shift
 
             p_tb = np.clip(p_tb, 0.30, 0.70)
 
             if random.random() < p_tb:
-                return 7, 6
+                return 7, 6, had_tiebreak
             else:
-                return 6, 7
+                return 6, 7, had_tiebreak
 
 
 # =========================================================
@@ -273,20 +288,26 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
         "p1_first_set": 0,
         "p2_first_set": 0,
 
+        "first_set_over_9_5": 0,
+
         "p1_2_0": 0,
         "p2_2_0": 0,
 
         "p1_any_set": 0,
         "p2_any_set": 0,
 
+        "both_win_set": 0,
+
         "set3": 0,
         "set5": 0,
+
+        "tiebreak_match": 0,
 
         "games": []
     }
 
     if surface == "Clay":
-        match_flow_scale = 0.050
+        match_flow_scale = 0.054
     elif surface == "Hard":
         match_flow_scale = 0.030
     else:
@@ -298,35 +319,41 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
         s2 = 0
         total_games = 0
         sets_played = 0
+        first_set_done = False
+        tiebreak_seen = False
 
         match_shift = np.random.normal(0, match_flow_scale)
 
-        first_set_done = False
-
         while s1 < sets_to_win and s2 < sets_to_win:
 
-            g1, g2 = sim_set(
+            g1, g2, tb = sim_set(
                 hold1,
                 hold2,
                 surface,
                 match_shift
             )
 
-            total_games += g1 + g2
+            if tb:
+                tiebreak_seen = True
+
+            set_games = g1 + g2
+            total_games += set_games
+
+            if not first_set_done:
+                if set_games > 9.5:
+                    results["first_set_over_9_5"] += 1
+
+                if g1 > g2:
+                    results["p1_first_set"] += 1
+                else:
+                    results["p2_first_set"] += 1
+
+                first_set_done = True
 
             if g1 > g2:
                 s1 += 1
-
-                if not first_set_done:
-                    results["p1_first_set"] += 1
-                    first_set_done = True
-
             else:
                 s2 += 1
-
-                if not first_set_done:
-                    results["p2_first_set"] += 1
-                    first_set_done = True
 
             sets_played += 1
 
@@ -341,6 +368,9 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
         if s2 >= 1:
             results["p2_any_set"] += 1
 
+        if s1 >= 1 and s2 >= 1:
+            results["both_win_set"] += 1
+
         if best_of == 3:
             if s1 == 2 and s2 == 0:
                 results["p1_2_0"] += 1
@@ -352,6 +382,9 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
 
         if sets_played >= 5:
             results["set5"] += 1
+
+        if tiebreak_seen:
+            results["tiebreak_match"] += 1
 
         results["games"].append(total_games)
 
@@ -370,9 +403,8 @@ if not db:
 
 with st.sidebar:
 
-    st.header("🎾 Tennis IA v10.5")
-
-    st.caption("Motor ATP realista · Vista mercados")
+    st.header("🎾 Tennis IA v10.6")
+    st.caption("Motor ATP realista · Vista mercados PRO")
 
     players = sorted(db.keys())
 
@@ -396,10 +428,6 @@ with st.sidebar:
     )
 
 
-# =========================================================
-# SELECCIÓN JUGADORES
-# =========================================================
-
 c1, c2 = st.columns(2)
 
 with c1:
@@ -415,10 +443,6 @@ with c2:
         index=min(1, len(players) - 1)
     )
 
-
-# =========================================================
-# ANALIZAR
-# =========================================================
 
 if st.button(
     "🚀 ANALIZAR PARTIDO",
@@ -458,14 +482,10 @@ if st.button(
     over_21 = sum(x > 21.5 for x in games) / sims
     over_22 = sum(x > 22.5 for x in games) / sims
 
-    under_18 = 1 - over_18
-    under_19 = 1 - over_19
-    under_20 = 1 - over_20
-    under_21 = 1 - over_21
-    under_22 = 1 - over_22
-
     p1_first = res["p1_first_set"] / sims
     p2_first = res["p2_first_set"] / sims
+
+    first_over_95 = res["first_set_over_9_5"] / sims
 
     p1_2_0 = res["p1_2_0"] / sims
     p2_2_0 = res["p2_2_0"] / sims
@@ -473,7 +493,14 @@ if st.button(
     p1_any = res["p1_any_set"] / sims
     p2_any = res["p2_any_set"] / sims
 
+    both_win_set = res["both_win_set"] / sims
     set3 = res["set3"] / sims
+    tb_match = res["tiebreak_match"] / sims
+
+    fav_name = d1["Player"] if p1 > p2 else d2["Player"]
+    fav_prob = max(p1, p2)
+
+    risk = riesgo_partido(set3, std_games, fav_prob)
 
     st.divider()
 
@@ -485,38 +512,47 @@ if st.button(
         st.metric(
             d1["Player"],
             f"{p1:.1%}",
-            f"{nivel_prob(p1)} · Rank #{d1['Rank']} · Elo {surface}: {d1[surface]:.0f}"
+            f"{nivel_prob(p1)} · Cuota justa {cuota_justa(p1)}"
         )
+        st.caption(f"Rank #{d1['Rank']} · Elo {surface}: {d1[surface]:.0f}")
 
     with cc2:
         st.metric(
             d2["Player"],
             f"{p2:.1%}",
-            f"{nivel_prob(p2)} · Rank #{d2['Rank']} · Elo {surface}: {d2[surface]:.0f}"
+            f"{nivel_prob(p2)} · Cuota justa {cuota_justa(p2)}"
         )
+        st.caption(f"Rank #{d2['Rank']} · Elo {surface}: {d2[surface]:.0f}")
 
     st.caption(
-        f"Referencia Elo puro: {elo_p1:.1%} / {elo_p2:.1%}"
+        f"Referencia Elo puro: {elo_p1:.1%} / {elo_p2:.1%} · {risk}"
     )
 
     st.divider()
 
     st.subheader("🎾 Ganador del 1er Set")
 
-    fs1, fs2 = st.columns(2)
+    fs1, fs2, fs3 = st.columns(3)
 
     with fs1:
         st.metric(
             f"{d1['Player']} gana 1er set",
             f"{p1_first:.1%}",
-            nivel_prob(p1_first)
+            f"{nivel_prob(p1_first)} · CJ {cuota_justa(p1_first)}"
         )
 
     with fs2:
         st.metric(
             f"{d2['Player']} gana 1er set",
             f"{p2_first:.1%}",
-            nivel_prob(p2_first)
+            f"{nivel_prob(p2_first)} · CJ {cuota_justa(p2_first)}"
+        )
+
+    with fs3:
+        st.metric(
+            "Over 9.5 games 1er set",
+            f"{first_over_95:.1%}",
+            f"{nivel_prob(first_over_95)} · CJ {cuota_justa(first_over_95)}"
         )
 
     st.divider()
@@ -529,35 +565,52 @@ if st.button(
         st.metric(
             f"{d1['Player']} gana 2-0",
             f"{p1_2_0:.1%}",
-            nivel_prob(p1_2_0)
+            f"{nivel_prob(p1_2_0)} · CJ {cuota_justa(p1_2_0)}"
         )
 
     with s2:
         st.metric(
             f"{d2['Player']} gana 2-0",
             f"{p2_2_0:.1%}",
-            nivel_prob(p2_2_0)
+            f"{nivel_prob(p2_2_0)} · CJ {cuota_justa(p2_2_0)}"
         )
 
     with s3:
         st.metric(
-            f"{d1['Player']} +1.5 sets",
+            f"{d1['Player']} gana al menos 1 set",
             f"{p1_any:.1%}",
-            nivel_prob(p1_any)
+            f"{nivel_prob(p1_any)} · CJ {cuota_justa(p1_any)}"
         )
 
     with s4:
         st.metric(
-            f"{d2['Player']} +1.5 sets",
+            f"{d2['Player']} gana al menos 1 set",
             f"{p2_any:.1%}",
-            nivel_prob(p2_any)
+            f"{nivel_prob(p2_any)} · CJ {cuota_justa(p2_any)}"
         )
 
-    st.metric(
-        "Partido a 3 sets",
-        f"{set3:.1%}",
-        nivel_prob(set3)
-    )
+    s5, s6, s7 = st.columns(3)
+
+    with s5:
+        st.metric(
+            "Ambos ganan set",
+            f"{both_win_set:.1%}",
+            f"{nivel_prob(both_win_set)} · CJ {cuota_justa(both_win_set)}"
+        )
+
+    with s6:
+        st.metric(
+            "Partido a 3 sets",
+            f"{set3:.1%}",
+            f"{nivel_prob(set3)} · CJ {cuota_justa(set3)}"
+        )
+
+    with s7:
+        st.metric(
+            "Tie-break en el partido",
+            f"{tb_match:.1%}",
+            f"{nivel_prob(tb_match)} · CJ {cuota_justa(tb_match)}"
+        )
 
     st.divider()
 
@@ -570,20 +623,20 @@ if st.button(
         st.caption(f"Mediana: {med_games:.0f} · σ: {std_games:.1f}")
 
     with g2:
-        st.metric("Over 18.5", f"{over_18:.1%}", nivel_prob(over_18))
-        st.metric("Under 18.5", f"{under_18:.1%}", nivel_prob(under_18))
+        st.metric("Over 18.5", f"{over_18:.1%}", f"{nivel_prob(over_18)} · CJ {cuota_justa(over_18)}")
+        st.metric("Under 18.5", f"{1-over_18:.1%}", f"{nivel_prob(1-over_18)} · CJ {cuota_justa(1-over_18)}")
 
     with g3:
-        st.metric("Over 19.5", f"{over_19:.1%}", nivel_prob(over_19))
-        st.metric("Under 19.5", f"{under_19:.1%}", nivel_prob(under_19))
+        st.metric("Over 19.5", f"{over_19:.1%}", f"{nivel_prob(over_19)} · CJ {cuota_justa(over_19)}")
+        st.metric("Under 19.5", f"{1-over_19:.1%}", f"{nivel_prob(1-over_19)} · CJ {cuota_justa(1-over_19)}")
 
     with g4:
-        st.metric("Over 20.5", f"{over_20:.1%}", nivel_prob(over_20))
-        st.metric("Under 20.5", f"{under_20:.1%}", nivel_prob(under_20))
+        st.metric("Over 20.5", f"{over_20:.1%}", f"{nivel_prob(over_20)} · CJ {cuota_justa(over_20)}")
+        st.metric("Under 20.5", f"{1-over_20:.1%}", f"{nivel_prob(1-over_20)} · CJ {cuota_justa(1-over_20)}")
 
     with g5:
-        st.metric("Over 21.5", f"{over_21:.1%}", nivel_prob(over_21))
-        st.metric("Under 21.5", f"{under_21:.1%}", nivel_prob(under_21))
+        st.metric("Over 21.5", f"{over_21:.1%}", f"{nivel_prob(over_21)} · CJ {cuota_justa(over_21)}")
+        st.metric("Under 21.5", f"{1-over_21:.1%}", f"{nivel_prob(1-over_21)} · CJ {cuota_justa(1-over_21)}")
 
     st.divider()
 
@@ -607,9 +660,6 @@ if st.button(
 
     st.subheader("🧠 Lectura rápida")
 
-    favorito = d1["Player"] if p1 > p2 else d2["Player"]
-    prob_fav = max(p1, p2)
-
     mejor_1set = d1["Player"] if p1_first > p2_first else d2["Player"]
     prob_1set = max(p1_first, p2_first)
 
@@ -620,15 +670,24 @@ if st.button(
     else:
         lectura_games = "partido de duración media"
 
+    if tb_match < 0.22:
+        lectura_tb = "tie-break poco probable"
+    elif tb_match > 0.35:
+        lectura_tb = "riesgo alto de tie-break"
+    else:
+        lectura_tb = "tie-break posible pero no dominante"
+
     st.info(
-        f"Favorito: **{favorito} ({prob_fav:.1%})** · "
+        f"Favorito: **{fav_name} ({fav_prob:.1%})** · "
         f"Mejor 1er set: **{mejor_1set} ({prob_1set:.1%})** · "
-        f"Lectura games: **{lectura_games}** · "
-        f"Probabilidad de 3 sets: **{set3:.1%}**"
+        f"Games: **{lectura_games}** · "
+        f"3 sets: **{set3:.1%}** · "
+        f"{lectura_tb} · "
+        f"{risk}"
     )
 
     st.divider()
 
     st.caption(
-        f"Tennis IA v10.5 · Elo superficie + Hold dinámico · Vista mercados · {sims:,} simulaciones Monte Carlo"
+        f"Tennis IA v10.6 · Elo superficie + Hold dinámico · Mercados PRO · {sims:,} simulaciones Monte Carlo"
     )
