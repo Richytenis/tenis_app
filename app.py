@@ -1,8 +1,3 @@
-# =========================================================
-# TENNIS IA v10.8
-# BIG SERVER ENGINE + MATCH PROFILE
-# =========================================================
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -12,11 +7,12 @@ import os
 import unicodedata
 
 # =========================================================
-# CONFIG
+# TENNIS IA v10.9
+# BIG SERVER ENGINE + DATA DIAGNOSTIC
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v10.8",
+    page_title="Tennis IA v10.9",
     page_icon="🎾",
     layout="wide"
 )
@@ -26,7 +22,6 @@ st.set_page_config(
 # =========================================================
 
 def limpiar(txt):
-
     if pd.isna(txt):
         return ""
 
@@ -38,54 +33,89 @@ def limpiar(txt):
 
 
 def elo_prob(e1, e2):
-
     return 1 / (1 + 10 ** ((e2 - e1) / 400))
 
 
 def nivel_prob(p):
-
     if p >= 0.70:
         return "🔥 Alta"
-
     elif p >= 0.58:
         return "✅ Media-alta"
-
     elif p >= 0.52:
         return "⚖️ Ajustada"
-
     else:
         return "⚠️ Baja"
 
 
 def riesgo_partido(set3, std_games, p_fav):
-
     if set3 > 0.48 or std_games > 6.2 or p_fav < 0.55:
         return "🔴 Riesgo alto"
-
     elif set3 > 0.40 or std_games > 5.4 or p_fav < 0.62:
         return "🟡 Riesgo medio"
-
     else:
         return "🟢 Riesgo bajo"
 
 
-# =========================================================
-# PERFIL SACADOR
-# =========================================================
-
 def perfil_saque(ace):
-
     if ace >= 0.16:
         return "elite_server"
-
     elif ace >= 0.12:
         return "big_server"
-
     elif ace >= 0.08:
         return "good_server"
-
     else:
         return "normal"
+
+
+def perfil_legible(profile):
+    mapa = {
+        "elite_server": "🚀 Elite server",
+        "big_server": "🔥 Big server",
+        "good_server": "✅ Buen sacador",
+        "normal": "Normal"
+    }
+    return mapa.get(profile, "Normal")
+
+
+# =========================================================
+# LECTURA SEGURA DE PORCENTAJES
+# =========================================================
+
+def leer_porcentaje(valor, default):
+    try:
+        if pd.isna(valor):
+            return default
+
+        txt = str(valor).replace("%", "").replace(",", ".").strip()
+
+        if txt == "":
+            return default
+
+        num = float(txt)
+
+        if num > 1:
+            num = num / 100
+
+        return num
+
+    except:
+        return default
+
+
+def leer_float(valor, default):
+    try:
+        if pd.isna(valor):
+            return default
+
+        txt = str(valor).replace(",", ".").strip()
+
+        if txt == "":
+            return default
+
+        return float(txt)
+
+    except:
+        return default
 
 
 # =========================================================
@@ -105,103 +135,62 @@ def cargar_datos():
         for _, row in df_stats.iterrows():
 
             nombre = str(row.get("Player", "")).strip()
-
             nid = limpiar(nombre)
 
-            try:
+            hold = leer_porcentaje(row.get("Hld%", None), 0.78)
+            ace = leer_porcentaje(row.get("Ace%", None), 0.05)
+            first_in = leer_porcentaje(row.get("1stIn", None), 0.62)
+            first_won = leer_porcentaje(row.get("1st%", None), 0.70)
+            second_won = leer_porcentaje(row.get("2nd%", None), 0.50)
 
-                hold = float(
-                    str(row.get("Hld%", "78")).replace("%", "")
-                ) / 100
-
-                ace = float(
-                    str(row.get("Ace%", "5")).replace("%", "")
-                ) / 100
-
-                first_in = float(
-                    str(row.get("1stIn", "62")).replace("%", "")
-                ) / 100
-
-                first_won = float(
-                    str(row.get("1st%", "70")).replace("%", "")
-                ) / 100
-
-                second_won = float(
-                    str(row.get("2nd%", "50")).replace("%", "")
-                ) / 100
-
-                stats_map[nid] = {
-
-                    "hold": np.clip(hold, 0.50, 0.95),
-
-                    "ace": ace,
-
-                    "1in": first_in,
-
-                    "1w": first_won,
-
-                    "2w": second_won,
-
-                    "serve_profile": perfil_saque(ace)
-                }
-
-            except:
-                pass
+            stats_map[nid] = {
+                "found_stats": True,
+                "raw_name_stats": nombre,
+                "hold": np.clip(hold, 0.50, 0.95),
+                "ace": np.clip(ace, 0.00, 0.35),
+                "1in": np.clip(first_in, 0.35, 0.85),
+                "1w": np.clip(first_won, 0.40, 0.90),
+                "2w": np.clip(second_won, 0.25, 0.75),
+                "serve_profile": perfil_saque(ace)
+            }
 
     if os.path.exists("atp_elo.xlsx"):
 
         df_elo = pd.read_excel("atp_elo.xlsx")
-
         df_elo.columns = [limpiar(c) for c in df_elo.columns]
 
         for _, row in df_elo.iterrows():
 
-            nombre = str(
-                row.get("PLAYER", "")
-            ).replace("\xa0", " ").strip()
-
-            try:
-                rank = int(float(row.get("ATPRANK", 999)))
-            except:
-                rank = 999
-
-            try:
-                elo_general = float(row.get("ELO", 1500))
-            except:
-                elo_general = 1500
-
-            try:
-                h_elo = float(row.get("HELO", elo_general))
-            except:
-                h_elo = elo_general
-
-            try:
-                c_elo = float(row.get("CELO", elo_general))
-            except:
-                c_elo = elo_general
-
-            try:
-                g_elo = float(row.get("GELO", elo_general))
-            except:
-                g_elo = elo_general
-
+            nombre = str(row.get("PLAYER", "")).replace("\xa0", " ").strip()
             nid = limpiar(nombre)
 
+            rank = int(leer_float(row.get("ATPRANK", 999), 999))
+
+            elo_general = leer_float(row.get("ELO", 1500), 1500)
+            h_elo = leer_float(row.get("HELO", elo_general), elo_general)
+            c_elo = leer_float(row.get("CELO", elo_general), elo_general)
+            g_elo = leer_float(row.get("GELO", elo_general), elo_general)
+
+            stats = stats_map.get(nid, {
+                "found_stats": False,
+                "raw_name_stats": "NO ENCONTRADO",
+                "hold": 0.78,
+                "ace": 0.05,
+                "1in": 0.62,
+                "1w": 0.70,
+                "2w": 0.50,
+                "serve_profile": "normal"
+            })
+
             players[nombre] = {
-
                 "Player": nombre,
-
+                "CleanID": nid,
                 "Rank": rank,
-
                 "Hard": h_elo,
-
                 "Clay": c_elo,
-
                 "Grass": g_elo,
-
                 "General": elo_general,
-
-                "Stats": stats_map.get(nid, {})
+                "Stats": stats
             }
 
     return players
@@ -214,9 +203,7 @@ def cargar_datos():
 def calc_hold(stats, elo_diff, surface):
 
     base_hold = stats.get("hold", 0.78)
-
     ace = stats.get("ace", 0.05)
-
     profile = stats.get("serve_profile", "normal")
 
     surface_adj = {
@@ -231,18 +218,12 @@ def calc_hold(stats, elo_diff, surface):
         0.040
     )
 
-    # =====================================================
-    # BIG SERVER BOOST
-    # =====================================================
-
     serve_bonus = 0
 
     if profile == "good_server":
         serve_bonus += 0.012
-
     elif profile == "big_server":
         serve_bonus += 0.026
-
     elif profile == "elite_server":
         serve_bonus += 0.040
 
@@ -274,17 +255,10 @@ def sim_set(hold1, hold2, surface, match_shift, p1_big, p2_big):
 
     g1 = 0
     g2 = 0
-
     server = random.choice([1, 2])
-
     had_tiebreak = False
 
-    # =====================================================
-    # BIG SERVER MATCHUP
-    # =====================================================
-
     big_server_match = p1_big or p2_big
-
     double_big_server = p1_big and p2_big
 
     if surface == "Clay":
@@ -324,32 +298,23 @@ def sim_set(hold1, hold2, surface, match_shift, p1_big, p2_big):
             pressure = late_pressure
 
         current_hold1 = np.clip(
-            np.random.normal(
-                hold1 + set_shift,
-                noise_scale
-            ) + pressure,
+            np.random.normal(hold1 + set_shift, noise_scale) + pressure,
             0.32,
             0.93
         )
 
         current_hold2 = np.clip(
-            np.random.normal(
-                hold2 - set_shift,
-                noise_scale
-            ) + pressure,
+            np.random.normal(hold2 - set_shift, noise_scale) + pressure,
             0.32,
             0.93
         )
 
         if server == 1:
-
             if random.random() < current_hold1:
                 g1 += 1
             else:
                 g2 += 1
-
         else:
-
             if random.random() < current_hold2:
                 g2 += 1
             else:
@@ -372,10 +337,6 @@ def sim_set(hold1, hold2, surface, match_shift, p1_big, p2_big):
             else:
                 p_tb = hold1 / (hold1 + hold2)
 
-            # =================================================
-            # BIG SERVER TB BOOST
-            # =================================================
-
             if big_server_match:
                 p_tb += 0.04
 
@@ -384,11 +345,7 @@ def sim_set(hold1, hold2, surface, match_shift, p1_big, p2_big):
 
             p_tb += set_shift
 
-            p_tb = np.clip(
-                p_tb,
-                0.30,
-                0.70
-            )
+            p_tb = np.clip(p_tb, 0.30, 0.70)
 
             if random.random() < p_tb:
                 return 7, 6, had_tiebreak
@@ -397,7 +354,7 @@ def sim_set(hold1, hold2, surface, match_shift, p1_big, p2_big):
 
 
 # =========================================================
-# SIM MATCH
+# SIMULAR PARTIDO
 # =========================================================
 
 def sim_match(d1, d2, surface, best_of=3, n=10000):
@@ -422,7 +379,6 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
     sets_to_win = 3 if best_of == 5 else 2
 
     results = {
-
         "p1": 0,
         "p2": 0,
 
@@ -453,10 +409,6 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
     else:
         match_flow_scale = 0.024
 
-    # =====================================================
-    # BIG SERVER MATCH
-    # =====================================================
-
     if p1_big or p2_big:
         match_flow_scale += 0.010
 
@@ -464,13 +416,9 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
 
         s1 = 0
         s2 = 0
-
         total_games = 0
-
         sets_played = 0
-
         first_set_done = False
-
         tiebreak_seen = False
 
         match_shift = np.random.normal(
@@ -493,7 +441,6 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
                 tiebreak_seen = True
 
             set_games = g1 + g2
-
             total_games += set_games
 
             if not first_set_done:
@@ -561,24 +508,15 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
 db = cargar_datos()
 
 if not db:
-
     st.error(
-        "No se encontraron archivos ATP."
+        "No se encontraron archivos ATP. Coloca atp_elo.xlsx y atp_completa.xlsx en la misma carpeta que este script."
     )
-
     st.stop()
-
-# =========================================================
-# SIDEBAR
-# =========================================================
 
 with st.sidebar:
 
-    st.header("🎾 Tennis IA v10.8")
-
-    st.caption(
-        "Big Server Engine"
-    )
+    st.header("🎾 Tennis IA v10.9")
+    st.caption("Big Server Engine + Diagnóstico")
 
     players = sorted(db.keys())
 
@@ -601,30 +539,22 @@ with st.sidebar:
         value=10000
     )
 
-# =========================================================
-# PLAYERS
-# =========================================================
 
 c1, c2 = st.columns(2)
 
 with c1:
-
     p1_name = st.selectbox(
         "Jugador 1",
         players
     )
 
 with c2:
-
     p2_name = st.selectbox(
         "Jugador 2",
         players,
         index=min(1, len(players)-1)
     )
 
-# =========================================================
-# ANALIZAR
-# =========================================================
 
 if st.button(
     "🚀 ANALIZAR PARTIDO",
@@ -646,7 +576,6 @@ if st.button(
             hold2,
             p1_profile,
             p2_profile
-
         ) = sim_match(
             d1,
             d2,
@@ -654,10 +583,6 @@ if st.button(
             best_of,
             sims
         )
-
-    # =====================================================
-    # PROBS
-    # =====================================================
 
     p1 = res["p1"] / sims
     p2 = res["p2"] / sims
@@ -672,14 +597,10 @@ if st.button(
     p2_any = res["p2_any_set"] / sims
 
     both_win_set = res["both_win_set"] / sims
-
     set3 = res["set3"] / sims
-
     tb_match = res["tiebreak_match"] / sims
 
-    first_set_over_95 = (
-        res["first_set_over_9_5"] / sims
-    )
+    first_set_over_95 = res["first_set_over_9_5"] / sims
 
     games = res["games"]
 
@@ -698,11 +619,7 @@ if st.button(
 
     elo_p2 = 1 - elo_p1
 
-    fav_name = (
-        d1["Player"] if p1 > p2
-        else d2["Player"]
-    )
-
+    fav_name = d1["Player"] if p1 > p2 else d2["Player"]
     fav_prob = max(p1, p2)
 
     risk = riesgo_partido(
@@ -711,63 +628,39 @@ if st.button(
         fav_prob
     )
 
-    # =====================================================
-    # MATCH PROFILE
-    # =====================================================
-
     profile_tags = []
 
     if p1_profile in ["big_server", "elite_server"]:
         profile_tags.append(
-            f"🚀 {d1['Player']} big server"
+            f"🚀 {d1['Player']} {perfil_legible(p1_profile)}"
         )
 
     if p2_profile in ["big_server", "elite_server"]:
         profile_tags.append(
-            f"🚀 {d2['Player']} big server"
+            f"🚀 {d2['Player']} {perfil_legible(p2_profile)}"
         )
 
     if tb_match > 0.35:
-        profile_tags.append(
-            "🎯 Tie-break probable"
-        )
+        profile_tags.append("🎯 Tie-break probable")
 
     if set3 > 0.45:
-        profile_tags.append(
-            "⚠️ Partido volátil"
-        )
+        profile_tags.append("⚠️ Partido volátil")
 
     if avg_games > 24:
-        profile_tags.append(
-            "📈 Partido largo"
-        )
+        profile_tags.append("📈 Partido largo")
 
     if avg_games < 21:
-        profile_tags.append(
-            "📉 Partido corto"
-        )
+        profile_tags.append("📉 Partido corto")
 
     if fav_prob < 0.55:
-        profile_tags.append(
-            "⚠️ Favorito débil"
-        )
-
-    # =====================================================
-    # BEST MARKET
-    # =====================================================
+        profile_tags.append("⚠️ Favorito débil")
 
     markets = {
-
         "ML favorito": fav_prob,
-
         "Over 18.5": over_18,
-
         "Over 20.5": over_20,
-
         "Ambos ganan set": both_win_set,
-
         "Tie-break": tb_match,
-
         "1er set over 9.5": first_set_over_95
     }
 
@@ -776,15 +669,9 @@ if st.button(
         key=lambda x: x[1]
     )
 
-    # =====================================================
-    # UI
-    # =====================================================
-
     st.divider()
 
-    st.subheader(
-        "🏆 Ganador del Partido"
-    )
+    st.subheader("🏆 Ganador del Partido")
 
     cc1, cc2 = st.columns(2)
 
@@ -813,20 +700,12 @@ if st.button(
         )
 
     st.caption(
-        f"Referencia Elo puro: "
-        f"{elo_p1:.1%} / {elo_p2:.1%}"
-        f" · {risk}"
+        f"Referencia Elo puro: {elo_p1:.1%} / {elo_p2:.1%} · {risk}"
     )
-
-    # =====================================================
-    # FIRST SET
-    # =====================================================
 
     st.divider()
 
-    st.subheader(
-        "🎾 Primer Set"
-    )
+    st.subheader("🎾 Primer Set")
 
     fs1, fs2, fs3 = st.columns(3)
 
@@ -854,15 +733,9 @@ if st.button(
             nivel_prob(first_set_over_95)
         )
 
-    # =====================================================
-    # SETS
-    # =====================================================
-
     st.divider()
 
-    st.subheader(
-        "📌 Mercados de Sets"
-    )
+    st.subheader("📌 Mercados de Sets")
 
     s1, s2, s3, s4 = st.columns(4)
 
@@ -898,10 +771,6 @@ if st.button(
             nivel_prob(p2_any)
         )
 
-    # =====================================================
-    # EXTRA
-    # =====================================================
-
     ex1, ex2, ex3 = st.columns(3)
 
     with ex1:
@@ -928,15 +797,9 @@ if st.button(
             nivel_prob(tb_match)
         )
 
-    # =====================================================
-    # GAMES
-    # =====================================================
-
     st.divider()
 
-    st.subheader(
-        "📊 Games"
-    )
+    st.subheader("📊 Games")
 
     g1, g2, g3, g4 = st.columns(4)
 
@@ -948,8 +811,7 @@ if st.button(
         )
 
         st.caption(
-            f"Mediana {med_games:.0f}"
-            f" · σ {std_games:.1f}"
+            f"Mediana {med_games:.0f} · σ {std_games:.1f}"
         )
 
     with g2:
@@ -976,15 +838,9 @@ if st.button(
             nivel_prob(over_21)
         )
 
-    # =====================================================
-    # HOLD
-    # =====================================================
-
     st.divider()
 
-    st.subheader(
-        "🎾 Hold Probability"
-    )
+    st.subheader("🎾 Hold Probability")
 
     h1, h2 = st.columns(2)
 
@@ -996,7 +852,7 @@ if st.button(
         )
 
         st.caption(
-            p1_profile
+            perfil_legible(p1_profile)
         )
 
     with h2:
@@ -1007,48 +863,96 @@ if st.button(
         )
 
         st.caption(
-            p2_profile
+            perfil_legible(p2_profile)
         )
-
-    # =====================================================
-    # MATCH PROFILE
-    # =====================================================
 
     st.divider()
 
-    st.subheader(
-        "🧠 Perfil del Partido"
-    )
+    st.subheader("🔎 Diagnóstico de datos")
+
+    dcol1, dcol2 = st.columns(2)
+
+    with dcol1:
+
+        st.markdown(f"**{d1['Player']}**")
+
+        st.write(
+            "Stats encontradas:",
+            "✅ Sí" if d1["Stats"].get("found_stats", False) else "❌ No"
+        )
+
+        st.write(
+            "Nombre stats:",
+            d1["Stats"].get("raw_name_stats", "N/A")
+        )
+
+        st.write(
+            "Ace% leído:",
+            f"{d1['Stats'].get('ace', 0):.1%}"
+        )
+
+        st.write(
+            "Hld% leído:",
+            f"{d1['Stats'].get('hold', 0):.1%}"
+        )
+
+        st.write(
+            "CleanID:",
+            d1.get("CleanID", "")
+        )
+
+    with dcol2:
+
+        st.markdown(f"**{d2['Player']}**")
+
+        st.write(
+            "Stats encontradas:",
+            "✅ Sí" if d2["Stats"].get("found_stats", False) else "❌ No"
+        )
+
+        st.write(
+            "Nombre stats:",
+            d2["Stats"].get("raw_name_stats", "N/A")
+        )
+
+        st.write(
+            "Ace% leído:",
+            f"{d2['Stats'].get('ace', 0):.1%}"
+        )
+
+        st.write(
+            "Hld% leído:",
+            f"{d2['Stats'].get('hold', 0):.1%}"
+        )
+
+        st.write(
+            "CleanID:",
+            d2.get("CleanID", "")
+        )
+
+    st.divider()
+
+    st.subheader("🧠 Perfil del Partido")
 
     if profile_tags:
-
         st.info(
             " · ".join(profile_tags)
         )
-
-    # =====================================================
-    # BEST SIGNAL
-    # =====================================================
+    else:
+        st.info(
+            "Sin perfil extremo detectado."
+        )
 
     st.divider()
 
-    st.subheader(
-        "🎯 Señal principal del modelo"
-    )
+    st.subheader("🎯 Señal principal del modelo")
 
     st.success(
-        f"{best_market[0]} "
-        f"→ {best_market[1]:.1%}"
+        f"{best_market[0]} → {best_market[1]:.1%}"
     )
-
-    # =====================================================
-    # FOOTER
-    # =====================================================
 
     st.divider()
 
     st.caption(
-        f"Tennis IA v10.8 · "
-        f"Big Server Engine · "
-        f"{sims:,} simulaciones Monte Carlo"
+        f"Tennis IA v10.9 · Big Server Engine + Diagnóstico · {sims:,} simulaciones Monte Carlo"
     )
