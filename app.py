@@ -7,18 +7,18 @@ import os
 import unicodedata
 
 # =========================================================
-# TENNIS IA v10.0
-# MODELO CALIBRADO REALISTA
+# TENNIS IA v10.1
+# MODELO CALIBRADO ATP REAL
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v10",
+    page_title="Tennis IA v10.1",
     page_icon="🎾",
     layout="wide"
 )
 
 # =========================================================
-# ESTILO
+# CSS
 # =========================================================
 
 st.markdown("""
@@ -57,11 +57,12 @@ st.markdown("""
 # UTILIDADES
 # =========================================================
 
-def limpiar(texto):
-    if pd.isna(texto):
+def limpiar(txt):
+
+    if pd.isna(txt):
         return ""
 
-    t = unicodedata.normalize('NFKD', str(texto))
+    t = unicodedata.normalize('NFKD', str(txt))
     t = t.encode('ascii', 'ignore').decode('ascii')
     t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
 
@@ -69,6 +70,7 @@ def limpiar(texto):
 
 
 def elo_prob(e1, e2):
+
     return 1 / (1 + 10 ** ((e2 - e1) / 400))
 
 
@@ -80,11 +82,11 @@ def elo_prob(e1, e2):
 def cargar_datos():
 
     stats_map = {}
-    jugadores = {}
+    players = {}
 
-    # =========================
-    # STATS
-    # =========================
+    # =====================================================
+    # STATS ATP
+    # =====================================================
 
     if os.path.exists("atp_completa.xlsx"):
 
@@ -104,6 +106,7 @@ def cargar_datos():
                 second_won = float(str(row.get("2nd%", "50")).replace('%', '')) / 100
 
                 stats_map[nid] = {
+
                     "hold": np.clip(hold, 0.55, 0.95),
                     "ace": ace,
                     "1in": first_in,
@@ -114,9 +117,9 @@ def cargar_datos():
             except:
                 pass
 
-    # =========================
-    # ELO
-    # =========================
+    # =====================================================
+    # ELO ATP
+    # =====================================================
 
     if os.path.exists("atp_elo.xlsx"):
 
@@ -135,7 +138,7 @@ def cargar_datos():
             except:
                 rank = 999
 
-            jugadores[nombre] = {
+            players[nombre] = {
 
                 "Player": nombre,
 
@@ -149,61 +152,85 @@ def cargar_datos():
                 "Stats": stats_map.get(nid, {})
             }
 
-    return jugadores
+    return players
 
 
 # =========================================================
 # HOLD CALIBRADO
 # =========================================================
 
-def calc_hold(player_stats, elo_diff, surface):
+def calc_hold(stats, elo_diff, surface):
 
-    base_hold = player_stats.get("hold", 0.78)
+    # =====================================================
+    # HOLD BASE REAL
+    # =====================================================
 
-    # =========================
+    base_hold = stats.get("hold", 0.78)
+
+    # =====================================================
     # AJUSTE SUPERFICIE
-    # =========================
+    # =====================================================
 
     surface_adj = {
         "Hard": 0.00,
-        "Clay": -0.015,
-        "Grass": +0.015
+        "Clay": -0.045,
+        "Grass": +0.025
     }
 
-    # =========================
+    # =====================================================
     # AJUSTE ELO
-    # =========================
+    # =====================================================
 
-    elo_adj = np.clip(elo_diff / 4000, -0.04, 0.04)
+    elo_adj = np.clip(
+        elo_diff / 2500,
+        -0.06,
+        0.06
+    )
 
-    # =========================
+    # =====================================================
+    # AJUSTE DEFENSIVO
+    # MEJORES JUGADORES ROMPEN MÁS
+    # =====================================================
+
+    defensive_adj = np.clip(
+        (-elo_diff) / 5000,
+        -0.03,
+        0.03
+    )
+
+    # =====================================================
     # AJUSTE SERVICIO
-    # =========================
+    # =====================================================
 
-    ace_bonus = player_stats.get("ace", 0.05) * 0.08
+    ace_bonus = stats.get("ace", 0.05) * 0.05
 
     first_bonus = (
-        player_stats.get("1in", 0.62) * 0.03 +
-        player_stats.get("1w", 0.72) * 0.05 +
-        player_stats.get("2w", 0.50) * 0.03
+        stats.get("1in", 0.62) * 0.02 +
+        stats.get("1w", 0.72) * 0.03 +
+        stats.get("2w", 0.50) * 0.02
     )
+
+    # =====================================================
+    # HOLD FINAL
+    # =====================================================
 
     hold = (
         base_hold
         + surface_adj[surface]
         + elo_adj
+        + defensive_adj
         + ace_bonus
         + first_bonus
     )
 
-    return np.clip(hold, 0.55, 0.95)
+    return np.clip(hold, 0.58, 0.92)
 
 
 # =========================================================
 # SIMULAR SET
 # =========================================================
 
-def sim_set(hold1, hold2):
+def sim_set(hold1, hold2, surface):
 
     g1 = 0
     g2 = 0
@@ -211,6 +238,10 @@ def sim_set(hold1, hold2):
     server = random.choice([1, 2])
 
     while True:
+
+        # =================================================
+        # GAME
+        # =================================================
 
         if server == 1:
 
@@ -228,9 +259,9 @@ def sim_set(hold1, hold2):
 
         server = 1 if server == 2 else 2
 
-        # =========================
-        # FIN SET NORMAL
-        # =========================
+        # =================================================
+        # SET NORMAL
+        # =================================================
 
         if g1 >= 6 and (g1 - g2) >= 2:
             return g1, g2
@@ -238,13 +269,21 @@ def sim_set(hold1, hold2):
         if g2 >= 6 and (g2 - g1) >= 2:
             return g1, g2
 
-        # =========================
+        # =================================================
         # TIEBREAK
-        # =========================
+        # =================================================
 
         if g1 == 6 and g2 == 6:
 
-            p_tb = hold1 / (hold1 + hold2)
+            if surface == "Clay":
+
+                p_tb = 0.46 + ((hold1 - hold2) * 1.2)
+
+            else:
+
+                p_tb = hold1 / (hold1 + hold2)
+
+            p_tb = np.clip(p_tb, 0.30, 0.70)
 
             if random.random() < p_tb:
                 return 7, 6
@@ -263,8 +302,17 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
 
     elo_diff = e1 - e2
 
-    hold1 = calc_hold(d1["Stats"], elo_diff, surface)
-    hold2 = calc_hold(d2["Stats"], -elo_diff, surface)
+    hold1 = calc_hold(
+        d1["Stats"],
+        elo_diff,
+        surface
+    )
+
+    hold2 = calc_hold(
+        d2["Stats"],
+        -elo_diff,
+        surface
+    )
 
     sets_to_win = 3 if best_of == 5 else 2
 
@@ -292,7 +340,11 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
 
         while s1 < sets_to_win and s2 < sets_to_win:
 
-            g1, g2 = sim_set(hold1, hold2)
+            g1, g2 = sim_set(
+                hold1,
+                hold2,
+                surface
+            )
 
             total_games += g1 + g2
 
@@ -303,9 +355,9 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
 
             sets_played += 1
 
-        # =========================
+        # =================================================
         # RESULTADO
-        # =========================
+        # =================================================
 
         score = f"{s1}-{s2}"
 
@@ -336,7 +388,9 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
 db = cargar_datos()
 
 if not db:
+
     st.error("No se encontraron archivos ATP.")
+
     st.stop()
 
 # =========================================================
@@ -345,9 +399,11 @@ if not db:
 
 with st.sidebar:
 
-    st.header("🎾 Tennis IA v10")
+    st.header("🎾 Tennis IA v10.1")
 
-    st.caption("Modelo calibrado basado en Hold% + Elo")
+    st.caption(
+        "Modelo calibrado ATP real"
+    )
 
     players = sorted(db.keys())
 
@@ -368,15 +424,20 @@ with st.sidebar:
     )
 
 # =========================================================
-# PLAYERS
+# JUGADORES
 # =========================================================
 
 c1, c2 = st.columns(2)
 
 with c1:
-    p1_name = st.selectbox("Jugador 1", players)
+
+    p1_name = st.selectbox(
+        "Jugador 1",
+        players
+    )
 
 with c2:
+
     p2_name = st.selectbox(
         "Jugador 2",
         players,
@@ -387,14 +448,19 @@ with c2:
 # ANALIZAR
 # =========================================================
 
-if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
+if st.button(
+    "🚀 ANALIZAR PARTIDO",
+    use_container_width=True
+):
 
     d1 = db[p1_name]
     d2 = db[p2_name]
 
     best_of = 5 if "5" in format_match else 3
 
-    with st.spinner(f"Simulando {sims:,} partidos..."):
+    with st.spinner(
+        f"Simulando {sims:,} partidos..."
+    ):
 
         res, hold1, hold2 = sim_match(
             d1,
@@ -410,12 +476,14 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     avg_games = np.mean(res["games"])
 
     # =====================================================
-    # PROBABILIDAD
+    # PROBABILIDADES
     # =====================================================
 
     st.divider()
 
-    st.subheader("🏆 Probabilidad de Victoria")
+    st.subheader(
+        "🏆 Probabilidad de Victoria"
+    )
 
     cc1, cc2 = st.columns(2)
 
@@ -426,7 +494,8 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
             <div class="metric-label">{d1['Player']}</div>
             <div class="metric-value">{p1:.1%}</div>
             <div class="metric-sub">
-                Rank #{d1['Rank']} · Elo {surface}: {d1[surface]:.0f}
+                Rank #{d1['Rank']}
+                · Elo {surface}: {d1[surface]:.0f}
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -438,7 +507,8 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
             <div class="metric-label">{d2['Player']}</div>
             <div class="metric-value">{p2:.1%}</div>
             <div class="metric-sub">
-                Rank #{d2['Rank']} · Elo {surface}: {d2[surface]:.0f}
+                Rank #{d2['Rank']}
+                · Elo {surface}: {d2[surface]:.0f}
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -449,19 +519,23 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
 
     st.divider()
 
-    st.subheader("🎾 Hold Probability")
+    st.subheader(
+        "🎾 Hold Probability"
+    )
 
     h1, h2 = st.columns(2)
 
     with h1:
+
         st.metric(
-            f"{d1['Player']}",
+            d1["Player"],
             f"{hold1:.1%}"
         )
 
     with h2:
+
         st.metric(
-            f"{d2['Player']}",
+            d2["Player"],
             f"{hold2:.1%}"
         )
 
@@ -471,14 +545,18 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
 
     st.divider()
 
-    st.subheader("📋 Marcadores más probables")
+    st.subheader(
+        "📋 Marcadores más probables"
+    )
 
     scores_sorted = sorted(
         res["scores"].items(),
         key=lambda x: -x[1]
     )
 
-    cols = st.columns(min(4, len(scores_sorted)))
+    cols = st.columns(
+        min(4, len(scores_sorted))
+    )
 
     for i, (score, count) in enumerate(scores_sorted[:4]):
 
@@ -487,7 +565,9 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-label">{score}</div>
-                <div class="metric-value">{count/sims:.1%}</div>
+                <div class="metric-value">
+                    {count/sims:.1%}
+                </div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -497,41 +577,77 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
 
     st.divider()
 
-    st.subheader("📊 Games")
+    st.subheader(
+        "📊 Games"
+    )
 
     g1, g2, g3, g4 = st.columns(4)
 
     with g1:
-        st.metric("Media Games", f"{avg_games:.1f}")
+
+        st.metric(
+            "Media Games",
+            f"{avg_games:.1f}"
+        )
 
     with g2:
+
         st.metric(
             "Over 18.5",
             f"{sum(x > 18.5 for x in res['games']) / sims:.1%}"
         )
 
     with g3:
+
         st.metric(
             "Over 20.5",
             f"{sum(x > 20.5 for x in res['games']) / sims:.1%}"
         )
 
     with g4:
+
         st.metric(
             "3 Sets",
             f"{res['set3']/sims:.1%}"
         )
 
     # =====================================================
-    # INFO
+    # INSIGHTS
+    # =====================================================
+
+    st.divider()
+
+    if avg_games < 21:
+
+        st.success(
+            "📉 Partido esperado corto "
+            "con bastantes breaks."
+        )
+
+    elif avg_games > 24:
+
+        st.warning(
+            "📈 Partido largo esperado "
+            "con muchos holds."
+        )
+
+    else:
+
+        st.info(
+            "⚖️ Partido equilibrado "
+            "en duración."
+        )
+
+    # =====================================================
+    # INFO FINAL
     # =====================================================
 
     st.divider()
 
     st.caption(
         f"""
-        Modelo v10 · Basado en:
-        Elo superficie + Hold% real ATP
+        Tennis IA v10.1
+        · Elo superficie + Hold calibrado ATP
         · {sims:,} simulaciones Monte Carlo
         """
     )
