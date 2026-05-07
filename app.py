@@ -7,12 +7,12 @@ import os
 import unicodedata
 
 # =========================================================
-# TENNIS IA v10.3
-# ATP REALISTIC ENGINE - CLAY FIX + UI FIX
+# TENNIS IA v10.4
+# ATP REALISTIC ENGINE - SET FLOW FIX
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v10.3",
+    page_title="Tennis IA v10.4",
     page_icon="🎾",
     layout="wide"
 )
@@ -131,22 +131,24 @@ def calc_hold(stats, elo_diff, surface):
 
     surface_adj = {
         "Hard": -0.010,
-        "Clay": -0.085,
+        "Clay": -0.082,
         "Grass": +0.010
     }
 
+    # Menos impacto Elo dentro del hold.
+    # El Elo ya afecta al ganador, pero no debe inflar demasiado el saque.
     elo_adj = np.clip(
-        elo_diff / 2200,
-        -0.07,
-        0.07
+        elo_diff / 3500,
+        -0.045,
+        0.045
     )
 
-    ace_bonus = stats.get("ace", 0.05) * 0.025
+    ace_bonus = stats.get("ace", 0.05) * 0.020
 
     first_bonus = (
-        stats.get("1in", 0.62) * 0.005 +
-        stats.get("1w", 0.70) * 0.010 +
-        stats.get("2w", 0.50) * 0.005
+        stats.get("1in", 0.62) * 0.004 +
+        stats.get("1w", 0.70) * 0.008 +
+        stats.get("2w", 0.50) * 0.004
     )
 
     hold = (
@@ -157,31 +159,38 @@ def calc_hold(stats, elo_diff, surface):
         + first_bonus
     )
 
-    return np.clip(hold, 0.50, 0.88)
+    return np.clip(hold, 0.50, 0.87)
 
 
 # =========================================================
 # SIMULAR SET
 # =========================================================
 
-def sim_set(hold1, hold2, surface):
+def sim_set(hold1, hold2, surface, match_shift):
 
     g1 = 0
     g2 = 0
 
     server = random.choice([1, 2])
 
-    while True:
+    if surface == "Clay":
+        noise_scale = 0.060
+        late_pressure = -0.060
+        set_flow_scale = 0.030
+    elif surface == "Hard":
+        noise_scale = 0.038
+        late_pressure = -0.030
+        set_flow_scale = 0.020
+    else:
+        noise_scale = 0.028
+        late_pressure = -0.018
+        set_flow_scale = 0.015
 
-        if surface == "Clay":
-            noise_scale = 0.065
-            late_pressure = -0.055
-        elif surface == "Hard":
-            noise_scale = 0.040
-            late_pressure = -0.025
-        else:
-            noise_scale = 0.030
-            late_pressure = -0.015
+    # Flujo propio del set.
+    # Esto crea más sets tipo 6-2 / 6-3 y menos 7-5 / 7-6.
+    set_shift = np.random.normal(match_shift, set_flow_scale)
+
+    while True:
 
         pressure = 0
 
@@ -189,14 +198,14 @@ def sim_set(hold1, hold2, surface):
             pressure = late_pressure
 
         current_hold1 = np.clip(
-            np.random.normal(hold1, noise_scale) + pressure,
-            0.38,
+            np.random.normal(hold1 + set_shift, noise_scale) + pressure,
+            0.35,
             0.92
         )
 
         current_hold2 = np.clip(
-            np.random.normal(hold2, noise_scale) + pressure,
-            0.38,
+            np.random.normal(hold2 - set_shift, noise_scale) + pressure,
+            0.35,
             0.92
         )
 
@@ -222,11 +231,11 @@ def sim_set(hold1, hold2, surface):
         if g1 == 6 and g2 == 6:
 
             if surface == "Clay":
-                p_tb = 0.45 + ((hold1 - hold2) * 1.1)
+                p_tb = 0.45 + ((hold1 - hold2) * 1.0) + set_shift
             else:
-                p_tb = hold1 / (hold1 + hold2)
+                p_tb = hold1 / (hold1 + hold2) + set_shift
 
-            p_tb = np.clip(p_tb, 0.32, 0.68)
+            p_tb = np.clip(p_tb, 0.30, 0.70)
 
             if random.random() < p_tb:
                 return 7, 6
@@ -245,17 +254,8 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
 
     elo_diff = e1 - e2
 
-    hold1 = calc_hold(
-        d1["Stats"],
-        elo_diff,
-        surface
-    )
-
-    hold2 = calc_hold(
-        d2["Stats"],
-        -elo_diff,
-        surface
-    )
+    hold1 = calc_hold(d1["Stats"], elo_diff, surface)
+    hold2 = calc_hold(d2["Stats"], -elo_diff, surface)
 
     sets_to_win = 3 if best_of == 5 else 2
 
@@ -268,6 +268,13 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
         "games": []
     }
 
+    if surface == "Clay":
+        match_flow_scale = 0.045
+    elif surface == "Hard":
+        match_flow_scale = 0.030
+    else:
+        match_flow_scale = 0.022
+
     for _ in range(n):
 
         s1 = 0
@@ -275,12 +282,17 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
         total_games = 0
         sets_played = 0
 
+        # Forma del día.
+        # Clave para reducir partidos larguísimos y 3 sets artificiales.
+        match_shift = np.random.normal(0, match_flow_scale)
+
         while s1 < sets_to_win and s2 < sets_to_win:
 
             g1, g2 = sim_set(
                 hold1,
                 hold2,
-                surface
+                surface,
+                match_shift
             )
 
             total_games += g1 + g2
@@ -324,7 +336,7 @@ if not db:
 
 with st.sidebar:
 
-    st.header("🎾 Tennis IA v10.3")
+    st.header("🎾 Tennis IA v10.4")
 
     st.caption("Motor ATP realista calibrado")
 
@@ -397,6 +409,9 @@ if st.button(
     p1 = res["p1"] / sims
     p2 = res["p2"] / sims
 
+    elo_p1 = elo_prob(d1[surface], d2[surface])
+    elo_p2 = 1 - elo_p1
+
     games = res["games"]
 
     avg_games = np.mean(games)
@@ -429,7 +444,7 @@ if st.button(
         )
 
     st.caption(
-        f"Referencia Elo puro: {elo_prob(d1[surface], d2[surface]):.1%} / {1 - elo_prob(d1[surface], d2[surface]):.1%}"
+        f"Referencia Elo puro: {elo_p1:.1%} / {elo_p2:.1%}"
     )
 
     st.divider()
@@ -538,9 +553,9 @@ if st.button(
 
     st.divider()
 
-    if surface == "Clay" and avg_games > 24:
+    if surface == "Clay" and avg_games > 23.5:
         st.warning(
-            "📈 Sigue saliendo largo para clay. Si al probar más partidos ocurre mucho, bajaremos otro punto el hold en tierra."
+            "📈 Sigue algo largo para clay. Si varios partidos salen igual, bajaremos más la duración de sets."
         )
     elif avg_games < 21:
         st.success(
@@ -558,5 +573,5 @@ if st.button(
     st.divider()
 
     st.caption(
-        f"Tennis IA v10.3 · Elo superficie + Hold dinámico · Clay calibrado · {sims:,} simulaciones Monte Carlo"
+        f"Tennis IA v10.4 · Elo superficie + Hold dinámico · Match flow · {sims:,} simulaciones Monte Carlo"
     )
