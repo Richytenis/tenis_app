@@ -166,51 +166,37 @@ def perfil_legible(profile):
 # BUSCAR STATS
 # =========================================================
 
-def buscar_stats(nombre_elo, stats_map):
+    if elo_surface >= 1750:
+        hold = 0.82
+        ace = 0.075
+    elif elo_surface >= 1650:
+        hold = 0.80
+        ace = 0.070
+    elif elo_surface >= 1550:
+        hold = 0.785
+        ace = 0.060
+    else:
+        hold = 0.765
+        ace = 0.050
 
-    nid = limpiar(nombre_elo)
-
-    if nid in stats_map:
-        stats = stats_map[nid].copy()
-        stats["match_type"] = "exacto"
-        stats["match_score"] = 1.0
-        return stats
-
-    mejor_id = None
-    mejor_score = 0
-
-    for sid, data in stats_map.items():
-        raw_stats_name = data.get("raw_name_stats", sid)
-
-        score = max(
-            similitud_nombre(nombre_elo, raw_stats_name),
-            similitud_nombre(nid, sid)
-        )
-
-        if score > mejor_score:
-            mejor_score = score
-            mejor_id = sid
-
-    if mejor_id and mejor_score >= 0.70:
-        stats = stats_map[mejor_id].copy()
-        stats["match_type"] = "aproximado"
-        stats["match_score"] = mejor_score
-        return stats
+    if rank <= 75:
+        hold += 0.005
+    elif rank > 150:
+        hold -= 0.005
 
     return {
         "found_stats": False,
         "raw_name_stats": "NO ENCONTRADO",
         "clean_stats_id": "",
-        "hold": 0.78,
-        "ace": 0.05,
+        "hold": np.clip(hold, 0.74, 0.83),
+        "ace": ace,
         "1in": 0.62,
         "1w": 0.70,
         "2w": 0.50,
-        "serve_profile": "normal",
-        "match_type": "default",
+        "serve_profile": perfil_saque(ace),
+        "match_type": "default_elo",
         "match_score": 0
     }
-
 
 # =========================================================
 # RUTAS
