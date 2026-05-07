@@ -8,12 +8,12 @@ import unicodedata
 from difflib import SequenceMatcher
 
 # =========================================================
-# TENNIS IA v11.2
-# ATP/WTA PATH FIX + BIG SERVER ENGINE
+# TENNIS IA v11.3
+# ATP/WTA PATH FIX + CONTROLLED BIG SERVER ENGINE
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v11.2",
+    page_title="Tennis IA v11.3",
     page_icon="🎾",
     layout="wide"
 )
@@ -358,21 +358,22 @@ def calc_hold(stats, elo_diff, surface, circuito):
         0.040
     )
 
+    # Big server controlado: sube perfil/mercados, pero no dispara demasiado el ML.
     serve_bonus = 0
 
     if profile == "good_server":
-        serve_bonus += 0.012
+        serve_bonus += 0.006
     elif profile == "big_server":
-        serve_bonus += 0.026
+        serve_bonus += 0.012
     elif profile == "elite_server":
-        serve_bonus += 0.040
+        serve_bonus += 0.018
 
-    ace_bonus = ace * 0.015
+    ace_bonus = ace * 0.010
 
     first_bonus = (
-        stats.get("1in", 0.62) * 0.003 +
-        stats.get("1w", 0.70) * 0.005 +
-        stats.get("2w", 0.50) * 0.003
+        stats.get("1in", 0.62) * 0.002 +
+        stats.get("1w", 0.70) * 0.004 +
+        stats.get("2w", 0.50) * 0.002
     )
 
     hold = (
@@ -384,7 +385,7 @@ def calc_hold(stats, elo_diff, surface, circuito):
         + first_bonus
     )
 
-    return np.clip(hold, 0.48, 0.89)
+    return np.clip(hold, 0.48, 0.84)
 
 
 # =========================================================
@@ -408,10 +409,10 @@ def sim_set(hold1, hold2, surface, match_shift, p1_big, p2_big):
         set_flow_scale = 0.028
 
         if big_server_match:
-            late_pressure += 0.020
+            late_pressure += 0.025
 
         if double_big_server:
-            late_pressure += 0.025
+            late_pressure += 0.030
 
     elif surface == "Hard":
 
@@ -419,11 +420,17 @@ def sim_set(hold1, hold2, surface, match_shift, p1_big, p2_big):
         late_pressure = -0.030
         set_flow_scale = 0.018
 
+        if big_server_match:
+            late_pressure += 0.015
+
     else:
 
         noise_scale = 0.028
         late_pressure = -0.018
         set_flow_scale = 0.014
+
+        if big_server_match:
+            late_pressure += 0.015
 
     set_shift = np.random.normal(match_shift, set_flow_scale)
 
@@ -470,18 +477,18 @@ def sim_set(hold1, hold2, surface, match_shift, p1_big, p2_big):
             had_tiebreak = True
 
             if surface == "Clay":
-                p_tb = 0.45 + ((hold1 - hold2) * 0.90)
+                p_tb = 0.45 + ((hold1 - hold2) * 0.75)
             else:
                 p_tb = hold1 / (hold1 + hold2)
 
             if big_server_match:
-                p_tb += 0.04
+                p_tb += 0.075
 
             if double_big_server:
-                p_tb += 0.05
+                p_tb += 0.050
 
             p_tb += set_shift
-            p_tb = np.clip(p_tb, 0.30, 0.70)
+            p_tb = np.clip(p_tb, 0.30, 0.74)
 
             if random.random() < p_tb:
                 return 7, 6, had_tiebreak
@@ -538,7 +545,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
         match_flow_scale = 0.024
 
     if p1_big or p2_big:
-        match_flow_scale += 0.010
+        match_flow_scale += 0.012
 
     for _ in range(n):
 
@@ -626,8 +633,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
 
 with st.sidebar:
 
-    st.header("🎾 Tennis IA v11.2")
-    st.caption("ATP/WTA + rutas datos/")
+    st.header("🎾 Tennis IA v11.3")
+    st.caption("Controlled Big Server Engine")
 
     if st.button("🧹 Limpiar caché y recargar datos"):
         st.cache_data.clear()
@@ -972,5 +979,5 @@ if st.button(
     st.divider()
 
     st.caption(
-        f"Tennis IA v11.2 · ATP/WTA rutas datos/ · Big Server Engine · {sims:,} simulaciones Monte Carlo"
+        f"Tennis IA v11.3 · Controlled Big Server Engine · {sims:,} simulaciones Monte Carlo"
     )
