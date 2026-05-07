@@ -7,12 +7,12 @@ import os
 import unicodedata
 
 # =========================================================
-# TENNIS IA v10.6
-# ATP REALISTIC ENGINE - PRO MARKET VIEW
+# TENNIS IA v10.7
+# ATP REALISTIC ENGINE - CLAY DURATION FIX
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v10.6",
+    page_title="Tennis IA v10.7",
     page_icon="🎾",
     layout="wide"
 )
@@ -105,7 +105,6 @@ def cargar_datos():
         for _, row in df_elo.iterrows():
 
             nombre = str(row.get("PLAYER", "")).replace("\xa0", " ").strip()
-            nid = limpiar(nombre)
 
             try:
                 rank = int(float(row.get("ATPRANK", 999)))
@@ -132,6 +131,8 @@ def cargar_datos():
             except:
                 g_elo = elo_general
 
+            nid = limpiar(nombre)
+
             players[nombre] = {
                 "Player": nombre,
                 "Rank": rank,
@@ -155,21 +156,21 @@ def calc_hold(stats, elo_diff, surface):
 
     surface_adj = {
         "Hard": -0.010,
-        "Clay": -0.088,
+        "Clay": -0.098,
         "Grass": +0.010
     }
 
     elo_adj = np.clip(
-        elo_diff / 3700,
-        -0.043,
-        0.043
+        elo_diff / 3800,
+        -0.042,
+        0.042
     )
 
-    ace_bonus = stats.get("ace", 0.05) * 0.016
+    ace_bonus = stats.get("ace", 0.05) * 0.014
 
     first_bonus = (
         stats.get("1in", 0.62) * 0.003 +
-        stats.get("1w", 0.70) * 0.006 +
+        stats.get("1w", 0.70) * 0.005 +
         stats.get("2w", 0.50) * 0.003
     )
 
@@ -181,7 +182,7 @@ def calc_hold(stats, elo_diff, surface):
         + first_bonus
     )
 
-    return np.clip(hold, 0.49, 0.87)
+    return np.clip(hold, 0.48, 0.86)
 
 
 # =========================================================
@@ -196,17 +197,17 @@ def sim_set(hold1, hold2, surface, match_shift):
     had_tiebreak = False
 
     if surface == "Clay":
-        noise_scale = 0.064
-        late_pressure = -0.070
-        set_flow_scale = 0.037
+        noise_scale = 0.066
+        late_pressure = -0.082
+        set_flow_scale = 0.028
     elif surface == "Hard":
         noise_scale = 0.038
-        late_pressure = -0.030
-        set_flow_scale = 0.020
+        late_pressure = -0.032
+        set_flow_scale = 0.018
     else:
         noise_scale = 0.028
         late_pressure = -0.018
-        set_flow_scale = 0.015
+        set_flow_scale = 0.014
 
     set_shift = np.random.normal(match_shift, set_flow_scale)
 
@@ -219,14 +220,14 @@ def sim_set(hold1, hold2, surface, match_shift):
 
         current_hold1 = np.clip(
             np.random.normal(hold1 + set_shift, noise_scale) + pressure,
-            0.34,
-            0.92
+            0.32,
+            0.91
         )
 
         current_hold2 = np.clip(
             np.random.normal(hold2 - set_shift, noise_scale) + pressure,
-            0.34,
-            0.92
+            0.32,
+            0.91
         )
 
         if server == 1:
@@ -253,7 +254,7 @@ def sim_set(hold1, hold2, surface, match_shift):
             had_tiebreak = True
 
             if surface == "Clay":
-                p_tb = 0.45 + ((hold1 - hold2) * 0.95) + set_shift
+                p_tb = 0.45 + ((hold1 - hold2) * 0.90) + set_shift
             else:
                 p_tb = hold1 / (hold1 + hold2) + set_shift
 
@@ -307,11 +308,11 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
     }
 
     if surface == "Clay":
-        match_flow_scale = 0.054
+        match_flow_scale = 0.068
     elif surface == "Hard":
-        match_flow_scale = 0.030
+        match_flow_scale = 0.034
     else:
-        match_flow_scale = 0.022
+        match_flow_scale = 0.024
 
     for _ in range(n):
 
@@ -403,8 +404,8 @@ if not db:
 
 with st.sidebar:
 
-    st.header("🎾 Tennis IA v10.6")
-    st.caption("Motor ATP realista · Vista mercados PRO")
+    st.header("🎾 Tennis IA v10.7")
+    st.caption("Motor ATP realista · Clay duration fix")
 
     players = sorted(db.keys())
 
@@ -480,7 +481,6 @@ if st.button(
     over_19 = sum(x > 19.5 for x in games) / sims
     over_20 = sum(x > 20.5 for x in games) / sims
     over_21 = sum(x > 21.5 for x in games) / sims
-    over_22 = sum(x > 22.5 for x in games) / sims
 
     p1_first = res["p1_first_set"] / sims
     p2_first = res["p2_first_set"] / sims
@@ -677,8 +677,16 @@ if st.button(
     else:
         lectura_tb = "tie-break posible pero no dominante"
 
+    if fav_prob < 0.55:
+        alerta_fav = "⚠️ favorito débil / underdog vivo"
+    elif fav_prob < 0.62:
+        alerta_fav = "🟡 favorito moderado"
+    else:
+        alerta_fav = "🟢 favorito sólido"
+
     st.info(
         f"Favorito: **{fav_name} ({fav_prob:.1%})** · "
+        f"{alerta_fav} · "
         f"Mejor 1er set: **{mejor_1set} ({prob_1set:.1%})** · "
         f"Games: **{lectura_games}** · "
         f"3 sets: **{set3:.1%}** · "
@@ -689,5 +697,5 @@ if st.button(
     st.divider()
 
     st.caption(
-        f"Tennis IA v10.6 · Elo superficie + Hold dinámico · Mercados PRO · {sims:,} simulaciones Monte Carlo"
+        f"Tennis IA v10.7 · Elo superficie + Hold dinámico · Clay duration fix · {sims:,} simulaciones Monte Carlo"
     )
