@@ -7,12 +7,12 @@ import os
 import unicodedata
 
 # =========================================================
-# TENNIS IA v10.4
-# ATP REALISTIC ENGINE - SET FLOW FIX
+# TENNIS IA v10.5
+# ATP REALISTIC ENGINE - MARKET VIEW
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v10.4",
+    page_title="Tennis IA v10.5",
     page_icon="🎾",
     layout="wide"
 )
@@ -34,6 +34,17 @@ def limpiar(txt):
 
 def elo_prob(e1, e2):
     return 1 / (1 + 10 ** ((e2 - e1) / 400))
+
+
+def nivel_prob(p):
+    if p >= 0.70:
+        return "🔥 Alta"
+    elif p >= 0.58:
+        return "✅ Media-alta"
+    elif p >= 0.52:
+        return "⚖️ Ajustada"
+    else:
+        return "⚠️ Baja"
 
 
 # =========================================================
@@ -131,23 +142,21 @@ def calc_hold(stats, elo_diff, surface):
 
     surface_adj = {
         "Hard": -0.010,
-        "Clay": -0.082,
+        "Clay": -0.085,
         "Grass": +0.010
     }
 
-    # Menos impacto Elo dentro del hold.
-    # El Elo ya afecta al ganador, pero no debe inflar demasiado el saque.
     elo_adj = np.clip(
-        elo_diff / 3500,
+        elo_diff / 3600,
         -0.045,
         0.045
     )
 
-    ace_bonus = stats.get("ace", 0.05) * 0.020
+    ace_bonus = stats.get("ace", 0.05) * 0.018
 
     first_bonus = (
         stats.get("1in", 0.62) * 0.004 +
-        stats.get("1w", 0.70) * 0.008 +
+        stats.get("1w", 0.70) * 0.007 +
         stats.get("2w", 0.50) * 0.004
     )
 
@@ -174,9 +183,9 @@ def sim_set(hold1, hold2, surface, match_shift):
     server = random.choice([1, 2])
 
     if surface == "Clay":
-        noise_scale = 0.060
-        late_pressure = -0.060
-        set_flow_scale = 0.030
+        noise_scale = 0.062
+        late_pressure = -0.065
+        set_flow_scale = 0.034
     elif surface == "Hard":
         noise_scale = 0.038
         late_pressure = -0.030
@@ -186,8 +195,6 @@ def sim_set(hold1, hold2, surface, match_shift):
         late_pressure = -0.018
         set_flow_scale = 0.015
 
-    # Flujo propio del set.
-    # Esto crea más sets tipo 6-2 / 6-3 y menos 7-5 / 7-6.
     set_shift = np.random.normal(match_shift, set_flow_scale)
 
     while True:
@@ -262,14 +269,24 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
     results = {
         "p1": 0,
         "p2": 0,
+
+        "p1_first_set": 0,
+        "p2_first_set": 0,
+
+        "p1_2_0": 0,
+        "p2_2_0": 0,
+
+        "p1_any_set": 0,
+        "p2_any_set": 0,
+
         "set3": 0,
         "set5": 0,
-        "scores": {},
+
         "games": []
     }
 
     if surface == "Clay":
-        match_flow_scale = 0.045
+        match_flow_scale = 0.050
     elif surface == "Hard":
         match_flow_scale = 0.030
     else:
@@ -282,9 +299,9 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
         total_games = 0
         sets_played = 0
 
-        # Forma del día.
-        # Clave para reducir partidos larguísimos y 3 sets artificiales.
         match_shift = np.random.normal(0, match_flow_scale)
+
+        first_set_done = False
 
         while s1 < sets_to_win and s2 < sets_to_win:
 
@@ -299,19 +316,36 @@ def sim_match(d1, d2, surface, best_of=3, n=10000):
 
             if g1 > g2:
                 s1 += 1
+
+                if not first_set_done:
+                    results["p1_first_set"] += 1
+                    first_set_done = True
+
             else:
                 s2 += 1
 
+                if not first_set_done:
+                    results["p2_first_set"] += 1
+                    first_set_done = True
+
             sets_played += 1
-
-        score = f"{s1}-{s2}"
-
-        results["scores"][score] = results["scores"].get(score, 0) + 1
 
         if s1 > s2:
             results["p1"] += 1
         else:
             results["p2"] += 1
+
+        if s1 >= 1:
+            results["p1_any_set"] += 1
+
+        if s2 >= 1:
+            results["p2_any_set"] += 1
+
+        if best_of == 3:
+            if s1 == 2 and s2 == 0:
+                results["p1_2_0"] += 1
+            if s2 == 2 and s1 == 0:
+                results["p2_2_0"] += 1
 
         if sets_played >= 3:
             results["set3"] += 1
@@ -336,9 +370,9 @@ if not db:
 
 with st.sidebar:
 
-    st.header("🎾 Tennis IA v10.4")
+    st.header("🎾 Tennis IA v10.5")
 
-    st.caption("Motor ATP realista calibrado")
+    st.caption("Motor ATP realista · Vista mercados")
 
     players = sorted(db.keys())
 
@@ -422,10 +456,28 @@ if st.button(
     over_19 = sum(x > 19.5 for x in games) / sims
     over_20 = sum(x > 20.5 for x in games) / sims
     over_21 = sum(x > 21.5 for x in games) / sims
+    over_22 = sum(x > 22.5 for x in games) / sims
+
+    under_18 = 1 - over_18
+    under_19 = 1 - over_19
+    under_20 = 1 - over_20
+    under_21 = 1 - over_21
+    under_22 = 1 - over_22
+
+    p1_first = res["p1_first_set"] / sims
+    p2_first = res["p2_first_set"] / sims
+
+    p1_2_0 = res["p1_2_0"] / sims
+    p2_2_0 = res["p2_2_0"] / sims
+
+    p1_any = res["p1_any_set"] / sims
+    p2_any = res["p2_any_set"] / sims
+
+    set3 = res["set3"] / sims
 
     st.divider()
 
-    st.subheader("🏆 Probabilidad de Victoria")
+    st.subheader("🏆 Ganador del Partido")
 
     cc1, cc2 = st.columns(2)
 
@@ -433,19 +485,105 @@ if st.button(
         st.metric(
             d1["Player"],
             f"{p1:.1%}",
-            f"Rank #{d1['Rank']} · Elo {surface}: {d1[surface]:.0f}"
+            f"{nivel_prob(p1)} · Rank #{d1['Rank']} · Elo {surface}: {d1[surface]:.0f}"
         )
 
     with cc2:
         st.metric(
             d2["Player"],
             f"{p2:.1%}",
-            f"Rank #{d2['Rank']} · Elo {surface}: {d2[surface]:.0f}"
+            f"{nivel_prob(p2)} · Rank #{d2['Rank']} · Elo {surface}: {d2[surface]:.0f}"
         )
 
     st.caption(
         f"Referencia Elo puro: {elo_p1:.1%} / {elo_p2:.1%}"
     )
+
+    st.divider()
+
+    st.subheader("🎾 Ganador del 1er Set")
+
+    fs1, fs2 = st.columns(2)
+
+    with fs1:
+        st.metric(
+            f"{d1['Player']} gana 1er set",
+            f"{p1_first:.1%}",
+            nivel_prob(p1_first)
+        )
+
+    with fs2:
+        st.metric(
+            f"{d2['Player']} gana 1er set",
+            f"{p2_first:.1%}",
+            nivel_prob(p2_first)
+        )
+
+    st.divider()
+
+    st.subheader("📌 Mercados de Sets")
+
+    s1, s2, s3, s4 = st.columns(4)
+
+    with s1:
+        st.metric(
+            f"{d1['Player']} gana 2-0",
+            f"{p1_2_0:.1%}",
+            nivel_prob(p1_2_0)
+        )
+
+    with s2:
+        st.metric(
+            f"{d2['Player']} gana 2-0",
+            f"{p2_2_0:.1%}",
+            nivel_prob(p2_2_0)
+        )
+
+    with s3:
+        st.metric(
+            f"{d1['Player']} +1.5 sets",
+            f"{p1_any:.1%}",
+            nivel_prob(p1_any)
+        )
+
+    with s4:
+        st.metric(
+            f"{d2['Player']} +1.5 sets",
+            f"{p2_any:.1%}",
+            nivel_prob(p2_any)
+        )
+
+    st.metric(
+        "Partido a 3 sets",
+        f"{set3:.1%}",
+        nivel_prob(set3)
+    )
+
+    st.divider()
+
+    st.subheader("📊 Mercados de Games")
+
+    g1, g2, g3, g4, g5 = st.columns(5)
+
+    with g1:
+        st.metric("Media games", f"{avg_games:.1f}")
+        st.caption(f"Mediana: {med_games:.0f} · σ: {std_games:.1f}")
+
+    with g2:
+        st.metric("Over 18.5", f"{over_18:.1%}", nivel_prob(over_18))
+        st.metric("Under 18.5", f"{under_18:.1%}", nivel_prob(under_18))
+
+    with g3:
+        st.metric("Over 19.5", f"{over_19:.1%}", nivel_prob(over_19))
+        st.metric("Under 19.5", f"{under_19:.1%}", nivel_prob(under_19))
+
+    with g4:
+        st.metric("Over 20.5", f"{over_20:.1%}", nivel_prob(over_20))
+        st.metric("Under 20.5", f"{under_20:.1%}", nivel_prob(under_20))
+
+    with g5:
+        st.metric("Over 21.5", f"{over_21:.1%}", nivel_prob(over_21))
+        st.metric("Under 21.5", f"{under_21:.1%}", nivel_prob(under_21))
 
     st.divider()
 
@@ -467,111 +605,30 @@ if st.button(
 
     st.divider()
 
-    st.subheader("📋 Marcadores más probables")
+    st.subheader("🧠 Lectura rápida")
 
-    scores_sorted = sorted(
-        res["scores"].items(),
-        key=lambda x: -x[1]
-    )
+    favorito = d1["Player"] if p1 > p2 else d2["Player"]
+    prob_fav = max(p1, p2)
 
-    cols = st.columns(
-        min(4, len(scores_sorted))
-    )
+    mejor_1set = d1["Player"] if p1_first > p2_first else d2["Player"]
+    prob_1set = max(p1_first, p2_first)
 
-    for i, (score, count) in enumerate(scores_sorted[:4]):
-        with cols[i]:
-            st.metric(
-                score,
-                f"{count / sims:.1%}"
-            )
-
-    st.divider()
-
-    st.subheader("📊 Games")
-
-    g1, g2, g3, g4, g5, g6 = st.columns(6)
-
-    with g1:
-        st.metric(
-            "Media Games",
-            f"{avg_games:.1f}"
-        )
-
-    with g2:
-        st.metric(
-            "Mediana",
-            f"{med_games:.0f}"
-        )
-
-    with g3:
-        st.metric(
-            "Over 18.5",
-            f"{over_18:.1%}"
-        )
-
-    with g4:
-        st.metric(
-            "Over 19.5",
-            f"{over_19:.1%}"
-        )
-
-    with g5:
-        st.metric(
-            "Over 20.5",
-            f"{over_20:.1%}"
-        )
-
-    with g6:
-        st.metric(
-            "Over 21.5",
-            f"{over_21:.1%}"
-        )
-
-    st.divider()
-
-    st.subheader("🎾 Sets")
-
-    s1, s2 = st.columns(2)
-
-    with s1:
-        st.metric(
-            "3 Sets",
-            f"{res['set3'] / sims:.1%}"
-        )
-
-    with s2:
-        if best_of == 5:
-            st.metric(
-                "5 Sets",
-                f"{res['set5'] / sims:.1%}"
-            )
-        else:
-            st.metric(
-                "Dispersión games",
-                f"{std_games:.1f}"
-            )
-
-    st.divider()
-
-    if surface == "Clay" and avg_games > 23.5:
-        st.warning(
-            "📈 Sigue algo largo para clay. Si varios partidos salen igual, bajaremos más la duración de sets."
-        )
-    elif avg_games < 21:
-        st.success(
-            "📉 Partido esperado corto con bastantes breaks."
-        )
-    elif avg_games > 24:
-        st.warning(
-            "📈 Partido largo esperado con muchos holds."
-        )
+    if avg_games < 21:
+        lectura_games = "partido más bien corto"
+    elif avg_games > 23.5:
+        lectura_games = "partido con tendencia larga"
     else:
-        st.info(
-            "⚖️ Partido equilibrado en duración."
-        )
+        lectura_games = "partido de duración media"
+
+    st.info(
+        f"Favorito: **{favorito} ({prob_fav:.1%})** · "
+        f"Mejor 1er set: **{mejor_1set} ({prob_1set:.1%})** · "
+        f"Lectura games: **{lectura_games}** · "
+        f"Probabilidad de 3 sets: **{set3:.1%}**"
+    )
 
     st.divider()
 
     st.caption(
-        f"Tennis IA v10.4 · Elo superficie + Hold dinámico · Match flow · {sims:,} simulaciones Monte Carlo"
+        f"Tennis IA v10.5 · Elo superficie + Hold dinámico · Vista mercados · {sims:,} simulaciones Monte Carlo"
     )
