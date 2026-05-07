@@ -1,6 +1,6 @@
 # =========================================================
-# TENNIS IA v11.5
-# PRO MATCH ENGINE
+# TENNIS IA v11.6
+# PRO MATCH ENGINE + EXTREME ELO VOLATILITY
 # =========================================================
 
 import streamlit as st
@@ -17,7 +17,7 @@ from difflib import SequenceMatcher
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v11.5",
+    page_title="Tennis IA v11.6",
     page_icon="🎾",
     layout="wide"
 )
@@ -539,6 +539,34 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big):
 
 
 # =========================================================
+# MATCH VOLATILITY
+# =========================================================
+
+def calcular_match_volatility(e1, e2, surface):
+
+    elo_gap = abs(e1 - e2)
+
+    base_vol = 0.040
+
+    if elo_gap > 300:
+        base_vol += 0.018
+
+    elif elo_gap > 200:
+        base_vol += 0.010
+
+    elif elo_gap > 120:
+        base_vol += 0.005
+
+    if surface == "Clay":
+        base_vol += 0.008
+
+    elif surface == "Grass":
+        base_vol -= 0.004
+
+    return base_vol
+
+
+# =========================================================
 # MATCH SIM
 # =========================================================
 
@@ -573,6 +601,11 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
         "p2_fs": 0
     }
 
+    match_volatility = calcular_match_volatility(e1, e2, surface)
+
+    if p1_big or p2_big:
+        match_volatility += 0.006
+
     for _ in range(n):
 
         sets1 = 0
@@ -582,7 +615,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
 
         tb_seen = False
 
-        shift = np.random.normal(0, 0.04)
+        shift = np.random.normal(0, match_volatility)
 
         first_set_done = False
 
@@ -624,12 +657,15 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
         if sets1 == 2 and sets2 == 1:
             res["set3"] += 1
 
+        if sets2 == 2 and sets1 == 1:
+            res["set3"] += 1
+
         if tb_seen:
             res["tb"] += 1
 
         res["games"].append(games)
 
-    return res, hold1, hold2, p1_profile, p2_profile
+    return res, hold1, hold2, p1_profile, p2_profile, match_volatility
 
 
 # =========================================================
@@ -638,7 +674,9 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
 
 with st.sidebar:
 
-    st.header("🎾 Tennis IA v11.5")
+    st.header("🎾 Tennis IA v11.6")
+
+    st.caption("Extreme Elo Volatility")
 
     circuito = st.radio(
         "Circuito",
@@ -695,7 +733,7 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
 
     with st.spinner(f"Simulando {sims:,} partidos..."):
 
-        res, hold1, hold2, p1_profile, p2_profile = sim_match(
+        res, hold1, hold2, p1_profile, p2_profile, match_volatility = sim_match(
             d1,
             d2,
             surface,
@@ -928,6 +966,9 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     if max(p1, p2) < 0.55:
         tags.append("⚠️ Favorito débil")
 
+    if match_volatility > 0.06:
+        tags.append("🌪️ Alta volatilidad por diferencia Elo/superficie")
+
     if tags:
         st.info(" · ".join(tags))
 
@@ -957,5 +998,5 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     st.divider()
 
     st.caption(
-        f"Tennis IA v11.5 · Pro Match Engine · {sims:,} simulaciones Monte Carlo"
+        f"Tennis IA v11.6 · Extreme Elo Volatility · {sims:,} simulaciones Monte Carlo"
     )
