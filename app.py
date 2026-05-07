@@ -5,14 +5,15 @@ import random
 import re
 import os
 import unicodedata
+from difflib import get_close_matches
 
 # =========================================================
-# TENNIS IA v10.9
-# BIG SERVER ENGINE + DATA DIAGNOSTIC
+# TENNIS IA v11
+# FUZZY NAME MATCHING + BIG SERVER ENGINE
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v10.9",
+    page_title="Tennis IA v11",
     page_icon="🎾",
     layout="wide"
 )
@@ -30,6 +31,82 @@ def limpiar(txt):
     t = re.sub(r"\[.*?\]|\(.*?\)", "", t)
 
     return re.sub(r"[^A-Z0-9]", "", t.upper())
+
+
+def tokens_nombre(nombre):
+    limpio = limpiar(nombre)
+    return re.findall(r"[A-Z]+", limpio)
+
+
+def similitud_nombre(a, b):
+    a_clean = limpiar(a)
+    b_clean = limpiar(b)
+
+    if not a_clean or not b_clean:
+        return 0
+
+    if a_clean == b_clean:
+        return 1.0
+
+    if a_clean in b_clean or b_clean in a_clean:
+        return 0.92
+
+    a_tokens = set(tokens_nombre(a))
+    b_tokens = set(tokens_nombre(b))
+
+    if not a_tokens or not b_tokens:
+        return 0
+
+    inter = len(a_tokens & b_tokens)
+    union = len(a_tokens | b_tokens)
+
+    token_score = inter / union
+
+    from difflib import SequenceMatcher
+    seq_score = SequenceMatcher(None, a_clean, b_clean).ratio()
+
+    return max(token_score, seq_score)
+
+
+def buscar_stats(nombre_elo, stats_map, stats_names):
+    nid = limpiar(nombre_elo)
+
+    if nid in stats_map:
+        stats = stats_map[nid].copy()
+        stats["match_type"] = "exacto"
+        stats["match_score"] = 1.0
+        return stats
+
+    mejor_id = None
+    mejor_score = 0
+
+    for sid in stats_names:
+        score = similitud_nombre(nid, sid)
+
+        if score > mejor_score:
+            mejor_score = score
+            mejor_id = sid
+
+    if mejor_id and mejor_score >= 0.72:
+        stats = stats_map[mejor_id].copy()
+        stats["match_type"] = "aproximado"
+        stats["match_score"] = mejor_score
+        return stats
+
+    stats_default = {
+        "found_stats": False,
+        "raw_name_stats": "NO ENCONTRADO",
+        "hold": 0.78,
+        "ace": 0.05,
+        "1in": 0.62,
+        "1w": 0.70,
+        "2w": 0.50,
+        "serve_profile": "normal",
+        "match_type": "default",
+        "match_score": 0
+    }
+
+    return stats_default
 
 
 def elo_prob(e1, e2):
@@ -76,10 +153,6 @@ def perfil_legible(profile):
     }
     return mapa.get(profile, "Normal")
 
-
-# =========================================================
-# LECTURA SEGURA DE PORCENTAJES
-# =========================================================
 
 def leer_porcentaje(valor, default):
     try:
@@ -146,6 +219,7 @@ def cargar_datos():
             stats_map[nid] = {
                 "found_stats": True,
                 "raw_name_stats": nombre,
+                "clean_stats_id": nid,
                 "hold": np.clip(hold, 0.50, 0.95),
                 "ace": np.clip(ace, 0.00, 0.35),
                 "1in": np.clip(first_in, 0.35, 0.85),
@@ -153,6 +227,8 @@ def cargar_datos():
                 "2w": np.clip(second_won, 0.25, 0.75),
                 "serve_profile": perfil_saque(ace)
             }
+
+    stats_names = list(stats_map.keys())
 
     if os.path.exists("atp_elo.xlsx"):
 
@@ -171,16 +247,7 @@ def cargar_datos():
             c_elo = leer_float(row.get("CELO", elo_general), elo_general)
             g_elo = leer_float(row.get("GELO", elo_general), elo_general)
 
-            stats = stats_map.get(nid, {
-                "found_stats": False,
-                "raw_name_stats": "NO ENCONTRADO",
-                "hold": 0.78,
-                "ace": 0.05,
-                "1in": 0.62,
-                "1w": 0.70,
-                "2w": 0.50,
-                "serve_profile": "normal"
-            })
+            stats = buscar_stats(nombre, stats_map, stats_names)
 
             players[nombre] = {
                 "Player": nombre,
@@ -515,8 +582,8 @@ if not db:
 
 with st.sidebar:
 
-    st.header("🎾 Tennis IA v10.9")
-    st.caption("Big Server Engine + Diagnóstico")
+    st.header("🎾 Tennis IA v11")
+    st.caption("Fuzzy Matching + Big Server Engine")
 
     players = sorted(db.keys())
 
@@ -882,6 +949,16 @@ if st.button(
         )
 
         st.write(
+            "Tipo cruce:",
+            d1["Stats"].get("match_type", "N/A")
+        )
+
+        st.write(
+            "Score cruce:",
+            f"{d1['Stats'].get('match_score', 0):.2f}"
+        )
+
+        st.write(
             "Nombre stats:",
             d1["Stats"].get("raw_name_stats", "N/A")
         )
@@ -908,6 +985,16 @@ if st.button(
         st.write(
             "Stats encontradas:",
             "✅ Sí" if d2["Stats"].get("found_stats", False) else "❌ No"
+        )
+
+        st.write(
+            "Tipo cruce:",
+            d2["Stats"].get("match_type", "N/A")
+        )
+
+        st.write(
+            "Score cruce:",
+            f"{d2['Stats'].get('match_score', 0):.2f}"
         )
 
         st.write(
@@ -954,5 +1041,5 @@ if st.button(
     st.divider()
 
     st.caption(
-        f"Tennis IA v10.9 · Big Server Engine + Diagnóstico · {sims:,} simulaciones Monte Carlo"
+        f"Tennis IA v11 · Fuzzy Matching + Big Server Engine · {sims:,} simulaciones Monte Carlo"
     )
