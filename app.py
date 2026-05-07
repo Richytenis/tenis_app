@@ -7,12 +7,12 @@ import os
 import unicodedata
 
 # =========================================================
-# TENNIS IA v10.1
-# MODELO CALIBRADO ATP REAL
+# TENNIS IA v10.2
+# ATP REALISTIC ENGINE
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v10.1",
+    page_title="Tennis IA v10.2",
     page_icon="🎾",
     layout="wide"
 )
@@ -95,15 +95,30 @@ def cargar_datos():
         for _, row in df_stats.iterrows():
 
             nombre = str(row.get("Player", "")).strip()
+
             nid = limpiar(nombre)
 
             try:
 
-                hold = float(str(row.get("Hld%", "80")).replace('%', '')) / 100
-                ace = float(str(row.get("Ace%", "7")).replace('%', '')) / 100
-                first_in = float(str(row.get("1stIn", "62")).replace('%', '')) / 100
-                first_won = float(str(row.get("1st%", "72")).replace('%', '')) / 100
-                second_won = float(str(row.get("2nd%", "50")).replace('%', '')) / 100
+                hold = float(
+                    str(row.get("Hld%", "80")).replace('%', '')
+                ) / 100
+
+                ace = float(
+                    str(row.get("Ace%", "7")).replace('%', '')
+                ) / 100
+
+                first_in = float(
+                    str(row.get("1stIn", "62")).replace('%', '')
+                ) / 100
+
+                first_won = float(
+                    str(row.get("1st%", "72")).replace('%', '')
+                ) / 100
+
+                second_won = float(
+                    str(row.get("2nd%", "50")).replace('%', '')
+                ) / 100
 
                 stats_map[nid] = {
 
@@ -129,7 +144,9 @@ def cargar_datos():
 
         for _, row in df_elo.iterrows():
 
-            nombre = str(row.get("PLAYER", "")).replace('\xa0', ' ').strip()
+            nombre = str(
+                row.get("PLAYER", "")
+            ).replace('\xa0', ' ').strip()
 
             nid = limpiar(nombre)
 
@@ -144,10 +161,21 @@ def cargar_datos():
 
                 "Rank": rank,
 
-                "Hard": float(row.get("HELO", row.get("ELO", 1500))),
-                "Clay": float(row.get("CELO", row.get("ELO", 1500))),
-                "Grass": float(row.get("GELO", row.get("ELO", 1500))),
-                "General": float(row.get("ELO", 1500)),
+                "Hard": float(
+                    row.get("HELO", row.get("ELO", 1500))
+                ),
+
+                "Clay": float(
+                    row.get("CELO", row.get("ELO", 1500))
+                ),
+
+                "Grass": float(
+                    row.get("GELO", row.get("ELO", 1500))
+                ),
+
+                "General": float(
+                    row.get("ELO", 1500)
+                ),
 
                 "Stats": stats_map.get(nid, {})
             }
@@ -162,7 +190,7 @@ def cargar_datos():
 def calc_hold(stats, elo_diff, surface):
 
     # =====================================================
-    # HOLD BASE REAL
+    # HOLD BASE
     # =====================================================
 
     base_hold = stats.get("hold", 0.78)
@@ -173,7 +201,7 @@ def calc_hold(stats, elo_diff, surface):
 
     surface_adj = {
         "Hard": 0.00,
-        "Clay": -0.045,
+        "Clay": -0.050,
         "Grass": +0.025
     }
 
@@ -189,7 +217,6 @@ def calc_hold(stats, elo_diff, surface):
 
     # =====================================================
     # AJUSTE DEFENSIVO
-    # MEJORES JUGADORES ROMPEN MÁS
     # =====================================================
 
     defensive_adj = np.clip(
@@ -199,15 +226,17 @@ def calc_hold(stats, elo_diff, surface):
     )
 
     # =====================================================
-    # AJUSTE SERVICIO
+    # AJUSTE SAQUE
     # =====================================================
 
-    ace_bonus = stats.get("ace", 0.05) * 0.05
+    ace_bonus = (
+        stats.get("ace", 0.05) * 0.04
+    )
 
     first_bonus = (
-        stats.get("1in", 0.62) * 0.02 +
-        stats.get("1w", 0.72) * 0.03 +
-        stats.get("2w", 0.50) * 0.02
+        stats.get("1in", 0.62) * 0.015 +
+        stats.get("1w", 0.72) * 0.025 +
+        stats.get("2w", 0.50) * 0.015
     )
 
     # =====================================================
@@ -223,7 +252,7 @@ def calc_hold(stats, elo_diff, surface):
         + first_bonus
     )
 
-    return np.clip(hold, 0.58, 0.92)
+    return np.clip(hold, 0.55, 0.91)
 
 
 # =========================================================
@@ -240,19 +269,61 @@ def sim_set(hold1, hold2, surface):
     while True:
 
         # =================================================
+        # VOLATILIDAD HOLD
+        # =================================================
+
+        if surface == "Clay":
+            noise_scale = 0.045
+
+        elif surface == "Hard":
+            noise_scale = 0.03
+
+        else:
+            noise_scale = 0.02
+
+        # =================================================
+        # PRESIÓN FINAL SET
+        # =================================================
+
+        pressure = 0
+
+        if g1 >= 5 and g2 >= 5:
+
+            if surface == "Clay":
+                pressure = -0.035
+            else:
+                pressure = -0.015
+
+        # =================================================
+        # HOLD DINÁMICO
+        # =================================================
+
+        current_hold1 = np.clip(
+            np.random.normal(hold1, noise_scale) + pressure,
+            0.45,
+            0.95
+        )
+
+        current_hold2 = np.clip(
+            np.random.normal(hold2, noise_scale) + pressure,
+            0.45,
+            0.95
+        )
+
+        # =================================================
         # GAME
         # =================================================
 
         if server == 1:
 
-            if random.random() < hold1:
+            if random.random() < current_hold1:
                 g1 += 1
             else:
                 g2 += 1
 
         else:
 
-            if random.random() < hold2:
+            if random.random() < current_hold2:
                 g2 += 1
             else:
                 g1 += 1
@@ -260,7 +331,7 @@ def sim_set(hold1, hold2, surface):
         server = 1 if server == 2 else 2
 
         # =================================================
-        # SET NORMAL
+        # FIN SET
         # =================================================
 
         if g1 >= 6 and (g1 - g2) >= 2:
@@ -277,16 +348,25 @@ def sim_set(hold1, hold2, surface):
 
             if surface == "Clay":
 
-                p_tb = 0.46 + ((hold1 - hold2) * 1.2)
+                p_tb = 0.46 + (
+                    (hold1 - hold2) * 1.2
+                )
 
             else:
 
-                p_tb = hold1 / (hold1 + hold2)
+                p_tb = (
+                    hold1 / (hold1 + hold2)
+                )
 
-            p_tb = np.clip(p_tb, 0.30, 0.70)
+            p_tb = np.clip(
+                p_tb,
+                0.30,
+                0.70
+            )
 
             if random.random() < p_tb:
                 return 7, 6
+
             else:
                 return 6, 7
 
@@ -389,7 +469,9 @@ db = cargar_datos()
 
 if not db:
 
-    st.error("No se encontraron archivos ATP.")
+    st.error(
+        "No se encontraron archivos ATP."
+    )
 
     st.stop()
 
@@ -399,10 +481,10 @@ if not db:
 
 with st.sidebar:
 
-    st.header("🎾 Tennis IA v10.1")
+    st.header("🎾 Tennis IA v10.2")
 
     st.caption(
-        "Modelo calibrado ATP real"
+        "Motor ATP realista calibrado"
     )
 
     players = sorted(db.keys())
@@ -414,7 +496,10 @@ with st.sidebar:
 
     format_match = st.radio(
         "Formato",
-        ["ATP Tour (3 sets)", "Grand Slam (5 sets)"]
+        [
+            "ATP Tour (3 sets)",
+            "Grand Slam (5 sets)"
+        ]
     )
 
     sims = st.select_slider(
@@ -424,7 +509,7 @@ with st.sidebar:
     )
 
 # =========================================================
-# JUGADORES
+# PLAYERS
 # =========================================================
 
 c1, c2 = st.columns(2)
@@ -473,10 +558,12 @@ if st.button(
     p1 = res["p1"] / sims
     p2 = res["p2"] / sims
 
-    avg_games = np.mean(res["games"])
+    avg_games = np.mean(
+        res["games"]
+    )
 
     # =====================================================
-    # PROBABILIDADES
+    # PROBABILIDAD
     # =====================================================
 
     st.divider()
@@ -491,8 +578,14 @@ if st.button(
 
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-label">{d1['Player']}</div>
-            <div class="metric-value">{p1:.1%}</div>
+            <div class="metric-label">
+                {d1['Player']}
+            </div>
+
+            <div class="metric-value">
+                {p1:.1%}
+            </div>
+
             <div class="metric-sub">
                 Rank #{d1['Rank']}
                 · Elo {surface}: {d1[surface]:.0f}
@@ -504,8 +597,14 @@ if st.button(
 
         st.markdown(f"""
         <div class="metric-card">
-            <div class="metric-label">{d2['Player']}</div>
-            <div class="metric-value">{p2:.1%}</div>
+            <div class="metric-label">
+                {d2['Player']}
+            </div>
+
+            <div class="metric-value">
+                {p2:.1%}
+            </div>
+
             <div class="metric-sub">
                 Rank #{d2['Rank']}
                 · Elo {surface}: {d2[surface]:.0f}
@@ -540,7 +639,7 @@ if st.button(
         )
 
     # =====================================================
-    # MARCADORES
+    # SCORES
     # =====================================================
 
     st.divider()
@@ -558,16 +657,23 @@ if st.button(
         min(4, len(scores_sorted))
     )
 
-    for i, (score, count) in enumerate(scores_sorted[:4]):
+    for i, (score, count) in enumerate(
+        scores_sorted[:4]
+    ):
 
         with cols[i]:
 
             st.markdown(f"""
             <div class="metric-card">
-                <div class="metric-label">{score}</div>
+
+                <div class="metric-label">
+                    {score}
+                </div>
+
                 <div class="metric-value">
                     {count/sims:.1%}
                 </div>
+
             </div>
             """, unsafe_allow_html=True)
 
@@ -634,8 +740,7 @@ if st.button(
     else:
 
         st.info(
-            "⚖️ Partido equilibrado "
-            "en duración."
+            "⚖️ Partido equilibrado."
         )
 
     # =====================================================
@@ -646,8 +751,9 @@ if st.button(
 
     st.caption(
         f"""
-        Tennis IA v10.1
-        · Elo superficie + Hold calibrado ATP
+        Tennis IA v10.2
+        · Elo superficie + Hold dinámico
+        · Volatilidad ATP real
         · {sims:,} simulaciones Monte Carlo
         """
     )
