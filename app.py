@@ -154,13 +154,10 @@ def sim_game(serve_stats, return_stats, elo_adj, surface):
         elif r < p_ace + p_df:
             rp += 1
         else:
-            r2 = random.random()
-            if r2 < p_in:   # primer servicio dentro
-                sp += 1 if random.random() < p_w1 else None
-                if r2 < p_in:
-                    if random.random() < p_w1: sp += 1
-                    else: rp += 1
-            else:            # segundo servicio
+            if random.random() < p_in:   # primer servicio dentro
+                if random.random() < p_w1: sp += 1
+                else: rp += 1
+            else:                         # segundo servicio
                 if random.random() < p_w2: sp += 1
                 else: rp += 1
 
