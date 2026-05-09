@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v15", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v16", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -462,10 +462,118 @@ def hard_compression(surface, fav, h1, h2):
 
     return noise_mult, pressure_add, shift_mult
 
-def sim_set(hold1, hold2, surface, shift, p1_big, p2_big, fav_raw_est=0.5):
+
+def calcular_tiebreak_boost(stats1, stats2, hold1, hold2, surface, p1_big, p2_big):
+    """
+    v16 Tie-break Intelligence Engine.
+    Estima el entorno de tie-break con:
+    - hold combinado
+    - ace%
+    - 1st serve won
+    - 2nd serve won
+    - superficie
+    - big server profile
+    """
+    ace1 = stats1.get("ace", 0.05)
+    ace2 = stats2.get("ace", 0.05)
+
+    first_won1 = stats1.get("1w", 0.70)
+    first_won2 = stats2.get("1w", 0.70)
+
+    second_won1 = stats1.get("2w", 0.50)
+    second_won2 = stats2.get("2w", 0.50)
+
+    hold_avg = (hold1 + hold2) / 2
+    ace_avg = (ace1 + ace2) / 2
+    first_avg = (first_won1 + first_won2) / 2
+    second_avg = (second_won1 + second_won2) / 2
+
+    boost = 0.0
+
+    # Hold alto de ambos = más 6-6
+    if hold1 > 0.78 and hold2 > 0.78:
+        boost += 0.070
+    elif hold1 > 0.76 and hold2 > 0.76:
+        boost += 0.050
+    elif hold1 > 0.74 and hold2 > 0.74:
+        boost += 0.030
+    elif hold_avg < 0.66:
+        boost -= 0.025
+
+    # Aces y primeros servicios potentes
+    if ace_avg >= 0.12:
+        boost += 0.050
+    elif ace_avg >= 0.09:
+        boost += 0.030
+    elif ace_avg >= 0.07:
+        boost += 0.015
+
+    if first_avg >= 0.76:
+        boost += 0.030
+    elif first_avg >= 0.72:
+        boost += 0.015
+
+    if second_avg >= 0.55:
+        boost += 0.015
+
+    # Perfil de sacadores
+    if p1_big and p2_big:
+        boost += 0.060
+    elif p1_big or p2_big:
+        boost += 0.030
+
+    # Superficie
+    if surface == "Grass":
+        boost += 0.055
+    elif surface == "Hard":
+        boost += 0.035
+    elif surface == "Clay":
+        boost -= 0.015
+
+    return float(np.clip(boost, -0.040, 0.160))
+
+
+def pressure_collapse_params(stats1, stats2, surface):
+    """
+    v16 Pressure Collapse.
+    Ajusta ligeramente los games finales según BP saved / BP conversion.
+    No cambia mucho el ML; afecta más al cierre de sets y tie-breaks.
+    """
+    bp_saved1 = stats1.get("bp_saved", None)
+    bp_saved2 = stats2.get("bp_saved", None)
+    bp_conv1 = stats1.get("bp_conv", None)
+    bp_conv2 = stats2.get("bp_conv", None)
+
+    pressure1 = 0.0
+    pressure2 = 0.0
+
+    if bp_saved1 is not None:
+        pressure1 += np.clip((bp_saved1 - 0.58) * 0.08, -0.012, 0.014)
+    if bp_saved2 is not None:
+        pressure2 += np.clip((bp_saved2 - 0.58) * 0.08, -0.012, 0.014)
+
+    if bp_conv1 is not None:
+        pressure1 += np.clip((bp_conv1 - 0.38) * 0.04, -0.008, 0.010)
+    if bp_conv2 is not None:
+        pressure2 += np.clip((bp_conv2 - 0.38) * 0.04, -0.008, 0.010)
+
+    if surface == "Clay":
+        pressure1 *= 1.10
+        pressure2 *= 1.10
+
+    return float(np.clip(pressure1, -0.018, 0.020)), float(np.clip(pressure2, -0.018, 0.020))
+
+
+
+def sim_set(hold1, hold2, surface, shift, p1_big, p2_big, fav_raw_est=0.5, stats1=None, stats2=None):
     g1 = g2 = 0
     tb = False
     server = random.choice([1, 2])
+
+    stats1 = stats1 or {}
+    stats2 = stats2 or {}
+    tb_boost = calcular_tiebreak_boost(stats1, stats2, hold1, hold2, surface, p1_big, p2_big)
+    pressure_skill1, pressure_skill2 = pressure_collapse_params(stats1, stats2, surface)
 
     if surface == "Clay":
         noise, pressure = 0.068, -0.085
@@ -481,8 +589,12 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big, fav_raw_est=0.5):
 
     while True:
         extra = pressure if g1 >= 4 and g2 >= 4 else 0
-        h1 = np.clip(np.random.normal(hold1 + shift, noise) + extra, 0.30, 0.93)
-        h2 = np.clip(np.random.normal(hold2 - shift, noise) + extra, 0.30, 0.93)
+        # En games finales, BP saved/BP converted modula el cierre.
+        clutch1 = pressure_skill1 if g1 >= 4 and g2 >= 4 else 0.0
+        clutch2 = pressure_skill2 if g1 >= 4 and g2 >= 4 else 0.0
+
+        h1 = np.clip(np.random.normal(hold1 + shift, noise) + extra + clutch1, 0.30, 0.93)
+        h2 = np.clip(np.random.normal(hold2 - shift, noise) + extra + clutch2, 0.30, 0.93)
 
         if server == 1:
             if random.random() < h1: g1 += 1
@@ -500,15 +612,10 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big, fav_raw_est=0.5):
             tb = True
             p_tb = hold1 / (hold1 + hold2)
 
-            if p1_big or p2_big: p_tb += 0.06
-            if surface == "Hard":
-                p_tb += 0.03
-                if hold1 > 0.76 and hold2 > 0.76: p_tb += 0.045
-                elif hold1 > 0.74 and hold2 > 0.74: p_tb += 0.025
-                if p1_big and p2_big: p_tb += 0.035
-            if surface == "Grass": p_tb += 0.035
+            # v16: boost inteligente según saque/hold/superficie
+            p_tb += tb_boost
 
-            p_tb = np.clip(p_tb, 0.32, 0.78)
+            p_tb = np.clip(p_tb, 0.30, 0.82)
             return (7, 6, tb) if random.random() < p_tb else (6, 7, tb)
 
 def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
@@ -529,6 +636,9 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
     p1_big = p1_profile in ["big_server", "elite_server"]
     p2_big = p2_profile in ["big_server", "elite_server"]
 
+    tb_intel_boost = calcular_tiebreak_boost(s1, s2, hold1, hold2, surface, p1_big, p2_big)
+    pressure_skill1, pressure_skill2 = pressure_collapse_params(s1, s2, surface)
+
     sets_to_win = 3 if best_of == 5 else 2
     fav_est = max(elo_prob(e1, e2), 1 - elo_prob(e1, e2))
     vol = calcular_match_volatility(e1, e2, surface, fav_est)
@@ -543,7 +653,10 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
         shift = np.random.normal(0, vol)
 
         while sets1 < sets_to_win and sets2 < sets_to_win:
-            g1, g2, tb = sim_set(hold1, hold2, surface, shift, p1_big, p2_big, fav_est)
+            g1, g2, tb = sim_set(
+                hold1, hold2, surface, shift, p1_big, p2_big, fav_est,
+                stats1=s1, stats2=s2
+            )
             games += g1 + g2
             if tb: tb_seen = True
 
@@ -581,7 +694,10 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
         "games": res["games"], "hold1": hold1, "hold2": hold2,
         "raw_hold1": raw1, "raw_hold2": raw2, "ret1": ret1, "ret2": ret2,
         "p1_profile": p1_profile, "p2_profile": p2_profile,
-        "vol": vol, "fav_raw_est": fav_est
+        "vol": vol, "fav_raw_est": fav_est,
+        "tb_intel_boost": tb_intel_boost,
+        "pressure_skill1": pressure_skill1,
+        "pressure_skill2": pressure_skill2
     }
 
 def cargar_historicos(circuito):
@@ -678,7 +794,10 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
             "WinnerHold": sim["hold1"], "LoserHold": sim["hold2"],
             "WinnerReturn": sim["ret1"], "LoserReturn": sim["ret2"],
             "WinnerServeProfile": sim["p1_profile"], "LoserServeProfile": sim["p2_profile"],
-            "FavRawEst": sim["fav_raw_est"]
+            "FavRawEst": sim["fav_raw_est"],
+            "TBIntelBoost": sim.get("tb_intel_boost", 0),
+            "WinnerPressureSkill": sim.get("pressure_skill1", 0),
+            "LoserPressureSkill": sim.get("pressure_skill2", 0)
         })
 
         if total:
@@ -748,8 +867,8 @@ def crear_analyzer_tables(val, min_casos=20):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v15")
-    st.caption("Surface Adaptive Engine")
+    st.header("🎾 Tennis IA v16")
+    st.caption("Tie-break Intelligence Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -840,6 +959,17 @@ if modo == "Predictor":
             st.caption(f"{perfil_legible(sim['p2_profile'])} · Return strength {sim['ret2']:.1%}")
 
         st.divider()
+        st.subheader("🎯 Tie-break Intelligence")
+
+        tb1, tb2, tb3 = st.columns(3)
+        with tb1:
+            st.metric("TB boost", f"{sim.get('tb_intel_boost', 0):+.1%}")
+        with tb2:
+            st.metric(f"Presión {d1['Player']}", f"{sim.get('pressure_skill1', 0):+.1%}")
+        with tb3:
+            st.metric(f"Presión {d2['Player']}", f"{sim.get('pressure_skill2', 0):+.1%}")
+
+        st.divider()
         st.subheader("🧠 Perfil del Partido")
         tags = []
         if sim["p1_profile"] in ["big_server","elite_server"]: tags.append(f"🚀 {d1['Player']} gran sacador")
@@ -852,6 +982,7 @@ if modo == "Predictor":
         if sim["vol"] > 0.06: tags.append("🌪️ Alta volatilidad por diferencia Elo/superficie")
         if surface == "Hard" and sim["fav_raw_est"] >= 0.66: tags.append("🧊 Hard compression activada")
         if sim["hold1"] > 0.76 and sim["hold2"] > 0.76 and surface == "Hard": tags.append("🎯 Smart tie-break boost")
+        if sim.get("tb_intel_boost", 0) >= 0.08: tags.append("🧠 TB Intelligence alto")
         st.info(" · ".join(tags) if tags else "Sin perfil extremo detectado.")
 
         st.divider()
@@ -864,7 +995,7 @@ if modo == "Predictor":
         }
         best = max(markets.items(), key=lambda x: x[1])
         st.success(f"{best[0]} → {best[1]:.1%}")
-        st.caption(f"Tennis IA v15 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v16 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -902,7 +1033,7 @@ elif modo == "Validador histórico":
         with d2: st.metric("Over 22.5 accuracy", f"{over22_acc:.1%}")
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v15.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v16.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
@@ -952,4 +1083,4 @@ else:
         st.divider()
         st.subheader("🧾 Detalle base")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v15.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v16.csv", mime="text/csv")
