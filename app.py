@@ -1,6 +1,6 @@
 # =========================================================
-# TENNIS IA v11.7
-# PRO MATCH ENGINE + RETURN STRENGTH
+# TENNIS IA v11.8
+# PRO MATCH ENGINE + SMART CLAY DEFAULTS
 # =========================================================
 
 import streamlit as st
@@ -12,49 +12,11 @@ import os
 import unicodedata
 from difflib import SequenceMatcher
 
-# =========================================================
-# CONFIG
-# =========================================================
-
 st.set_page_config(
-    page_title="Tennis IA v11.7",
+    page_title="Tennis IA v11.8",
     page_icon="🎾",
     layout="wide"
 )
-
-# =========================================================
-# CSS
-# =========================================================
-
-st.markdown("""
-<style>
-
-.metric-box {
-    background: #1f2937;
-    padding: 14px;
-    border-radius: 12px;
-    text-align: center;
-    border: 1px solid #374151;
-}
-
-.metric-title {
-    font-size: 0.9rem;
-    color: #9ca3af;
-}
-
-.metric-value {
-    font-size: 1.8rem;
-    font-weight: bold;
-    color: white;
-}
-
-.metric-sub {
-    font-size: 0.8rem;
-    color: #9ca3af;
-}
-
-</style>
-""", unsafe_allow_html=True)
 
 # =========================================================
 # UTILS
@@ -63,11 +25,9 @@ st.markdown("""
 def normalizar_texto(txt):
     if pd.isna(txt):
         return ""
-
     t = unicodedata.normalize("NFKD", str(txt))
     t = t.encode("ascii", "ignore").decode("ascii")
     t = t.replace("\xa0", " ")
-
     return t.strip()
 
 
@@ -97,12 +57,10 @@ def similitud_nombre(a, b):
     tb = tokenizar_nombre(b)
 
     token_score = 0
-
     if ta and tb:
         token_score = len(ta & tb) / len(ta | tb)
 
     seq_score = SequenceMatcher(None, a_clean, b_clean).ratio()
-
     return max(token_score, seq_score)
 
 
@@ -133,7 +91,6 @@ def leer_porcentaje(v, default):
             num /= 100
 
         return num
-
     except:
         return default
 
@@ -149,7 +106,6 @@ def leer_float(v, default):
             return default
 
         return float(txt)
-
     except:
         return default
 
@@ -161,26 +117,20 @@ def elo_prob(e1, e2):
 def nivel(p):
     if p >= 0.72:
         return "🔥 Alta"
-
     elif p >= 0.60:
         return "✅ Media-alta"
-
     elif p >= 0.53:
         return "⚖️ Ajustada"
-
     return "⚠️ Baja"
 
 
 def perfil_saque(ace):
     if ace >= 0.16:
         return "elite_server"
-
     elif ace >= 0.12:
         return "big_server"
-
     elif ace >= 0.08:
         return "good_server"
-
     return "normal"
 
 
@@ -191,47 +141,72 @@ def perfil_legible(profile):
         "good_server": "✅ Buen sacador",
         "normal": "Normal"
     }
-
     return mapa.get(profile, "Normal")
 
 
 # =========================================================
-# DEFAULT STATS
+# SMART DEFAULT STATS
 # =========================================================
 
-def stats_default_por_elo(elo_surface, rank=999):
-    if elo_surface >= 1750:
-        hold = 0.82
+def stats_default_por_elo(elo_surface, rank=999, surface="Clay", circuito="ATP"):
+    if elo_surface >= 1800:
+        hold = 0.825
         ace = 0.075
-
-    elif elo_surface >= 1650:
-        hold = 0.80
+        ret = 0.300
+    elif elo_surface >= 1700:
+        hold = 0.810
         ace = 0.070
-
-    elif elo_surface >= 1550:
-        hold = 0.785
-        ace = 0.060
-
+        ret = 0.285
+    elif elo_surface >= 1600:
+        hold = 0.795
+        ace = 0.065
+        ret = 0.270
+    elif elo_surface >= 1500:
+        hold = 0.780
+        ace = 0.055
+        ret = 0.250
     else:
-        hold = 0.765
+        hold = 0.760
         ace = 0.050
+        ret = 0.225
 
-    if rank <= 75:
-        hold += 0.005
+    if rank <= 50:
+        hold += 0.006
+        ret += 0.012
+    elif rank <= 100:
+        hold += 0.003
+        ret += 0.006
+    elif rank > 180:
+        hold -= 0.006
+        ret -= 0.006
 
-    elif rank > 150:
-        hold -= 0.005
+    if surface == "Clay":
+        hold -= 0.010
+        ret += 0.025
+        ace -= 0.005
+    elif surface == "Grass":
+        hold += 0.012
+        ret -= 0.012
+        ace += 0.006
+
+    if circuito == "WTA":
+        hold -= 0.035
+        ret += 0.030
+        ace -= 0.015
+
+    ace = np.clip(ace, 0.035, 0.090)
 
     return {
         "found_stats": False,
         "raw_name_stats": "NO ENCONTRADO",
-        "hold": np.clip(hold, 0.74, 0.83),
+        "hold": np.clip(hold, 0.72, 0.84),
         "ace": ace,
         "1in": 0.62,
         "1w": 0.70,
         "2w": 0.50,
+        "return_strength_manual": np.clip(ret, 0.18, 0.36),
         "serve_profile": perfil_saque(ace),
-        "match_type": "default_elo"
+        "match_type": "default_elo_clay"
     }
 
 
@@ -256,6 +231,8 @@ def buscar_stats(nombre, stats_map):
             mejor = data
 
     if mejor_score >= 0.72:
+        mejor = mejor.copy()
+        mejor["match_type"] = "aproximado"
         return mejor
 
     return None
@@ -289,44 +266,38 @@ def cargar_datos(circuito):
     stats_map = {}
     players = {}
 
-    # =====================================================
-    # STATS
-    # =====================================================
-
     if os.path.exists(r["stats"]):
         df = pd.read_excel(r["stats"])
 
         col_player = buscar_columna(df, ["Player"])
-        col_hold = buscar_columna(df, ["Hld%"])
+        col_hold = buscar_columna(df, ["Hld%", "Hold%"])
         col_ace = buscar_columna(df, ["Ace%"])
         col_1in = buscar_columna(df, ["1stIn"])
         col_1w = buscar_columna(df, ["1st%"])
         col_2w = buscar_columna(df, ["2nd%"])
 
-        for _, row in df.iterrows():
-            nombre = normalizar_texto(row.get(col_player, ""))
-            nid = limpiar(nombre)
+        if col_player is not None:
+            for _, row in df.iterrows():
+                nombre = normalizar_texto(row.get(col_player, ""))
+                nid = limpiar(nombre)
 
-            if not nid:
-                continue
+                if not nid:
+                    continue
 
-            ace = leer_porcentaje(row.get(col_ace), 0.05)
+                ace = leer_porcentaje(row.get(col_ace), 0.05)
 
-            stats_map[nid] = {
-                "found_stats": True,
-                "raw_name_stats": nombre,
-                "hold": leer_porcentaje(row.get(col_hold), 0.78),
-                "ace": ace,
-                "1in": leer_porcentaje(row.get(col_1in), 0.62),
-                "1w": leer_porcentaje(row.get(col_1w), 0.70),
-                "2w": leer_porcentaje(row.get(col_2w), 0.50),
-                "serve_profile": perfil_saque(ace),
-                "match_type": "exacto"
-            }
-
-    # =====================================================
-    # ELO
-    # =====================================================
+                stats_map[nid] = {
+                    "found_stats": True,
+                    "raw_name_stats": nombre,
+                    "hold": leer_porcentaje(row.get(col_hold), 0.78),
+                    "ace": ace,
+                    "1in": leer_porcentaje(row.get(col_1in), 0.62),
+                    "1w": leer_porcentaje(row.get(col_1w), 0.70),
+                    "2w": leer_porcentaje(row.get(col_2w), 0.50),
+                    "return_strength_manual": None,
+                    "serve_profile": perfil_saque(ace),
+                    "match_type": "exacto"
+                }
 
     if os.path.exists(r["elo"]):
         df = pd.read_excel(r["elo"])
@@ -338,32 +309,38 @@ def cargar_datos(circuito):
         col_clay = buscar_columna(df, ["cElo"])
         col_grass = buscar_columna(df, ["gElo"])
 
-        for _, row in df.iterrows():
-            nombre = normalizar_texto(row.get(col_player, ""))
+        if col_player is not None:
+            for _, row in df.iterrows():
+                nombre = normalizar_texto(row.get(col_player, ""))
 
-            if nombre == "":
-                continue
+                if nombre == "":
+                    continue
 
-            rank = int(leer_float(row.get(col_rank), 999))
-            elo_general = leer_float(row.get(col_elo), 1500)
+                rank = int(leer_float(row.get(col_rank), 999))
+                elo_general = leer_float(row.get(col_elo), 1500)
 
-            hard = leer_float(row.get(col_hard), elo_general)
-            clay = leer_float(row.get(col_clay), elo_general)
-            grass = leer_float(row.get(col_grass), elo_general)
+                hard = leer_float(row.get(col_hard), elo_general)
+                clay = leer_float(row.get(col_clay), elo_general)
+                grass = leer_float(row.get(col_grass), elo_general)
 
-            stats = buscar_stats(nombre, stats_map)
+                stats = buscar_stats(nombre, stats_map)
 
-            if stats is None:
-                stats = stats_default_por_elo(clay, rank)
+                if stats is None:
+                    stats = stats_default_por_elo(
+                        clay,
+                        rank,
+                        "Clay",
+                        circuito
+                    )
 
-            players[nombre] = {
-                "Player": nombre,
-                "Rank": rank,
-                "Hard": hard,
-                "Clay": clay,
-                "Grass": grass,
-                "Stats": stats
-            }
+                players[nombre] = {
+                    "Player": nombre,
+                    "Rank": rank,
+                    "Hard": hard,
+                    "Clay": clay,
+                    "Grass": grass,
+                    "Stats": stats
+                }
 
     return players
 
@@ -383,7 +360,6 @@ def calc_hold(stats, elo_diff, surface, circuito):
             "Clay": -0.105,
             "Grass": +0.015
         }
-
     else:
         surface_adj = {
             "Hard": -0.015,
@@ -401,10 +377,8 @@ def calc_hold(stats, elo_diff, surface, circuito):
 
     if profile == "good_server":
         serve_bonus += 0.006
-
     elif profile == "big_server":
         serve_bonus += 0.012
-
     elif profile == "elite_server":
         serve_bonus += 0.018
 
@@ -416,7 +390,7 @@ def calc_hold(stats, elo_diff, surface, circuito):
         + ace * 0.01
     )
 
-    return np.clip(hold, 0.48, 0.84)
+    return np.clip(hold, 0.46, 0.84)
 
 
 # =========================================================
@@ -424,20 +398,22 @@ def calc_hold(stats, elo_diff, surface, circuito):
 # =========================================================
 
 def calc_return_strength(stats, elo_surface, surface):
+    manual = stats.get("return_strength_manual", None)
+
+    if manual is not None:
+        return manual
+
     hold = stats.get("hold", 0.78)
 
-    # Cuanto menor hold propio, normalmente más perfil de restador / jugador de fondo.
     base_return = 1.0 - hold
-
     elo_bonus = (elo_surface - 1500) / 4200
 
     surface_bonus = 0
 
     if surface == "Clay":
-        surface_bonus = 0.020
-
+        surface_bonus = 0.025
     elif surface == "Grass":
-        surface_bonus = -0.010
+        surface_bonus = -0.012
 
     ret = base_return + elo_bonus + surface_bonus
 
@@ -446,11 +422,9 @@ def calc_return_strength(stats, elo_surface, surface):
 
 def aplicar_return_pressure(hold1, hold2, ret1, ret2, surface):
     if surface == "Clay":
-        pressure_weight = 0.16
-
+        pressure_weight = 0.19
     elif surface == "Hard":
-        pressure_weight = 0.12
-
+        pressure_weight = 0.13
     else:
         pressure_weight = 0.09
 
@@ -458,8 +432,8 @@ def aplicar_return_pressure(hold1, hold2, ret1, ret2, surface):
     hold2_adj = hold2 - (ret1 * pressure_weight)
 
     return (
-        np.clip(hold1_adj, 0.46, 0.84),
-        np.clip(hold2_adj, 0.46, 0.84)
+        np.clip(hold1_adj, 0.44, 0.84),
+        np.clip(hold2_adj, 0.44, 0.84)
     )
 
 
@@ -470,19 +444,15 @@ def aplicar_return_pressure(hold1, hold2, ret1, ret2, surface):
 def sim_set(hold1, hold2, surface, shift, p1_big, p2_big):
     g1 = 0
     g2 = 0
-
     tb = False
-
     server = random.choice([1, 2])
 
     if surface == "Clay":
-        noise = 0.066
-        pressure = -0.082
-
+        noise = 0.068
+        pressure = -0.085
     elif surface == "Hard":
         noise = 0.038
         pressure = -0.030
-
     else:
         noise = 0.028
         pressure = -0.018
@@ -495,13 +465,13 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big):
 
         h1 = np.clip(
             np.random.normal(hold1 + shift, noise) + extra,
-            0.32,
+            0.30,
             0.93
         )
 
         h2 = np.clip(
             np.random.normal(hold2 - shift, noise) + extra,
-            0.32,
+            0.30,
             0.93
         )
 
@@ -510,7 +480,6 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big):
                 g1 += 1
             else:
                 g2 += 1
-
         else:
             if random.random() < h2:
                 g2 += 1
@@ -552,16 +521,13 @@ def calcular_match_volatility(e1, e2, surface):
 
     if elo_gap > 300:
         base_vol += 0.018
-
     elif elo_gap > 200:
         base_vol += 0.010
-
     elif elo_gap > 120:
         base_vol += 0.005
 
     if surface == "Clay":
-        base_vol += 0.008
-
+        base_vol += 0.010
     elif surface == "Grass":
         base_vol -= 0.004
 
@@ -621,13 +587,9 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
     for _ in range(n):
         sets1 = 0
         sets2 = 0
-
         games = 0
-
         tb_seen = False
-
         shift = np.random.normal(0, match_volatility)
-
         first_set_done = False
 
         while sets1 < sets_to_win and sets2 < sets_to_win:
@@ -693,8 +655,12 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v11.7")
-    st.caption("Return Strength Engine")
+    st.header("🎾 Tennis IA v11.8")
+    st.caption("Smart Clay Defaults + Return Engine")
+
+    if st.button("🧹 Limpiar caché"):
+        st.cache_data.clear()
+        st.success("Caché limpiada")
 
     circuito = st.radio(
         "Circuito",
@@ -702,7 +668,6 @@ with st.sidebar:
     )
 
 db = cargar_datos(circuito)
-
 players = sorted(db.keys())
 
 with st.sidebar:
@@ -736,10 +701,6 @@ with c2:
         players,
         index=min(1, len(players)-1)
     )
-
-# =========================================================
-# RUN
-# =========================================================
 
 if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     d1 = db[p1_name]
@@ -786,7 +747,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     over20 = sum(x > 20.5 for x in games) / sims
     over21 = sum(x > 21.5 for x in games) / sims
     over22 = sum(x > 22.5 for x in games) / sims
-
     under22 = 1 - over22
 
     elo_ref = elo_prob(
@@ -798,13 +758,8 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
 
     if max(p1, p2) < 0.56:
         risk = "🔴 Riesgo alto"
-
     elif max(p1, p2) < 0.63:
         risk = "🟡 Riesgo medio"
-
-    # =====================================================
-    # MAIN
-    # =====================================================
 
     st.divider()
 
@@ -818,7 +773,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
             f"{p1:.1%}",
             nivel(p1)
         )
-
         st.caption(
             f"Rank #{d1['Rank']} · Elo {surface}: {d1[surface]:.0f}"
         )
@@ -829,7 +783,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
             f"{p2:.1%}",
             nivel(p2)
         )
-
         st.caption(
             f"Rank #{d2['Rank']} · Elo {surface}: {d2[surface]:.0f}"
         )
@@ -837,10 +790,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     st.caption(
         f"Referencia Elo puro: {elo_ref:.1%} / {1-elo_ref:.1%} · {risk}"
     )
-
-    # =====================================================
-    # FIRST SET
-    # =====================================================
 
     st.divider()
 
@@ -862,10 +811,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
             nivel(p2_fs)
         )
 
-    # =====================================================
-    # MARKETS
-    # =====================================================
-
     st.divider()
 
     st.subheader("📊 Mercados")
@@ -884,10 +829,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     with m4:
         st.metric("Under 22.5", f"{under22:.1%}", nivel(under22))
 
-    # =====================================================
-    # EXTRA
-    # =====================================================
-
     e1, e2, e3 = st.columns(3)
 
     with e1:
@@ -901,10 +842,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
 
     st.caption(f"Mediana games: {med_games:.0f}")
 
-    # =====================================================
-    # HOLD / RETURN
-    # =====================================================
-
     st.divider()
 
     st.subheader("🎾 Hold / Return Engine")
@@ -917,7 +854,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
             f"{hold1:.1%}",
             f"Raw hold {raw_hold1:.1%}"
         )
-
         st.caption(
             f"{perfil_legible(p1_profile)} · Return strength {ret1:.1%}"
         )
@@ -928,14 +864,9 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
             f"{hold2:.1%}",
             f"Raw hold {raw_hold2:.1%}"
         )
-
         st.caption(
             f"{perfil_legible(p2_profile)} · Return strength {ret2:.1%}"
         )
-
-    # =====================================================
-    # DATA
-    # =====================================================
 
     st.divider()
 
@@ -954,10 +885,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
         st.write("Ace%:", f"{d2['Stats']['ace']:.1%}")
         st.write("Hold%:", f"{d2['Stats']['hold']:.1%}")
         st.write("Tipo:", d2["Stats"]["match_type"])
-
-    # =====================================================
-    # PROFILE
-    # =====================================================
 
     st.divider()
 
@@ -995,10 +922,8 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
 
     if tags:
         st.info(" · ".join(tags))
-
-    # =====================================================
-    # SIGNAL
-    # =====================================================
+    else:
+        st.info("Sin perfil extremo detectado.")
 
     st.divider()
 
@@ -1022,5 +947,5 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     st.divider()
 
     st.caption(
-        f"Tennis IA v11.7 · Return Strength Engine · {sims:,} simulaciones Monte Carlo"
+        f"Tennis IA v11.8 · Smart Clay Defaults + Return Engine · {sims:,} simulaciones Monte Carlo"
     )
