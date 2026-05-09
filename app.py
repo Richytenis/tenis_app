@@ -1,6 +1,6 @@
 # =========================================================
-# TENNIS IA v11.6
-# PRO MATCH ENGINE + EXTREME ELO VOLATILITY
+# TENNIS IA v11.7
+# PRO MATCH ENGINE + RETURN STRENGTH
 # =========================================================
 
 import streamlit as st
@@ -17,7 +17,7 @@ from difflib import SequenceMatcher
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v11.6",
+    page_title="Tennis IA v11.7",
     page_icon="🎾",
     layout="wide"
 )
@@ -61,7 +61,6 @@ st.markdown("""
 # =========================================================
 
 def normalizar_texto(txt):
-
     if pd.isna(txt):
         return ""
 
@@ -73,25 +72,18 @@ def normalizar_texto(txt):
 
 
 def limpiar(txt):
-
     t = normalizar_texto(txt)
-
     t = re.sub(r"\[.*?\]|\(.*?\)", "", t)
-
     return re.sub(r"[^A-Z0-9]", "", t.upper())
 
 
 def tokenizar_nombre(txt):
-
     t = normalizar_texto(txt)
-
     t = re.sub(r"\[.*?\]|\(.*?\)", "", t)
-
     return set(re.findall(r"[A-Z]+", t.upper()))
 
 
 def similitud_nombre(a, b):
-
     a_clean = limpiar(a)
     b_clean = limpiar(b)
 
@@ -115,13 +107,10 @@ def similitud_nombre(a, b):
 
 
 def buscar_columna(df, posibles):
-
     cols = list(df.columns)
-
     cols_clean = {limpiar(c): c for c in cols}
 
     for p in posibles:
-
         if limpiar(p) in cols_clean:
             return cols_clean[limpiar(p)]
 
@@ -129,9 +118,7 @@ def buscar_columna(df, posibles):
 
 
 def leer_porcentaje(v, default):
-
     try:
-
         if pd.isna(v):
             return default
 
@@ -152,9 +139,7 @@ def leer_porcentaje(v, default):
 
 
 def leer_float(v, default):
-
     try:
-
         if pd.isna(v):
             return default
 
@@ -170,12 +155,10 @@ def leer_float(v, default):
 
 
 def elo_prob(e1, e2):
-
     return 1 / (1 + 10 ** ((e2 - e1) / 400))
 
 
 def nivel(p):
-
     if p >= 0.72:
         return "🔥 Alta"
 
@@ -189,7 +172,6 @@ def nivel(p):
 
 
 def perfil_saque(ace):
-
     if ace >= 0.16:
         return "elite_server"
 
@@ -203,7 +185,6 @@ def perfil_saque(ace):
 
 
 def perfil_legible(profile):
-
     mapa = {
         "elite_server": "🚀 Elite server",
         "big_server": "🔥 Big server",
@@ -219,7 +200,6 @@ def perfil_legible(profile):
 # =========================================================
 
 def stats_default_por_elo(elo_surface, rank=999):
-
     if elo_surface >= 1750:
         hold = 0.82
         ace = 0.075
@@ -260,7 +240,6 @@ def stats_default_por_elo(elo_surface, rank=999):
 # =========================================================
 
 def buscar_stats(nombre, stats_map):
-
     nid = limpiar(nombre)
 
     if nid in stats_map:
@@ -270,7 +249,6 @@ def buscar_stats(nombre, stats_map):
     mejor_score = 0
 
     for sid, data in stats_map.items():
-
         score = similitud_nombre(nombre, sid)
 
         if score > mejor_score:
@@ -288,9 +266,7 @@ def buscar_stats(nombre, stats_map):
 # =========================================================
 
 def rutas(circuito):
-
     if circuito == "ATP":
-
         return {
             "stats": "datos/atp/atp_completa.xlsx",
             "elo": "datos/atp/atp_elo.xlsx"
@@ -308,7 +284,6 @@ def rutas(circuito):
 
 @st.cache_data
 def cargar_datos(circuito):
-
     r = rutas(circuito)
 
     stats_map = {}
@@ -319,7 +294,6 @@ def cargar_datos(circuito):
     # =====================================================
 
     if os.path.exists(r["stats"]):
-
         df = pd.read_excel(r["stats"])
 
         col_player = buscar_columna(df, ["Player"])
@@ -330,9 +304,7 @@ def cargar_datos(circuito):
         col_2w = buscar_columna(df, ["2nd%"])
 
         for _, row in df.iterrows():
-
             nombre = normalizar_texto(row.get(col_player, ""))
-
             nid = limpiar(nombre)
 
             if not nid:
@@ -357,7 +329,6 @@ def cargar_datos(circuito):
     # =====================================================
 
     if os.path.exists(r["elo"]):
-
         df = pd.read_excel(r["elo"])
 
         col_player = buscar_columna(df, ["Player"])
@@ -368,14 +339,12 @@ def cargar_datos(circuito):
         col_grass = buscar_columna(df, ["gElo"])
 
         for _, row in df.iterrows():
-
             nombre = normalizar_texto(row.get(col_player, ""))
 
             if nombre == "":
                 continue
 
             rank = int(leer_float(row.get(col_rank), 999))
-
             elo_general = leer_float(row.get(col_elo), 1500)
 
             hard = leer_float(row.get(col_hard), elo_general)
@@ -404,15 +373,11 @@ def cargar_datos(circuito):
 # =========================================================
 
 def calc_hold(stats, elo_diff, surface, circuito):
-
     base = stats["hold"]
-
     ace = stats["ace"]
-
     profile = stats["serve_profile"]
 
     if circuito == "ATP":
-
         surface_adj = {
             "Hard": -0.010,
             "Clay": -0.105,
@@ -420,7 +385,6 @@ def calc_hold(stats, elo_diff, surface, circuito):
         }
 
     else:
-
         surface_adj = {
             "Hard": -0.015,
             "Clay": -0.085,
@@ -456,11 +420,54 @@ def calc_hold(stats, elo_diff, surface, circuito):
 
 
 # =========================================================
+# RETURN ENGINE
+# =========================================================
+
+def calc_return_strength(stats, elo_surface, surface):
+    hold = stats.get("hold", 0.78)
+
+    # Cuanto menor hold propio, normalmente más perfil de restador / jugador de fondo.
+    base_return = 1.0 - hold
+
+    elo_bonus = (elo_surface - 1500) / 4200
+
+    surface_bonus = 0
+
+    if surface == "Clay":
+        surface_bonus = 0.020
+
+    elif surface == "Grass":
+        surface_bonus = -0.010
+
+    ret = base_return + elo_bonus + surface_bonus
+
+    return np.clip(ret, 0.12, 0.38)
+
+
+def aplicar_return_pressure(hold1, hold2, ret1, ret2, surface):
+    if surface == "Clay":
+        pressure_weight = 0.16
+
+    elif surface == "Hard":
+        pressure_weight = 0.12
+
+    else:
+        pressure_weight = 0.09
+
+    hold1_adj = hold1 - (ret2 * pressure_weight)
+    hold2_adj = hold2 - (ret1 * pressure_weight)
+
+    return (
+        np.clip(hold1_adj, 0.46, 0.84),
+        np.clip(hold2_adj, 0.46, 0.84)
+    )
+
+
+# =========================================================
 # SET SIM
 # =========================================================
 
 def sim_set(hold1, hold2, surface, shift, p1_big, p2_big):
-
     g1 = 0
     g2 = 0
 
@@ -481,7 +488,6 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big):
         pressure = -0.018
 
     while True:
-
         extra = 0
 
         if g1 >= 4 and g2 >= 4:
@@ -500,14 +506,12 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big):
         )
 
         if server == 1:
-
             if random.random() < h1:
                 g1 += 1
             else:
                 g2 += 1
 
         else:
-
             if random.random() < h2:
                 g2 += 1
             else:
@@ -522,7 +526,6 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big):
             return g1, g2, tb
 
         if g1 == 6 and g2 == 6:
-
             tb = True
 
             p_tb = hold1 / (hold1 + hold2)
@@ -543,7 +546,6 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big):
 # =========================================================
 
 def calcular_match_volatility(e1, e2, surface):
-
     elo_gap = abs(e1 - e2)
 
     base_vol = 0.040
@@ -571,7 +573,6 @@ def calcular_match_volatility(e1, e2, surface):
 # =========================================================
 
 def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
-
     e1 = d1[surface]
     e2 = d2[surface]
 
@@ -580,8 +581,19 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
     s1 = d1["Stats"]
     s2 = d2["Stats"]
 
-    hold1 = calc_hold(s1, elo_diff, surface, circuito)
-    hold2 = calc_hold(s2, -elo_diff, surface, circuito)
+    raw_hold1 = calc_hold(s1, elo_diff, surface, circuito)
+    raw_hold2 = calc_hold(s2, -elo_diff, surface, circuito)
+
+    ret1 = calc_return_strength(s1, e1, surface)
+    ret2 = calc_return_strength(s2, e2, surface)
+
+    hold1, hold2 = aplicar_return_pressure(
+        raw_hold1,
+        raw_hold2,
+        ret1,
+        ret2,
+        surface
+    )
 
     p1_profile = s1["serve_profile"]
     p2_profile = s2["serve_profile"]
@@ -607,7 +619,6 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
         match_volatility += 0.006
 
     for _ in range(n):
-
         sets1 = 0
         sets2 = 0
 
@@ -620,7 +631,6 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
         first_set_done = False
 
         while sets1 < sets_to_win and sets2 < sets_to_win:
-
             g1, g2, tb = sim_set(
                 hold1,
                 hold2,
@@ -636,7 +646,6 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
                 tb_seen = True
 
             if not first_set_done:
-
                 if g1 > g2:
                     res["p1_fs"] += 1
                 else:
@@ -665,7 +674,18 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
 
         res["games"].append(games)
 
-    return res, hold1, hold2, p1_profile, p2_profile, match_volatility
+    return (
+        res,
+        hold1,
+        hold2,
+        raw_hold1,
+        raw_hold2,
+        ret1,
+        ret2,
+        p1_profile,
+        p2_profile,
+        match_volatility
+    )
 
 
 # =========================================================
@@ -673,10 +693,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=10000):
 # =========================================================
 
 with st.sidebar:
-
-    st.header("🎾 Tennis IA v11.6")
-
-    st.caption("Extreme Elo Volatility")
+    st.header("🎾 Tennis IA v11.7")
+    st.caption("Return Strength Engine")
 
     circuito = st.radio(
         "Circuito",
@@ -688,7 +706,6 @@ db = cargar_datos(circuito)
 players = sorted(db.keys())
 
 with st.sidebar:
-
     surface = st.selectbox(
         "Superficie",
         ["Hard", "Clay", "Grass"]
@@ -725,15 +742,24 @@ with c2:
 # =========================================================
 
 if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
-
     d1 = db[p1_name]
     d2 = db[p2_name]
 
     best_of = 5 if "5" in format_match else 3
 
     with st.spinner(f"Simulando {sims:,} partidos..."):
-
-        res, hold1, hold2, p1_profile, p2_profile, match_volatility = sim_match(
+        (
+            res,
+            hold1,
+            hold2,
+            raw_hold1,
+            raw_hold2,
+            ret1,
+            ret2,
+            p1_profile,
+            p2_profile,
+            match_volatility
+        ) = sim_match(
             d1,
             d2,
             surface,
@@ -787,7 +813,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     r1, r2 = st.columns(2)
 
     with r1:
-
         st.metric(
             d1["Player"],
             f"{p1:.1%}",
@@ -799,7 +824,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
         )
 
     with r2:
-
         st.metric(
             d2["Player"],
             f"{p2:.1%}",
@@ -825,7 +849,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     fs1, fs2 = st.columns(2)
 
     with fs1:
-
         st.metric(
             f"{d1['Player']} gana",
             f"{p1_fs:.1%}",
@@ -833,7 +856,6 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
         )
 
     with fs2:
-
         st.metric(
             f"{d2['Player']} gana",
             f"{p2_fs:.1%}",
@@ -880,35 +902,35 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     st.caption(f"Mediana games: {med_games:.0f}")
 
     # =====================================================
-    # HOLD
+    # HOLD / RETURN
     # =====================================================
 
     st.divider()
 
-    st.subheader("🎾 Hold Probability")
+    st.subheader("🎾 Hold / Return Engine")
 
     h1, h2 = st.columns(2)
 
     with h1:
-
         st.metric(
             d1["Player"],
-            f"{hold1:.1%}"
+            f"{hold1:.1%}",
+            f"Raw hold {raw_hold1:.1%}"
         )
 
         st.caption(
-            perfil_legible(p1_profile)
+            f"{perfil_legible(p1_profile)} · Return strength {ret1:.1%}"
         )
 
     with h2:
-
         st.metric(
             d2["Player"],
-            f"{hold2:.1%}"
+            f"{hold2:.1%}",
+            f"Raw hold {raw_hold2:.1%}"
         )
 
         st.caption(
-            perfil_legible(p2_profile)
+            f"{perfil_legible(p2_profile)} · Return strength {ret2:.1%}"
         )
 
     # =====================================================
@@ -922,14 +944,12 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     dcol1, dcol2 = st.columns(2)
 
     with dcol1:
-
         st.write("Stats:", "✅" if d1["Stats"]["found_stats"] else "❌")
         st.write("Ace%:", f"{d1['Stats']['ace']:.1%}")
         st.write("Hold%:", f"{d1['Stats']['hold']:.1%}")
         st.write("Tipo:", d1["Stats"]["match_type"])
 
     with dcol2:
-
         st.write("Stats:", "✅" if d2["Stats"]["found_stats"] else "❌")
         st.write("Ace%:", f"{d2['Stats']['ace']:.1%}")
         st.write("Hold%:", f"{d2['Stats']['hold']:.1%}")
@@ -969,6 +989,10 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     if match_volatility > 0.06:
         tags.append("🌪️ Alta volatilidad por diferencia Elo/superficie")
 
+    if abs(ret1 - ret2) > 0.05:
+        mejor_restador = d1["Player"] if ret1 > ret2 else d2["Player"]
+        tags.append(f"🧱 Mejor restador: {mejor_restador}")
+
     if tags:
         st.info(" · ".join(tags))
 
@@ -998,5 +1022,5 @@ if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
     st.divider()
 
     st.caption(
-        f"Tennis IA v11.6 · Extreme Elo Volatility · {sims:,} simulaciones Monte Carlo"
+        f"Tennis IA v11.7 · Return Strength Engine · {sims:,} simulaciones Monte Carlo"
     )
