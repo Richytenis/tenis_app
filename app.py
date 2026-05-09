@@ -9,12 +9,12 @@ import unicodedata
 from difflib import SequenceMatcher
 
 # =========================================================
-# TENNIS IA v12
-# PREDICTOR + HISTORICAL VALIDATOR
+# TENNIS IA v12.2
+# PREDICTOR + HISTORICAL VALIDATOR + CALIBRATION ENGINE
 # =========================================================
 
 st.set_page_config(
-    page_title="Tennis IA v12",
+    page_title="Tennis IA v12.2",
     page_icon="🎾",
     layout="wide"
 )
@@ -61,10 +61,10 @@ def similitud_nombre(a, b):
     sb = set(tb)
 
     token_score = 0
+
     if sa and sb:
         token_score = len(sa & sb) / len(sa | sb)
 
-    # Caso histórico tipo "Tiafoe F." vs "Frances Tiafoe"
     if len(ta) >= 2 and len(tb) >= 2:
         surname_a = ta[0]
         initial_a = ta[1][0]
@@ -170,6 +170,61 @@ def perfil_legible(profile):
         "normal": "Normal"
     }
     return mapa.get(profile, "Normal")
+
+
+# =========================================================
+# CALIBRATION ENGINE
+# =========================================================
+
+def calibrar_probabilidad(p, surface):
+    """
+    Calibración conservadora basada en validaciones:
+    - Mantiene partidos igualados casi intactos.
+    - Reduce favoritos fuertes.
+    - Devuelve probabilidad calibrada del jugador 1.
+    """
+
+    if p >= 0.50:
+        fav_p = p
+        sign = 1
+    else:
+        fav_p = 1 - p
+        sign = -1
+
+    if fav_p < 0.58:
+        shrink = 0.02
+    elif fav_p < 0.65:
+        shrink = 0.05
+    elif fav_p < 0.72:
+        shrink = 0.08
+    elif fav_p < 0.80:
+        shrink = 0.12
+    else:
+        shrink = 0.16
+
+    if surface == "Clay":
+        shrink += 0.02
+    elif surface == "Hard":
+        shrink += 0.01
+
+    fav_cal = 0.50 + (fav_p - 0.50) * (1 - shrink)
+
+    fav_cal = np.clip(fav_cal, 0.50, 0.88)
+
+    if sign == 1:
+        return fav_cal
+
+    return 1 - fav_cal
+
+
+def edge_calibracion(p_raw, p_cal):
+    diff = abs(p_raw - p_cal)
+
+    if diff < 0.025:
+        return "🟢 estable"
+    elif diff < 0.055:
+        return "🟡 algo inflada"
+    return "🔴 muy inflada"
 
 
 # =========================================================
@@ -505,7 +560,7 @@ def calc_hold(stats, elo_diff, surface, circuito):
         }
     else:
         surface_adj = {
-            "Hard": -0.015,
+            "Hard": -0.010,
             "Clay": -0.085,
             "Grass": +0.010
         }
@@ -741,9 +796,17 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
 
         res["games"].append(games)
 
+    p1_raw = res["p1"] / n
+    p2_raw = res["p2"] / n
+
+    p1_cal = calibrar_probabilidad(p1_raw, surface)
+    p2_cal = 1 - p1_cal
+
     return {
-        "p1": res["p1"] / n,
-        "p2": res["p2"] / n,
+        "p1": p1_raw,
+        "p2": p2_raw,
+        "p1_cal": p1_cal,
+        "p2_cal": p2_cal,
         "p1_fs": res["p1_fs"] / n,
         "p2_fs": res["p2_fs"] / n,
         "set3": res["set3"] / n,
@@ -864,14 +927,21 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
         d_win = db[p_win_key]
         d_los = db[p_los_key]
 
-        # Simulamos en orden Winner vs Loser.
         sim = sim_match(d_win, d_los, surface, circuito, best_of, sims_bt)
 
-        p_model_winner = sim["p1"]
-        fav_model_is_winner = p_model_winner >= 0.50
+        p_model_winner_raw = sim["p1"]
+        p_model_winner_cal = sim["p1_cal"]
+
+        fav_raw_is_winner = p_model_winner_raw >= 0.50
+        fav_cal_is_winner = p_model_winner_cal >= 0.50
 
         games_real = total_games_row(row)
-        set3_real = int(row.get("Wsets", 0)) == 2 and int(row.get("Lsets", 0)) == 1
+
+        try:
+            set3_real = int(row.get("Wsets", 0)) == 2 and int(row.get("Lsets", 0)) == 1
+        except:
+            set3_real = False
+
         tb_real = hay_tiebreak_row(row)
 
         over18_real = games_real > 18.5
@@ -892,8 +962,10 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
             "LoserHist": loser_hist,
             "WinnerMatched": p_win_key,
             "LoserMatched": p_los_key,
-            "ModelWinnerProb": p_model_winner,
-            "ModelFavWasWinner": fav_model_is_winner,
+            "ModelWinnerProbRaw": p_model_winner_raw,
+            "ModelWinnerProbCal": p_model_winner_cal,
+            "RawFavWasWinner": fav_raw_is_winner,
+            "CalFavWasWinner": fav_cal_is_winner,
             "RealGames": games_real,
             "ModelAvgGames": np.mean(games_model),
             "Real3Sets": set3_real,
@@ -923,8 +995,8 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v12")
-    st.caption("Predictor + Historical Validator")
+    st.header("🎾 Tennis IA v12.2")
+    st.caption("Calibration Engine")
 
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -939,8 +1011,9 @@ if not db:
     st.error("No se encontraron jugadores. Revisa carpetas y archivos.")
     st.stop()
 
+
 # =========================================================
-# MODO PREDICTOR
+# PREDICTOR
 # =========================================================
 
 if modo == "Predictor":
@@ -984,6 +1057,9 @@ if modo == "Predictor":
         p1 = sim["p1"]
         p2 = sim["p2"]
 
+        p1_cal = sim["p1_cal"]
+        p2_cal = sim["p2_cal"]
+
         games = sim["games"]
 
         avg_games = np.mean(games)
@@ -997,9 +1073,9 @@ if modo == "Predictor":
         elo_ref = elo_prob(d1[surface], d2[surface])
 
         risk = "🟢 Riesgo bajo"
-        if max(p1, p2) < 0.56:
+        if max(p1_cal, p2_cal) < 0.56:
             risk = "🔴 Riesgo alto"
-        elif max(p1, p2) < 0.63:
+        elif max(p1_cal, p2_cal) < 0.63:
             risk = "🟡 Riesgo medio"
 
         st.divider()
@@ -1008,14 +1084,30 @@ if modo == "Predictor":
         r1, r2 = st.columns(2)
 
         with r1:
-            st.metric(d1["Player"], f"{p1:.1%}", nivel(p1))
-            st.caption(f"Rank #{d1['Rank']} · Elo {surface}: {d1[surface]:.0f}")
+            st.metric(
+                d1["Player"],
+                f"{p1_cal:.1%}",
+                f"{nivel(p1_cal)} · bruta {p1:.1%}"
+            )
+            st.caption(
+                f"Rank #{d1['Rank']} · Elo {surface}: {d1[surface]:.0f} · "
+                f"{edge_calibracion(p1, p1_cal)}"
+            )
 
         with r2:
-            st.metric(d2["Player"], f"{p2:.1%}", nivel(p2))
-            st.caption(f"Rank #{d2['Rank']} · Elo {surface}: {d2[surface]:.0f}")
+            st.metric(
+                d2["Player"],
+                f"{p2_cal:.1%}",
+                f"{nivel(p2_cal)} · bruta {p2:.1%}"
+            )
+            st.caption(
+                f"Rank #{d2['Rank']} · Elo {surface}: {d2[surface]:.0f} · "
+                f"{edge_calibracion(p2, p2_cal)}"
+            )
 
-        st.caption(f"Referencia Elo puro: {elo_ref:.1%} / {1-elo_ref:.1%} · {risk}")
+        st.caption(
+            f"Referencia Elo puro: {elo_ref:.1%} / {1-elo_ref:.1%} · {risk}"
+        )
 
         st.divider()
         st.subheader("🎾 Primer Set")
@@ -1023,10 +1115,18 @@ if modo == "Predictor":
         fs1, fs2 = st.columns(2)
 
         with fs1:
-            st.metric(f"{d1['Player']} gana", f"{sim['p1_fs']:.1%}", nivel(sim["p1_fs"]))
+            st.metric(
+                f"{d1['Player']} gana",
+                f"{sim['p1_fs']:.1%}",
+                nivel(sim["p1_fs"])
+            )
 
         with fs2:
-            st.metric(f"{d2['Player']} gana", f"{sim['p2_fs']:.1%}", nivel(sim["p2_fs"]))
+            st.metric(
+                f"{d2['Player']} gana",
+                f"{sim['p2_fs']:.1%}",
+                nivel(sim["p2_fs"])
+            )
 
         st.divider()
         st.subheader("📊 Mercados")
@@ -1064,12 +1164,24 @@ if modo == "Predictor":
         h1, h2 = st.columns(2)
 
         with h1:
-            st.metric(d1["Player"], f"{sim['hold1']:.1%}", f"Raw hold {sim['raw_hold1']:.1%}")
-            st.caption(f"{perfil_legible(sim['p1_profile'])} · Return strength {sim['ret1']:.1%}")
+            st.metric(
+                d1["Player"],
+                f"{sim['hold1']:.1%}",
+                f"Raw hold {sim['raw_hold1']:.1%}"
+            )
+            st.caption(
+                f"{perfil_legible(sim['p1_profile'])} · Return strength {sim['ret1']:.1%}"
+            )
 
         with h2:
-            st.metric(d2["Player"], f"{sim['hold2']:.1%}", f"Raw hold {sim['raw_hold2']:.1%}")
-            st.caption(f"{perfil_legible(sim['p2_profile'])} · Return strength {sim['ret2']:.1%}")
+            st.metric(
+                d2["Player"],
+                f"{sim['hold2']:.1%}",
+                f"Raw hold {sim['raw_hold2']:.1%}"
+            )
+            st.caption(
+                f"{perfil_legible(sim['p2_profile'])} · Return strength {sim['ret2']:.1%}"
+            )
 
         st.divider()
         st.subheader("🔎 Diagnóstico")
@@ -1115,7 +1227,7 @@ if modo == "Predictor":
         if avg_games < 21:
             tags.append("📉 Partido corto")
 
-        if max(p1, p2) < 0.55:
+        if max(p1_cal, p2_cal) < 0.55:
             tags.append("⚠️ Favorito débil")
 
         if sim["vol"] > 0.06:
@@ -1134,7 +1246,7 @@ if modo == "Predictor":
         st.subheader("🎯 Señal principal del modelo")
 
         markets = {
-            "ML favorito": max(p1, p2),
+            "ML favorito calibrado": max(p1_cal, p2_cal),
             "Over 18.5": over18,
             "Over 20.5": over20,
             "Over 22.5": over22,
@@ -1147,11 +1259,11 @@ if modo == "Predictor":
         st.success(f"{best_market[0]} → {best_market[1]:.1%}")
 
         st.divider()
-        st.caption(f"Tennis IA v12 · Predictor · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v12.2 · Calibration Engine · {sims:,} simulaciones Monte Carlo")
 
 
 # =========================================================
-# MODO VALIDADOR HISTÓRICO
+# VALIDADOR HISTÓRICO
 # =========================================================
 
 else:
@@ -1165,12 +1277,12 @@ else:
 
     with st.sidebar:
         surface_filter = st.selectbox("Superficie histórica", ["Todas", "Hard", "Clay", "Grass"])
-        max_matches = st.number_input("Máx partidos a validar", min_value=10, max_value=5000, value=100, step=50)
+        max_matches = st.number_input("Máx partidos a validar", min_value=10, max_value=5000, value=500, step=50)
         sims_bt = st.select_slider("Simulaciones por partido", [300, 500, 1000, 2000], value=500)
 
     st.info(
         f"Históricos cargados: {len(hist_df):,} partidos. "
-        f"Para empezar, prueba con 100-300 partidos y 500 simulaciones."
+        f"Recomendado: 500 partidos y 500 simulaciones."
     )
 
     if st.button("🚀 EJECUTAR VALIDACIÓN", use_container_width=True):
@@ -1188,7 +1300,8 @@ else:
             st.error("No se pudieron emparejar partidos históricos con la base de jugadores.")
             st.stop()
 
-        ml_acc = val["ModelFavWasWinner"].mean()
+        ml_acc_raw = val["RawFavWasWinner"].mean()
+        ml_acc_cal = val["CalFavWasWinner"].mean()
 
         over18_acc = ((val["ModelOver18"] >= 0.50) == val["RealOver18"]).mean()
         over20_acc = ((val["ModelOver20"] >= 0.50) == val["RealOver20"]).mean()
@@ -1205,18 +1318,18 @@ else:
         a1, a2, a3, a4 = st.columns(4)
 
         with a1:
-            st.metric("ML accuracy", f"{ml_acc:.1%}")
+            st.metric("ML raw accuracy", f"{ml_acc_raw:.1%}")
 
         with a2:
-            st.metric("Over 20.5 accuracy", f"{over20_acc:.1%}")
+            st.metric("ML calibrated accuracy", f"{ml_acc_cal:.1%}")
 
         with a3:
-            st.metric("3 sets accuracy", f"{set3_acc:.1%}")
+            st.metric("Over 20.5 accuracy", f"{over20_acc:.1%}")
 
         with a4:
             st.metric("Error medio games", f"{games_error:.2f}")
 
-        b1, b2, b3 = st.columns(3)
+        b1, b2, b3, b4 = st.columns(4)
 
         with b1:
             st.metric("Over 18.5 accuracy", f"{over18_acc:.1%}")
@@ -1225,24 +1338,44 @@ else:
             st.metric("Over 22.5 accuracy", f"{over22_acc:.1%}")
 
         with b3:
+            st.metric("3 sets accuracy", f"{set3_acc:.1%}")
+
+        with b4:
             st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
 
         st.divider()
         st.subheader("📈 Calibración ML por tramos")
 
-        val["ProbBin"] = pd.cut(
-            val["ModelWinnerProb"],
+        val["ProbBinRaw"] = pd.cut(
+            val["ModelWinnerProbRaw"],
             bins=[0, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00],
             labels=["0-40", "40-50", "50-60", "60-70", "70-80", "80-90", "90-100"]
         )
 
-        calib = val.groupby("ProbBin", observed=True).agg(
-            Partidos=("ModelWinnerProb", "count"),
-            ProbMedia=("ModelWinnerProb", "mean"),
-            RealWinRate=("ModelFavWasWinner", "mean")
+        calib_raw = val.groupby("ProbBinRaw", observed=True).agg(
+            Partidos=("ModelWinnerProbRaw", "count"),
+            ProbMediaRaw=("ModelWinnerProbRaw", "mean"),
+            WinRateRawFav=("RawFavWasWinner", "mean")
         ).reset_index()
 
-        st.dataframe(calib, use_container_width=True)
+        st.dataframe(calib_raw, use_container_width=True)
+
+        st.divider()
+        st.subheader("📈 Calibración aplicada")
+
+        val["ProbBinCal"] = pd.cut(
+            val["ModelWinnerProbCal"],
+            bins=[0, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00],
+            labels=["0-40", "40-50", "50-60", "60-70", "70-80", "80-90", "90-100"]
+        )
+
+        calib_cal = val.groupby("ProbBinCal", observed=True).agg(
+            Partidos=("ModelWinnerProbCal", "count"),
+            ProbMediaCal=("ModelWinnerProbCal", "mean"),
+            WinRateCalFav=("CalFavWasWinner", "mean")
+        ).reset_index()
+
+        st.dataframe(calib_cal, use_container_width=True)
 
         st.divider()
         st.subheader("🧾 Detalle partidos validados")
@@ -1252,9 +1385,9 @@ else:
         st.download_button(
             "⬇️ Descargar validación CSV",
             data=val.to_csv(index=False).encode("utf-8"),
-            file_name="validacion_tennis_ia_v12.csv",
+            file_name="validacion_tennis_ia_v12_2.csv",
             mime="text/csv"
         )
 
         st.divider()
-        st.caption(f"Tennis IA v12 · Validador histórico · {len(val):,} partidos validados")
+        st.caption(f"Tennis IA v12.2 · Validador histórico · {len(val):,} partidos validados")
