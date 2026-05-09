@@ -1,8 +1,3 @@
-# =========================================================
-# TENNIS IA v13
-# PREDICTOR + VALIDATOR + FORM ENGINE
-# =========================================================
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -13,8 +8,13 @@ import glob
 import unicodedata
 from difflib import SequenceMatcher
 
+# =========================================================
+# TENNIS IA v13
+# STABLE CORE + HISTORICAL ANALYZER ENGINE
+# =========================================================
+
 st.set_page_config(
-    page_title="Tennis IA v13",
+    page_title="Tennis IA v13 Analyzer",
     page_icon="🎾",
     layout="wide"
 )
@@ -138,13 +138,6 @@ def leer_float(v, default):
         return default
 
 
-def parse_fecha(v):
-    try:
-        return pd.to_datetime(v, dayfirst=True, errors="coerce")
-    except:
-        return pd.NaT
-
-
 def elo_prob(e1, e2):
     return 1 / (1 + 10 ** ((e2 - e1) / 400))
 
@@ -177,23 +170,6 @@ def perfil_legible(profile):
         "normal": "Normal"
     }
     return mapa.get(profile, "Normal")
-
-
-# =========================================================
-# RUTAS
-# =========================================================
-
-def rutas(circuito):
-    base = f"datos/{circuito.lower()}"
-
-    return {
-        "base": base,
-        "elo": f"{base}/{circuito.lower()}_elo.xlsx",
-        "serve": f"{base}/{circuito.lower()}_serve.xlsx",
-        "return": f"{base}/{circuito.lower()}_return.xlsx",
-        "break": f"{base}/{circuito.lower()}_break.xlsx",
-        "historicos": f"{base}/historicos"
-    }
 
 
 # =========================================================
@@ -244,183 +220,20 @@ def edge_calibracion(p_raw, p_cal):
 
 
 # =========================================================
-# HISTÓRICOS / FORM ENGINE
+# RUTAS
 # =========================================================
 
-def cargar_historicos(circuito):
-    r = rutas(circuito)
-    folder = r["historicos"]
-
-    files = sorted(glob.glob(os.path.join(folder, "*.xlsx")))
-
-    dfs = []
-
-    for f in files:
-        try:
-            df = pd.read_excel(f)
-            df["SourceFile"] = os.path.basename(f)
-            dfs.append(df)
-        except:
-            pass
-
-    if not dfs:
-        return pd.DataFrame()
-
-    df_all = pd.concat(dfs, ignore_index=True)
-
-    if "Date" in df_all.columns:
-        df_all["DateParsed"] = df_all["Date"].apply(parse_fecha)
-    else:
-        df_all["DateParsed"] = pd.NaT
-
-    return df_all
-
-
-def crear_form_profiles(hist_df):
-    form_map = {}
-
-    if hist_df.empty:
-        return form_map
-
-    df = hist_df.copy()
-    df = df[df["Comment"].astype(str).str.contains("Completed", na=False)]
-    df = df.dropna(subset=["Winner", "Loser"])
-
-    if "DateParsed" not in df.columns:
-        df["DateParsed"] = df["Date"].apply(parse_fecha)
-
-    df = df.sort_values("DateParsed")
-
-    partidos = {}
-
-    for _, row in df.iterrows():
-        winner = normalizar_texto(row.get("Winner", ""))
-        loser = normalizar_texto(row.get("Loser", ""))
-        surface = str(row.get("Surface", "Hard"))
-        date = row.get("DateParsed", pd.NaT)
-        series = str(row.get("Series", ""))
-
-        if winner == "" or loser == "":
-            continue
-
-        for player, won in [(winner, 1), (loser, 0)]:
-            pid = limpiar(player)
-
-            if pid not in partidos:
-                partidos[pid] = []
-
-            partidos[pid].append({
-                "date": date,
-                "surface": surface,
-                "won": won,
-                "series": series
-            })
-
-    for pid, plist in partidos.items():
-        plist = sorted(plist, key=lambda x: x["date"] if not pd.isna(x["date"]) else pd.Timestamp("1900-01-01"))
-
-        last10 = plist[-10:]
-        last5 = plist[-5:]
-
-        last10_wr = np.mean([p["won"] for p in last10]) if last10 else 0.50
-        last5_wr = np.mean([p["won"] for p in last5]) if last5 else 0.50
-
-        surfaces = {}
-        for surface in ["Hard", "Clay", "Grass"]:
-            sf = [p for p in plist[-30:] if p["surface"] == surface]
-            surfaces[surface] = np.mean([p["won"] for p in sf]) if sf else 0.50
-
-        streak = 0
-        for p in reversed(plist):
-            if p["won"] == 1:
-                if streak >= 0:
-                    streak += 1
-                else:
-                    break
-            else:
-                if streak <= 0:
-                    streak -= 1
-                else:
-                    break
-
-        latest_date = plist[-1]["date"] if plist else pd.NaT
-
-        if not pd.isna(latest_date):
-            max_date = df["DateParsed"].max()
-            rest_days = (max_date - latest_date).days if not pd.isna(max_date) else 7
-        else:
-            rest_days = 7
-
-        form_map[pid] = {
-            "last10_wr": float(last10_wr),
-            "last5_wr": float(last5_wr),
-            "surface_wr": surfaces,
-            "streak": int(np.clip(streak, -5, 5)),
-            "rest_days": int(np.clip(rest_days, 0, 30)),
-            "matches_count": len(plist),
-            "latest_date": str(latest_date.date()) if not pd.isna(latest_date) else "N/A"
-        }
-
-    return form_map
-
-
-def buscar_form(nombre, form_map):
-    nid = limpiar(nombre)
-
-    if nid in form_map:
-        return form_map[nid]
-
-    mejor = None
-    best = 0
-
-    for fid, data in form_map.items():
-        score = similitud_nombre(nombre, fid)
-
-        if score > best:
-            best = score
-            mejor = data
-
-    if mejor is not None and best >= 0.72:
-        return mejor
+def rutas(circuito):
+    base = f"datos/{circuito.lower()}"
 
     return {
-        "last10_wr": 0.50,
-        "last5_wr": 0.50,
-        "surface_wr": {"Hard": 0.50, "Clay": 0.50, "Grass": 0.50},
-        "streak": 0,
-        "rest_days": 7,
-        "matches_count": 0,
-        "latest_date": "N/A"
+        "base": base,
+        "elo": f"{base}/{circuito.lower()}_elo.xlsx",
+        "serve": f"{base}/{circuito.lower()}_serve.xlsx",
+        "return": f"{base}/{circuito.lower()}_return.xlsx",
+        "break": f"{base}/{circuito.lower()}_break.xlsx",
+        "historicos": f"{base}/historicos"
     }
-
-
-def form_adjustment(form, surface):
-    last10 = form.get("last10_wr", 0.50)
-    last5 = form.get("last5_wr", 0.50)
-    surface_wr = form.get("surface_wr", {}).get(surface, 0.50)
-    streak = form.get("streak", 0)
-    rest_days = form.get("rest_days", 7)
-    matches = form.get("matches_count", 0)
-
-    if matches < 5:
-        return 0.0
-
-    adj = 0
-
-    adj += (last10 - 0.50) * 0.035
-    adj += (last5 - 0.50) * 0.020
-    adj += (surface_wr - 0.50) * 0.025
-
-    adj += np.clip(streak, -5, 5) * 0.0025
-
-    if rest_days <= 1:
-        adj -= 0.010
-    elif rest_days <= 3:
-        adj -= 0.006
-    elif rest_days >= 10:
-        adj += 0.002
-
-    return float(np.clip(adj, -0.035, 0.035))
 
 
 # =========================================================
@@ -635,9 +448,6 @@ def buscar_stats(nombre, stats_map):
 def cargar_datos(circuito):
     r = rutas(circuito)
 
-    hist_df = cargar_historicos(circuito)
-    form_map = crear_form_profiles(hist_df)
-
     serve_map = leer_archivo_stats(r["serve"], "serve")
     return_map = leer_archivo_stats(r["return"], "return")
     break_map = leer_archivo_stats(r["break"], "break")
@@ -713,16 +523,13 @@ def cargar_datos(circuito):
         if stats is None:
             stats = stats_default_por_elo(clay, rank, "Clay", circuito)
 
-        form = buscar_form(nombre, form_map)
-
         players[nombre] = {
             "Player": nombre,
             "Rank": rank,
             "Hard": hard,
             "Clay": clay,
             "Grass": grass,
-            "Stats": stats,
-            "Form": form
+            "Stats": stats
         }
 
     return players
@@ -896,7 +703,7 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big):
             return 6, 7, tb
 
 
-def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, use_form=True):
+def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
     e1 = d1[surface]
     e2 = d2[surface]
 
@@ -908,17 +715,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, use_form=True):
     raw_hold1 = calc_hold(s1, elo_diff, surface, circuito)
     raw_hold2 = calc_hold(s2, -elo_diff, surface, circuito)
 
-    form1 = form_adjustment(d1.get("Form", {}), surface) if use_form else 0.0
-    form2 = form_adjustment(d2.get("Form", {}), surface) if use_form else 0.0
-
-    raw_hold1 = np.clip(raw_hold1 + form1, 0.46, 0.84)
-    raw_hold2 = np.clip(raw_hold2 + form2, 0.46, 0.84)
-
     ret1 = calc_return_strength(s1, e1, surface)
     ret2 = calc_return_strength(s2, e2, surface)
-
-    ret1 = np.clip(ret1 + form1 * 0.45, 0.12, 0.40)
-    ret2 = np.clip(ret2 + form2 * 0.45, 0.12, 0.40)
 
     hold1, hold2 = aplicar_return_pressure(raw_hold1, raw_hold2, ret1, ret2, surface)
 
@@ -944,10 +742,6 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, use_form=True):
 
     if p1_big or p2_big:
         vol += 0.006
-
-    form_gap = abs(form1 - form2)
-    if form_gap > 0.020:
-        vol += 0.004
 
     for _ in range(n):
         sets1 = 0
@@ -1018,14 +812,12 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, use_form=True):
         "ret2": ret2,
         "p1_profile": p1_profile,
         "p2_profile": p2_profile,
-        "vol": vol,
-        "form1": form1,
-        "form2": form2
+        "vol": vol
     }
 
 
 # =========================================================
-# VALIDACIÓN HISTÓRICA
+# HISTÓRICOS
 # =========================================================
 
 def encontrar_jugador(nombre_hist, db):
@@ -1073,7 +865,29 @@ def hay_tiebreak_row(row):
     return False
 
 
-def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_bt, use_form):
+def cargar_historicos(circuito):
+    r = rutas(circuito)
+    folder = r["historicos"]
+
+    files = sorted(glob.glob(os.path.join(folder, "*.xlsx")))
+
+    dfs = []
+
+    for f in files:
+        try:
+            df = pd.read_excel(f)
+            df["SourceFile"] = os.path.basename(f)
+            dfs.append(df)
+        except:
+            pass
+
+    if not dfs:
+        return pd.DataFrame()
+
+    return pd.concat(dfs, ignore_index=True)
+
+
+def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_bt):
     rows = []
 
     df = hist_df.copy()
@@ -1105,13 +919,13 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
         d_win = db[p_win_key]
         d_los = db[p_los_key]
 
-        sim = sim_match(d_win, d_los, surface, circuito, best_of, sims_bt, use_form)
+        sim = sim_match(d_win, d_los, surface, circuito, best_of, sims_bt)
 
-        p_model_winner_raw = sim["p1"]
-        p_model_winner_cal = sim["p1_cal"]
+        p_raw = sim["p1"]
+        p_cal = sim["p1_cal"]
 
-        fav_raw_is_winner = p_model_winner_raw >= 0.50
-        fav_cal_is_winner = p_model_winner_cal >= 0.50
+        raw_fav_is_winner = p_raw >= 0.50
+        cal_fav_is_winner = p_cal >= 0.50
 
         games_real = total_games_row(row)
 
@@ -1122,10 +936,6 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
 
         tb_real = hay_tiebreak_row(row)
 
-        over18_real = games_real > 18.5
-        over20_real = games_real > 20.5
-        over22_real = games_real > 22.5
-
         games_model = sim["games"]
 
         over18_model = sum(x > 18.5 for x in games_model) / sims_bt
@@ -1135,31 +945,39 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
         rows.append({
             "Date": row.get("Date", ""),
             "Tournament": row.get("Tournament", ""),
+            "Series": row.get("Series", ""),
+            "Round": row.get("Round", ""),
             "Surface": surface,
             "WinnerHist": winner_hist,
             "LoserHist": loser_hist,
             "WinnerMatched": p_win_key,
             "LoserMatched": p_los_key,
-            "ModelWinnerProbRaw": p_model_winner_raw,
-            "ModelWinnerProbCal": p_model_winner_cal,
-            "RawFavWasWinner": fav_raw_is_winner,
-            "CalFavWasWinner": fav_cal_is_winner,
+            "WinnerRank": leer_float(row.get("WRank", np.nan), np.nan),
+            "LoserRank": leer_float(row.get("LRank", np.nan), np.nan),
+            "ModelWinnerProbRaw": p_raw,
+            "ModelWinnerProbCal": p_cal,
+            "RawFavWasWinner": raw_fav_is_winner,
+            "CalFavWasWinner": cal_fav_is_winner,
             "RealGames": games_real,
             "ModelAvgGames": np.mean(games_model),
             "Real3Sets": set3_real,
             "Model3Sets": sim["set3"],
             "RealTB": tb_real,
             "ModelTB": sim["tb"],
-            "RealOver18": over18_real,
+            "RealOver18": games_real > 18.5,
             "ModelOver18": over18_model,
-            "RealOver20": over20_real,
+            "RealOver20": games_real > 20.5,
             "ModelOver20": over20_model,
-            "RealOver22": over22_real,
+            "RealOver22": games_real > 22.5,
             "ModelOver22": over22_model,
             "WinnerStats": d_win["Stats"]["match_type"],
             "LoserStats": d_los["Stats"]["match_type"],
-            "WinnerFormAdj": sim["form1"],
-            "LoserFormAdj": sim["form2"]
+            "WinnerHold": sim["hold1"],
+            "LoserHold": sim["hold2"],
+            "WinnerReturn": sim["ret1"],
+            "LoserReturn": sim["ret2"],
+            "WinnerServeProfile": sim["p1_profile"],
+            "LoserServeProfile": sim["p2_profile"]
         })
 
         if total > 0:
@@ -1171,19 +989,132 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
 
 
 # =========================================================
+# ANALYZER
+# =========================================================
+
+def market_hit_rate(df, model_col, real_col, threshold):
+    sub = df[df[model_col] >= threshold].copy()
+    if len(sub) == 0:
+        return None
+
+    return {
+        "Casos": len(sub),
+        "Prob media modelo": sub[model_col].mean(),
+        "Acierto real": sub[real_col].mean()
+    }
+
+
+def crear_analyzer_tables(val, min_casos=20):
+    tables = {}
+
+    # ML por tramos
+    val["FavProbCal"] = val["ModelWinnerProbCal"].apply(lambda x: max(x, 1 - x))
+    val["FavProbRaw"] = val["ModelWinnerProbRaw"].apply(lambda x: max(x, 1 - x))
+
+    val["MLBin"] = pd.cut(
+        val["FavProbCal"],
+        bins=[0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.90],
+        labels=["50-55", "55-60", "60-65", "65-70", "70-75", "75-80", "80-90"]
+    )
+
+    ml = val.groupby("MLBin", observed=True).agg(
+        Casos=("FavProbCal", "count"),
+        ProbMedia=("FavProbCal", "mean"),
+        AciertoReal=("CalFavWasWinner", "mean")
+    ).reset_index()
+
+    tables["ML por tramos"] = ml[ml["Casos"] >= min_casos]
+
+    # Mercados por thresholds
+    market_rows = []
+    for market_name, model_col, real_col in [
+        ("Over 18.5", "ModelOver18", "RealOver18"),
+        ("Over 20.5", "ModelOver20", "RealOver20"),
+        ("Over 22.5", "ModelOver22", "RealOver22"),
+        ("3 Sets", "Model3Sets", "Real3Sets"),
+        ("Tie-break", "ModelTB", "RealTB"),
+    ]:
+        for th in [0.50, 0.55, 0.60, 0.65, 0.70]:
+            r = market_hit_rate(val, model_col, real_col, th)
+            if r and r["Casos"] >= min_casos:
+                market_rows.append({
+                    "Mercado": market_name,
+                    "Umbral modelo": th,
+                    **r
+                })
+
+    tables["Mercados por umbral"] = pd.DataFrame(market_rows)
+
+    # Superficie
+    surface = val.groupby("Surface").agg(
+        Casos=("Surface", "count"),
+        MLAccuracy=("CalFavWasWinner", "mean"),
+        Over18Hit=("RealOver18", "mean"),
+        Over20Hit=("RealOver20", "mean"),
+        Over22Hit=("RealOver22", "mean"),
+        ThreeSetsReal=("Real3Sets", "mean"),
+        TBReal=("RealTB", "mean"),
+        GamesReal=("RealGames", "mean"),
+        GamesModel=("ModelAvgGames", "mean")
+    ).reset_index()
+
+    tables["Por superficie"] = surface[surface["Casos"] >= min_casos]
+
+    # Perfil sacador
+    val["AnyBigServer"] = (
+        val["WinnerServeProfile"].isin(["big_server", "elite_server"]) |
+        val["LoserServeProfile"].isin(["big_server", "elite_server"])
+    )
+
+    server = val.groupby("AnyBigServer").agg(
+        Casos=("AnyBigServer", "count"),
+        MLAccuracy=("CalFavWasWinner", "mean"),
+        TBReal=("RealTB", "mean"),
+        TBModel=("ModelTB", "mean"),
+        Over22Real=("RealOver22", "mean"),
+        Over22Model=("ModelOver22", "mean"),
+        GamesReal=("RealGames", "mean"),
+        GamesModel=("ModelAvgGames", "mean")
+    ).reset_index()
+
+    tables["Big server"] = server[server["Casos"] >= min_casos]
+
+    # Ranking gap
+    val["RankGap"] = abs(val["WinnerRank"] - val["LoserRank"])
+    val["RankGapBin"] = pd.cut(
+        val["RankGap"],
+        bins=[0, 20, 50, 100, 200, 500],
+        labels=["0-20", "20-50", "50-100", "100-200", "200+"]
+    )
+
+    rankgap = val.groupby("RankGapBin", observed=True).agg(
+        Casos=("RankGap", "count"),
+        MLAccuracy=("CalFavWasWinner", "mean"),
+        ThreeSetsReal=("Real3Sets", "mean"),
+        ThreeSetsModel=("Model3Sets", "mean"),
+        GamesReal=("RealGames", "mean"),
+        GamesModel=("ModelAvgGames", "mean")
+    ).reset_index()
+
+    tables["Ranking gap"] = rankgap[rankgap["Casos"] >= min_casos]
+
+    return tables
+
+
+# =========================================================
 # UI
 # =========================================================
 
 with st.sidebar:
     st.header("🎾 Tennis IA v13")
-    st.caption("Form Engine")
+    st.caption("Analyzer Engine")
 
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
 
     circuito = st.radio("Circuito", ["ATP", "WTA"])
-    modo = st.radio("Modo", ["Predictor", "Validador histórico"])
+    modo = st.radio("Modo", ["Predictor", "Validador histórico", "Analyzer"])
 
 db = cargar_datos(circuito)
 
@@ -1199,21 +1130,9 @@ if not db:
 if modo == "Predictor":
     with st.sidebar:
         players = sorted(db.keys())
-
         surface = st.selectbox("Superficie", ["Hard", "Clay", "Grass"])
-
-        format_match = st.radio(
-            "Formato",
-            ["ATP Tour (3 sets)", "Grand Slam (5 sets)"]
-        )
-
-        sims = st.select_slider(
-            "Simulaciones",
-            [5000, 10000, 20000],
-            value=10000
-        )
-
-        use_form = st.checkbox("Usar Form Engine", value=True)
+        format_match = st.radio("Formato", ["ATP Tour (3 sets)", "Grand Slam (5 sets)"])
+        sims = st.select_slider("Simulaciones", [5000, 10000, 20000], value=10000)
 
     c1, c2 = st.columns(2)
 
@@ -1221,11 +1140,7 @@ if modo == "Predictor":
         p1_name = st.selectbox("Jugador 1", players)
 
     with c2:
-        p2_name = st.selectbox(
-            "Jugador 2",
-            players,
-            index=min(1, len(players)-1)
-        )
+        p2_name = st.selectbox("Jugador 2", players, index=min(1, len(players)-1))
 
     if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
         d1 = db[p1_name]
@@ -1234,11 +1149,10 @@ if modo == "Predictor":
         best_of = 5 if "5" in format_match else 3
 
         with st.spinner(f"Simulando {sims:,} partidos..."):
-            sim = sim_match(d1, d2, surface, circuito, best_of, sims, use_form)
+            sim = sim_match(d1, d2, surface, circuito, best_of, sims)
 
         p1 = sim["p1"]
         p2 = sim["p2"]
-
         p1_cal = sim["p1_cal"]
         p2_cal = sim["p2_cal"]
 
@@ -1287,9 +1201,7 @@ if modo == "Predictor":
                 f"{edge_calibracion(p2, p2_cal)}"
             )
 
-        st.caption(
-            f"Referencia Elo puro: {elo_ref:.1%} / {1-elo_ref:.1%} · {risk}"
-        )
+        st.caption(f"Referencia Elo puro: {elo_ref:.1%} / {1-elo_ref:.1%} · {risk}")
 
         st.divider()
         st.subheader("🎾 Primer Set")
@@ -1297,18 +1209,10 @@ if modo == "Predictor":
         fs1, fs2 = st.columns(2)
 
         with fs1:
-            st.metric(
-                f"{d1['Player']} gana",
-                f"{sim['p1_fs']:.1%}",
-                nivel(sim["p1_fs"])
-            )
+            st.metric(f"{d1['Player']} gana", f"{sim['p1_fs']:.1%}", nivel(sim["p1_fs"]))
 
         with fs2:
-            st.metric(
-                f"{d2['Player']} gana",
-                f"{sim['p2_fs']:.1%}",
-                nivel(sim["p2_fs"])
-            )
+            st.metric(f"{d2['Player']} gana", f"{sim['p2_fs']:.1%}", nivel(sim["p2_fs"]))
 
         st.divider()
         st.subheader("📊 Mercados")
@@ -1341,50 +1245,17 @@ if modo == "Predictor":
         st.caption(f"Mediana games: {med_games:.0f}")
 
         st.divider()
-        st.subheader("🎾 Hold / Return / Form Engine")
+        st.subheader("🎾 Hold / Return Engine")
 
         h1, h2 = st.columns(2)
 
         with h1:
-            st.metric(
-                d1["Player"],
-                f"{sim['hold1']:.1%}",
-                f"Raw hold {sim['raw_hold1']:.1%}"
-            )
-            st.caption(
-                f"{perfil_legible(sim['p1_profile'])} · Return {sim['ret1']:.1%} · Form adj {sim['form1']:+.1%}"
-            )
+            st.metric(d1["Player"], f"{sim['hold1']:.1%}", f"Raw hold {sim['raw_hold1']:.1%}")
+            st.caption(f"{perfil_legible(sim['p1_profile'])} · Return strength {sim['ret1']:.1%}")
 
         with h2:
-            st.metric(
-                d2["Player"],
-                f"{sim['hold2']:.1%}",
-                f"Raw hold {sim['raw_hold2']:.1%}"
-            )
-            st.caption(
-                f"{perfil_legible(sim['p2_profile'])} · Return {sim['ret2']:.1%} · Form adj {sim['form2']:+.1%}"
-            )
-
-        st.divider()
-        st.subheader("📈 Forma reciente")
-
-        f1, f2 = st.columns(2)
-
-        with f1:
-            form = d1["Form"]
-            st.write(f"Últimos 10: {form['last10_wr']:.1%}")
-            st.write(f"Últimos 5: {form['last5_wr']:.1%}")
-            st.write(f"{surface}: {form['surface_wr'].get(surface, 0.5):.1%}")
-            st.write(f"Racha: {form['streak']}")
-            st.write(f"Descanso: {form['rest_days']} días")
-
-        with f2:
-            form = d2["Form"]
-            st.write(f"Últimos 10: {form['last10_wr']:.1%}")
-            st.write(f"Últimos 5: {form['last5_wr']:.1%}")
-            st.write(f"{surface}: {form['surface_wr'].get(surface, 0.5):.1%}")
-            st.write(f"Racha: {form['streak']}")
-            st.write(f"Descanso: {form['rest_days']} días")
+            st.metric(d2["Player"], f"{sim['hold2']:.1%}", f"Raw hold {sim['raw_hold2']:.1%}")
+            st.caption(f"{perfil_legible(sim['p2_profile'])} · Return strength {sim['ret2']:.1%}")
 
         st.divider()
         st.subheader("🔎 Diagnóstico")
@@ -1408,117 +1279,43 @@ if modo == "Predictor":
             st.write("Tipo:", d2["Stats"]["match_type"])
 
         st.divider()
-        st.subheader("🧠 Perfil del Partido")
-
-        tags = []
-
-        if sim["p1_profile"] in ["big_server", "elite_server"]:
-            tags.append(f"🚀 {d1['Player']} gran sacador")
-
-        if sim["p2_profile"] in ["big_server", "elite_server"]:
-            tags.append(f"🚀 {d2['Player']} gran sacador")
-
-        if sim["set3"] > 0.45:
-            tags.append("⚠️ Partido volátil")
-
-        if sim["tb"] > 0.32:
-            tags.append("🎯 Tie-break probable")
-
-        if avg_games > 24:
-            tags.append("📈 Partido largo")
-
-        if avg_games < 21:
-            tags.append("📉 Partido corto")
-
-        if max(p1_cal, p2_cal) < 0.55:
-            tags.append("⚠️ Favorito débil")
-
-        if sim["vol"] > 0.06:
-            tags.append("🌪️ Alta volatilidad por diferencia Elo/superficie")
-
-        if abs(sim["ret1"] - sim["ret2"]) > 0.05:
-            mejor_restador = d1["Player"] if sim["ret1"] > sim["ret2"] else d2["Player"]
-            tags.append(f"🧱 Mejor restador: {mejor_restador}")
-
-        if abs(sim["form1"] - sim["form2"]) > 0.015:
-            mejor_forma = d1["Player"] if sim["form1"] > sim["form2"] else d2["Player"]
-            tags.append(f"📈 Mejor forma reciente: {mejor_forma}")
-
-        if tags:
-            st.info(" · ".join(tags))
-        else:
-            st.info("Sin perfil extremo detectado.")
-
-        st.divider()
-        st.subheader("🎯 Señal principal del modelo")
-
-        markets = {
-            "ML favorito calibrado": max(p1_cal, p2_cal),
-            "Over 18.5": over18,
-            "Over 20.5": over20,
-            "Over 22.5": over22,
-            "Under 22.5": under22,
-            "Tie-break": sim["tb"]
-        }
-
-        best_market = max(markets.items(), key=lambda x: x[1])
-
-        st.success(f"{best_market[0]} → {best_market[1]:.1%}")
-
-        st.divider()
-        st.caption(f"Tennis IA v13 · Form Engine · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v13 · Predictor · {sims:,} simulaciones Monte Carlo")
 
 
 # =========================================================
-# VALIDADOR HISTÓRICO
+# VALIDADOR
 # =========================================================
 
-else:
+elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
 
     hist_df = cargar_historicos(circuito)
 
     if hist_df.empty:
-        st.error("No se encontraron históricos. Revisa datos/atp/historicos o datos/wta/historicos.")
+        st.error("No se encontraron históricos.")
         st.stop()
 
     with st.sidebar:
         surface_filter = st.selectbox("Superficie histórica", ["Todas", "Hard", "Clay", "Grass"])
         max_matches = st.number_input("Máx partidos a validar", min_value=10, max_value=5000, value=500, step=50)
         sims_bt = st.select_slider("Simulaciones por partido", [300, 500, 1000, 2000], value=500)
-        use_form_val = st.checkbox("Usar Form Engine en validación", value=True)
 
-    st.info(
-        f"Históricos cargados: {len(hist_df):,} partidos. "
-        f"Recomendado: 500 partidos y 500 simulaciones."
-    )
+    st.info(f"Históricos cargados: {len(hist_df):,} partidos.")
 
     if st.button("🚀 EJECUTAR VALIDACIÓN", use_container_width=True):
         with st.spinner("Validando partidos históricos..."):
-            val = validar_historico(
-                db,
-                hist_df,
-                circuito,
-                surface_filter,
-                int(max_matches),
-                int(sims_bt),
-                use_form_val
-            )
+            val = validar_historico(db, hist_df, circuito, surface_filter, int(max_matches), int(sims_bt))
 
         if val.empty:
-            st.error("No se pudieron emparejar partidos históricos con la base de jugadores.")
+            st.error("No se pudieron emparejar partidos.")
             st.stop()
 
-        ml_acc_raw = val["RawFavWasWinner"].mean()
-        ml_acc_cal = val["CalFavWasWinner"].mean()
-
+        ml_acc = val["CalFavWasWinner"].mean()
         over18_acc = ((val["ModelOver18"] >= 0.50) == val["RealOver18"]).mean()
         over20_acc = ((val["ModelOver20"] >= 0.50) == val["RealOver20"]).mean()
         over22_acc = ((val["ModelOver22"] >= 0.50) == val["RealOver22"]).mean()
-
         set3_acc = ((val["Model3Sets"] >= 0.50) == val["Real3Sets"]).mean()
         tb_acc = ((val["ModelTB"] >= 0.50) == val["RealTB"]).mean()
-
         games_error = np.mean(np.abs(val["ModelAvgGames"] - val["RealGames"]))
 
         st.divider()
@@ -1527,18 +1324,18 @@ else:
         a1, a2, a3, a4 = st.columns(4)
 
         with a1:
-            st.metric("ML raw accuracy", f"{ml_acc_raw:.1%}")
+            st.metric("ML accuracy", f"{ml_acc:.1%}")
 
         with a2:
-            st.metric("ML calibrated accuracy", f"{ml_acc_cal:.1%}")
+            st.metric("Over 20.5 accuracy", f"{over20_acc:.1%}")
 
         with a3:
-            st.metric("Over 20.5 accuracy", f"{over20_acc:.1%}")
+            st.metric("3 sets accuracy", f"{set3_acc:.1%}")
 
         with a4:
             st.metric("Error medio games", f"{games_error:.2f}")
 
-        b1, b2, b3, b4 = st.columns(4)
+        b1, b2, b3 = st.columns(3)
 
         with b1:
             st.metric("Over 18.5 accuracy", f"{over18_acc:.1%}")
@@ -1547,39 +1344,118 @@ else:
             st.metric("Over 22.5 accuracy", f"{over22_acc:.1%}")
 
         with b3:
-            st.metric("3 sets accuracy", f"{set3_acc:.1%}")
-
-        with b4:
             st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
 
         st.divider()
-        st.subheader("📈 Calibración ML por tramos")
+        st.dataframe(val, use_container_width=True)
 
-        val["ProbBinRaw"] = pd.cut(
-            val["ModelWinnerProbRaw"],
-            bins=[0, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00],
-            labels=["0-40", "40-50", "50-60", "60-70", "70-80", "80-90", "90-100"]
+        st.download_button(
+            "⬇️ Descargar CSV",
+            data=val.to_csv(index=False).encode("utf-8"),
+            file_name="validacion_tennis_ia_v13_analyzer.csv",
+            mime="text/csv"
         )
 
-        calib_raw = val.groupby("ProbBinRaw", observed=True).agg(
-            Partidos=("ModelWinnerProbRaw", "count"),
-            ProbMediaRaw=("ModelWinnerProbRaw", "mean"),
-            WinRateRawFav=("RawFavWasWinner", "mean")
-        ).reset_index()
 
-        st.dataframe(calib_raw, use_container_width=True)
+# =========================================================
+# ANALYZER
+# =========================================================
+
+else:
+    st.subheader("📊 Analyzer Engine")
+
+    hist_df = cargar_historicos(circuito)
+
+    if hist_df.empty:
+        st.error("No se encontraron históricos.")
+        st.stop()
+
+    with st.sidebar:
+        surface_filter = st.selectbox("Superficie analyzer", ["Todas", "Hard", "Clay", "Grass"])
+        max_matches = st.number_input("Máx partidos", min_value=50, max_value=5000, value=1000, step=100)
+        sims_bt = st.select_slider("Simulaciones por partido", [300, 500, 1000], value=500)
+        min_casos = st.number_input("Mínimo casos por segmento", min_value=5, max_value=200, value=25, step=5)
+
+    st.info(
+        "Este modo busca patrones históricos: qué mercados funcionan mejor según umbrales, superficie, ranking gap y perfiles."
+    )
+
+    if st.button("🚀 EJECUTAR ANALYZER", use_container_width=True):
+        with st.spinner("Generando validación base para Analyzer..."):
+            val = validar_historico(
+                db,
+                hist_df,
+                circuito,
+                surface_filter,
+                int(max_matches),
+                int(sims_bt)
+            )
+
+        if val.empty:
+            st.error("No se pudieron emparejar partidos.")
+            st.stop()
+
+        tables = crear_analyzer_tables(val, int(min_casos))
 
         st.divider()
-        st.subheader("🧾 Detalle partidos validados")
+        st.subheader("🏆 Resumen general")
+
+        g1, g2, g3, g4 = st.columns(4)
+
+        with g1:
+            st.metric("Partidos analizados", f"{len(val):,}")
+
+        with g2:
+            st.metric("ML accuracy", f"{val['CalFavWasWinner'].mean():.1%}")
+
+        with g3:
+            st.metric("Games error", f"{np.mean(np.abs(val['ModelAvgGames'] - val['RealGames'])):.2f}")
+
+        with g4:
+            st.metric("TB real/modelo", f"{val['RealTB'].mean():.1%} / {val['ModelTB'].mean():.1%}")
+
+        st.divider()
+        st.subheader("📈 Mercados por umbral")
+
+        market_table = tables.get("Mercados por umbral", pd.DataFrame())
+
+        if not market_table.empty:
+            market_table = market_table.sort_values(["Acierto real", "Casos"], ascending=[False, False])
+            st.dataframe(market_table, use_container_width=True)
+        else:
+            st.warning("No hay suficientes casos para mercados por umbral.")
+
+        st.divider()
+        st.subheader("🎯 ML por tramos")
+
+        st.dataframe(tables.get("ML por tramos", pd.DataFrame()), use_container_width=True)
+
+        st.divider()
+        st.subheader("🌍 Por superficie")
+
+        st.dataframe(tables.get("Por superficie", pd.DataFrame()), use_container_width=True)
+
+        st.divider()
+        st.subheader("🚀 Big server")
+
+        st.dataframe(tables.get("Big server", pd.DataFrame()), use_container_width=True)
+
+        st.divider()
+        st.subheader("📊 Ranking gap")
+
+        st.dataframe(tables.get("Ranking gap", pd.DataFrame()), use_container_width=True)
+
+        st.divider()
+        st.subheader("🧾 Detalle base")
 
         st.dataframe(val, use_container_width=True)
 
         st.download_button(
-            "⬇️ Descargar validación CSV",
+            "⬇️ Descargar Analyzer CSV",
             data=val.to_csv(index=False).encode("utf-8"),
-            file_name="validacion_tennis_ia_v13.csv",
+            file_name="analyzer_tennis_ia_v13.csv",
             mime="text/csv"
         )
 
         st.divider()
-        st.caption(f"Tennis IA v13 · Validador histórico · {len(val):,} partidos validados")
+        st.caption("Tennis IA v13 · Analyzer Engine")
