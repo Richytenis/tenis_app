@@ -1,3 +1,8 @@
+# =========================================================
+# TENNIS IA v13
+# PREDICTOR + VALIDATOR + FORM ENGINE
+# =========================================================
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,13 +13,8 @@ import glob
 import unicodedata
 from difflib import SequenceMatcher
 
-# =========================================================
-# TENNIS IA v12.2
-# PREDICTOR + HISTORICAL VALIDATOR + CALIBRATION ENGINE
-# =========================================================
-
 st.set_page_config(
-    page_title="Tennis IA v12.2",
+    page_title="Tennis IA v13",
     page_icon="🎾",
     layout="wide"
 )
@@ -138,6 +138,13 @@ def leer_float(v, default):
         return default
 
 
+def parse_fecha(v):
+    try:
+        return pd.to_datetime(v, dayfirst=True, errors="coerce")
+    except:
+        return pd.NaT
+
+
 def elo_prob(e1, e2):
     return 1 / (1 + 10 ** ((e2 - e1) / 400))
 
@@ -173,17 +180,27 @@ def perfil_legible(profile):
 
 
 # =========================================================
+# RUTAS
+# =========================================================
+
+def rutas(circuito):
+    base = f"datos/{circuito.lower()}"
+
+    return {
+        "base": base,
+        "elo": f"{base}/{circuito.lower()}_elo.xlsx",
+        "serve": f"{base}/{circuito.lower()}_serve.xlsx",
+        "return": f"{base}/{circuito.lower()}_return.xlsx",
+        "break": f"{base}/{circuito.lower()}_break.xlsx",
+        "historicos": f"{base}/historicos"
+    }
+
+
+# =========================================================
 # CALIBRATION ENGINE
 # =========================================================
 
 def calibrar_probabilidad(p, surface):
-    """
-    Calibración conservadora basada en validaciones:
-    - Mantiene partidos igualados casi intactos.
-    - Reduce favoritos fuertes.
-    - Devuelve probabilidad calibrada del jugador 1.
-    """
-
     if p >= 0.50:
         fav_p = p
         sign = 1
@@ -208,7 +225,6 @@ def calibrar_probabilidad(p, surface):
         shrink += 0.01
 
     fav_cal = 0.50 + (fav_p - 0.50) * (1 - shrink)
-
     fav_cal = np.clip(fav_cal, 0.50, 0.88)
 
     if sign == 1:
@@ -228,20 +244,183 @@ def edge_calibracion(p_raw, p_cal):
 
 
 # =========================================================
-# RUTAS
+# HISTÓRICOS / FORM ENGINE
 # =========================================================
 
-def rutas(circuito):
-    base = f"datos/{circuito.lower()}"
+def cargar_historicos(circuito):
+    r = rutas(circuito)
+    folder = r["historicos"]
+
+    files = sorted(glob.glob(os.path.join(folder, "*.xlsx")))
+
+    dfs = []
+
+    for f in files:
+        try:
+            df = pd.read_excel(f)
+            df["SourceFile"] = os.path.basename(f)
+            dfs.append(df)
+        except:
+            pass
+
+    if not dfs:
+        return pd.DataFrame()
+
+    df_all = pd.concat(dfs, ignore_index=True)
+
+    if "Date" in df_all.columns:
+        df_all["DateParsed"] = df_all["Date"].apply(parse_fecha)
+    else:
+        df_all["DateParsed"] = pd.NaT
+
+    return df_all
+
+
+def crear_form_profiles(hist_df):
+    form_map = {}
+
+    if hist_df.empty:
+        return form_map
+
+    df = hist_df.copy()
+    df = df[df["Comment"].astype(str).str.contains("Completed", na=False)]
+    df = df.dropna(subset=["Winner", "Loser"])
+
+    if "DateParsed" not in df.columns:
+        df["DateParsed"] = df["Date"].apply(parse_fecha)
+
+    df = df.sort_values("DateParsed")
+
+    partidos = {}
+
+    for _, row in df.iterrows():
+        winner = normalizar_texto(row.get("Winner", ""))
+        loser = normalizar_texto(row.get("Loser", ""))
+        surface = str(row.get("Surface", "Hard"))
+        date = row.get("DateParsed", pd.NaT)
+        series = str(row.get("Series", ""))
+
+        if winner == "" or loser == "":
+            continue
+
+        for player, won in [(winner, 1), (loser, 0)]:
+            pid = limpiar(player)
+
+            if pid not in partidos:
+                partidos[pid] = []
+
+            partidos[pid].append({
+                "date": date,
+                "surface": surface,
+                "won": won,
+                "series": series
+            })
+
+    for pid, plist in partidos.items():
+        plist = sorted(plist, key=lambda x: x["date"] if not pd.isna(x["date"]) else pd.Timestamp("1900-01-01"))
+
+        last10 = plist[-10:]
+        last5 = plist[-5:]
+
+        last10_wr = np.mean([p["won"] for p in last10]) if last10 else 0.50
+        last5_wr = np.mean([p["won"] for p in last5]) if last5 else 0.50
+
+        surfaces = {}
+        for surface in ["Hard", "Clay", "Grass"]:
+            sf = [p for p in plist[-30:] if p["surface"] == surface]
+            surfaces[surface] = np.mean([p["won"] for p in sf]) if sf else 0.50
+
+        streak = 0
+        for p in reversed(plist):
+            if p["won"] == 1:
+                if streak >= 0:
+                    streak += 1
+                else:
+                    break
+            else:
+                if streak <= 0:
+                    streak -= 1
+                else:
+                    break
+
+        latest_date = plist[-1]["date"] if plist else pd.NaT
+
+        if not pd.isna(latest_date):
+            max_date = df["DateParsed"].max()
+            rest_days = (max_date - latest_date).days if not pd.isna(max_date) else 7
+        else:
+            rest_days = 7
+
+        form_map[pid] = {
+            "last10_wr": float(last10_wr),
+            "last5_wr": float(last5_wr),
+            "surface_wr": surfaces,
+            "streak": int(np.clip(streak, -5, 5)),
+            "rest_days": int(np.clip(rest_days, 0, 30)),
+            "matches_count": len(plist),
+            "latest_date": str(latest_date.date()) if not pd.isna(latest_date) else "N/A"
+        }
+
+    return form_map
+
+
+def buscar_form(nombre, form_map):
+    nid = limpiar(nombre)
+
+    if nid in form_map:
+        return form_map[nid]
+
+    mejor = None
+    best = 0
+
+    for fid, data in form_map.items():
+        score = similitud_nombre(nombre, fid)
+
+        if score > best:
+            best = score
+            mejor = data
+
+    if mejor is not None and best >= 0.72:
+        return mejor
 
     return {
-        "base": base,
-        "elo": f"{base}/{circuito.lower()}_elo.xlsx",
-        "serve": f"{base}/{circuito.lower()}_serve.xlsx",
-        "return": f"{base}/{circuito.lower()}_return.xlsx",
-        "break": f"{base}/{circuito.lower()}_break.xlsx",
-        "historicos": f"{base}/historicos"
+        "last10_wr": 0.50,
+        "last5_wr": 0.50,
+        "surface_wr": {"Hard": 0.50, "Clay": 0.50, "Grass": 0.50},
+        "streak": 0,
+        "rest_days": 7,
+        "matches_count": 0,
+        "latest_date": "N/A"
     }
+
+
+def form_adjustment(form, surface):
+    last10 = form.get("last10_wr", 0.50)
+    last5 = form.get("last5_wr", 0.50)
+    surface_wr = form.get("surface_wr", {}).get(surface, 0.50)
+    streak = form.get("streak", 0)
+    rest_days = form.get("rest_days", 7)
+    matches = form.get("matches_count", 0)
+
+    if matches < 5:
+        return 0.0
+
+    adj = 0
+
+    adj += (last10 - 0.50) * 0.035
+    adj += (last5 - 0.50) * 0.020
+    adj += (surface_wr - 0.50) * 0.025
+
+    adj += np.clip(streak, -5, 5) * 0.0025
+
+    if rest_days <= 1:
+        adj -= 0.010
+    elif rest_days <= 3:
+        adj -= 0.006
+    elif rest_days >= 10:
+        adj += 0.002
+
+    return float(np.clip(adj, -0.035, 0.035))
 
 
 # =========================================================
@@ -456,6 +635,9 @@ def buscar_stats(nombre, stats_map):
 def cargar_datos(circuito):
     r = rutas(circuito)
 
+    hist_df = cargar_historicos(circuito)
+    form_map = crear_form_profiles(hist_df)
+
     serve_map = leer_archivo_stats(r["serve"], "serve")
     return_map = leer_archivo_stats(r["return"], "return")
     break_map = leer_archivo_stats(r["break"], "break")
@@ -531,13 +713,16 @@ def cargar_datos(circuito):
         if stats is None:
             stats = stats_default_por_elo(clay, rank, "Clay", circuito)
 
+        form = buscar_form(nombre, form_map)
+
         players[nombre] = {
             "Player": nombre,
             "Rank": rank,
             "Hard": hard,
             "Clay": clay,
             "Grass": grass,
-            "Stats": stats
+            "Stats": stats,
+            "Form": form
         }
 
     return players
@@ -711,7 +896,7 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big):
             return 6, 7, tb
 
 
-def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
+def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, use_form=True):
     e1 = d1[surface]
     e2 = d2[surface]
 
@@ -723,8 +908,17 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
     raw_hold1 = calc_hold(s1, elo_diff, surface, circuito)
     raw_hold2 = calc_hold(s2, -elo_diff, surface, circuito)
 
+    form1 = form_adjustment(d1.get("Form", {}), surface) if use_form else 0.0
+    form2 = form_adjustment(d2.get("Form", {}), surface) if use_form else 0.0
+
+    raw_hold1 = np.clip(raw_hold1 + form1, 0.46, 0.84)
+    raw_hold2 = np.clip(raw_hold2 + form2, 0.46, 0.84)
+
     ret1 = calc_return_strength(s1, e1, surface)
     ret2 = calc_return_strength(s2, e2, surface)
+
+    ret1 = np.clip(ret1 + form1 * 0.45, 0.12, 0.40)
+    ret2 = np.clip(ret2 + form2 * 0.45, 0.12, 0.40)
 
     hold1, hold2 = aplicar_return_pressure(raw_hold1, raw_hold2, ret1, ret2, surface)
 
@@ -750,6 +944,10 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
 
     if p1_big or p2_big:
         vol += 0.006
+
+    form_gap = abs(form1 - form2)
+    if form_gap > 0.020:
+        vol += 0.004
 
     for _ in range(n):
         sets1 = 0
@@ -820,12 +1018,14 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
         "ret2": ret2,
         "p1_profile": p1_profile,
         "p2_profile": p2_profile,
-        "vol": vol
+        "vol": vol,
+        "form1": form1,
+        "form2": form2
     }
 
 
 # =========================================================
-# HISTÓRICOS
+# VALIDACIÓN HISTÓRICA
 # =========================================================
 
 def encontrar_jugador(nombre_hist, db):
@@ -873,29 +1073,7 @@ def hay_tiebreak_row(row):
     return False
 
 
-def cargar_historicos(circuito):
-    r = rutas(circuito)
-    folder = r["historicos"]
-
-    files = sorted(glob.glob(os.path.join(folder, "*.xlsx")))
-
-    dfs = []
-
-    for f in files:
-        try:
-            df = pd.read_excel(f)
-            df["SourceFile"] = os.path.basename(f)
-            dfs.append(df)
-        except:
-            pass
-
-    if not dfs:
-        return pd.DataFrame()
-
-    return pd.concat(dfs, ignore_index=True)
-
-
-def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_bt):
+def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_bt, use_form):
     rows = []
 
     df = hist_df.copy()
@@ -927,7 +1105,7 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
         d_win = db[p_win_key]
         d_los = db[p_los_key]
 
-        sim = sim_match(d_win, d_los, surface, circuito, best_of, sims_bt)
+        sim = sim_match(d_win, d_los, surface, circuito, best_of, sims_bt, use_form)
 
         p_model_winner_raw = sim["p1"]
         p_model_winner_cal = sim["p1_cal"]
@@ -979,7 +1157,9 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
             "RealOver22": over22_real,
             "ModelOver22": over22_model,
             "WinnerStats": d_win["Stats"]["match_type"],
-            "LoserStats": d_los["Stats"]["match_type"]
+            "LoserStats": d_los["Stats"]["match_type"],
+            "WinnerFormAdj": sim["form1"],
+            "LoserFormAdj": sim["form2"]
         })
 
         if total > 0:
@@ -995,8 +1175,8 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v12.2")
-    st.caption("Calibration Engine")
+    st.header("🎾 Tennis IA v13")
+    st.caption("Form Engine")
 
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -1033,6 +1213,8 @@ if modo == "Predictor":
             value=10000
         )
 
+        use_form = st.checkbox("Usar Form Engine", value=True)
+
     c1, c2 = st.columns(2)
 
     with c1:
@@ -1052,7 +1234,7 @@ if modo == "Predictor":
         best_of = 5 if "5" in format_match else 3
 
         with st.spinner(f"Simulando {sims:,} partidos..."):
-            sim = sim_match(d1, d2, surface, circuito, best_of, sims)
+            sim = sim_match(d1, d2, surface, circuito, best_of, sims, use_form)
 
         p1 = sim["p1"]
         p2 = sim["p2"]
@@ -1159,7 +1341,7 @@ if modo == "Predictor":
         st.caption(f"Mediana games: {med_games:.0f}")
 
         st.divider()
-        st.subheader("🎾 Hold / Return Engine")
+        st.subheader("🎾 Hold / Return / Form Engine")
 
         h1, h2 = st.columns(2)
 
@@ -1170,7 +1352,7 @@ if modo == "Predictor":
                 f"Raw hold {sim['raw_hold1']:.1%}"
             )
             st.caption(
-                f"{perfil_legible(sim['p1_profile'])} · Return strength {sim['ret1']:.1%}"
+                f"{perfil_legible(sim['p1_profile'])} · Return {sim['ret1']:.1%} · Form adj {sim['form1']:+.1%}"
             )
 
         with h2:
@@ -1180,8 +1362,29 @@ if modo == "Predictor":
                 f"Raw hold {sim['raw_hold2']:.1%}"
             )
             st.caption(
-                f"{perfil_legible(sim['p2_profile'])} · Return strength {sim['ret2']:.1%}"
+                f"{perfil_legible(sim['p2_profile'])} · Return {sim['ret2']:.1%} · Form adj {sim['form2']:+.1%}"
             )
+
+        st.divider()
+        st.subheader("📈 Forma reciente")
+
+        f1, f2 = st.columns(2)
+
+        with f1:
+            form = d1["Form"]
+            st.write(f"Últimos 10: {form['last10_wr']:.1%}")
+            st.write(f"Últimos 5: {form['last5_wr']:.1%}")
+            st.write(f"{surface}: {form['surface_wr'].get(surface, 0.5):.1%}")
+            st.write(f"Racha: {form['streak']}")
+            st.write(f"Descanso: {form['rest_days']} días")
+
+        with f2:
+            form = d2["Form"]
+            st.write(f"Últimos 10: {form['last10_wr']:.1%}")
+            st.write(f"Últimos 5: {form['last5_wr']:.1%}")
+            st.write(f"{surface}: {form['surface_wr'].get(surface, 0.5):.1%}")
+            st.write(f"Racha: {form['streak']}")
+            st.write(f"Descanso: {form['rest_days']} días")
 
         st.divider()
         st.subheader("🔎 Diagnóstico")
@@ -1237,6 +1440,10 @@ if modo == "Predictor":
             mejor_restador = d1["Player"] if sim["ret1"] > sim["ret2"] else d2["Player"]
             tags.append(f"🧱 Mejor restador: {mejor_restador}")
 
+        if abs(sim["form1"] - sim["form2"]) > 0.015:
+            mejor_forma = d1["Player"] if sim["form1"] > sim["form2"] else d2["Player"]
+            tags.append(f"📈 Mejor forma reciente: {mejor_forma}")
+
         if tags:
             st.info(" · ".join(tags))
         else:
@@ -1259,7 +1466,7 @@ if modo == "Predictor":
         st.success(f"{best_market[0]} → {best_market[1]:.1%}")
 
         st.divider()
-        st.caption(f"Tennis IA v12.2 · Calibration Engine · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v13 · Form Engine · {sims:,} simulaciones Monte Carlo")
 
 
 # =========================================================
@@ -1279,6 +1486,7 @@ else:
         surface_filter = st.selectbox("Superficie histórica", ["Todas", "Hard", "Clay", "Grass"])
         max_matches = st.number_input("Máx partidos a validar", min_value=10, max_value=5000, value=500, step=50)
         sims_bt = st.select_slider("Simulaciones por partido", [300, 500, 1000, 2000], value=500)
+        use_form_val = st.checkbox("Usar Form Engine en validación", value=True)
 
     st.info(
         f"Históricos cargados: {len(hist_df):,} partidos. "
@@ -1293,7 +1501,8 @@ else:
                 circuito,
                 surface_filter,
                 int(max_matches),
-                int(sims_bt)
+                int(sims_bt),
+                use_form_val
             )
 
         if val.empty:
@@ -1361,23 +1570,6 @@ else:
         st.dataframe(calib_raw, use_container_width=True)
 
         st.divider()
-        st.subheader("📈 Calibración aplicada")
-
-        val["ProbBinCal"] = pd.cut(
-            val["ModelWinnerProbCal"],
-            bins=[0, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00],
-            labels=["0-40", "40-50", "50-60", "60-70", "70-80", "80-90", "90-100"]
-        )
-
-        calib_cal = val.groupby("ProbBinCal", observed=True).agg(
-            Partidos=("ModelWinnerProbCal", "count"),
-            ProbMediaCal=("ModelWinnerProbCal", "mean"),
-            WinRateCalFav=("CalFavWasWinner", "mean")
-        ).reset_index()
-
-        st.dataframe(calib_cal, use_container_width=True)
-
-        st.divider()
         st.subheader("🧾 Detalle partidos validados")
 
         st.dataframe(val, use_container_width=True)
@@ -1385,9 +1577,9 @@ else:
         st.download_button(
             "⬇️ Descargar validación CSV",
             data=val.to_csv(index=False).encode("utf-8"),
-            file_name="validacion_tennis_ia_v12_2.csv",
+            file_name="validacion_tennis_ia_v13.csv",
             mime="text/csv"
         )
 
         st.divider()
-        st.caption(f"Tennis IA v12.2 · Validador histórico · {len(val):,} partidos validados")
+        st.caption(f"Tennis IA v13 · Validador histórico · {len(val):,} partidos validados")
