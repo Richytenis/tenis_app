@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v16", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v17", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -385,7 +385,8 @@ def cargar_datos(circuito):
             "Clay": clay,
             "Grass": grass,
             "Stats": stats_general,
-            "StatsBySurface": stats_by_surface
+            "StatsBySurface": stats_by_surface,
+            "Fatigue": buscar_fatigue(nombre, fatigue_map)
         }
 
     return players
@@ -631,6 +632,17 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
     ret2 = calc_return_strength(s2, e2, surface)
     hold1, hold2 = aplicar_return_pressure(raw1, raw2, ret1, ret2, surface)
 
+    # v17 Fatigue Engine
+    fatigue1 = d1.get("Fatigue", {})
+    fatigue2 = d2.get("Fatigue", {})
+    fat_adj1, fat_adj2, fatigue_vol_extra = fatigue_adjustments(fatigue1, fatigue2, surface)
+
+    hold1 = np.clip(hold1 + fat_adj1, 0.42, 0.84)
+    hold2 = np.clip(hold2 + fat_adj2, 0.42, 0.84)
+
+    ret1 = np.clip(ret1 + fat_adj1 * 0.35, 0.10, 0.40)
+    ret2 = np.clip(ret2 + fat_adj2 * 0.35, 0.10, 0.40)
+
     p1_profile = s1.get("serve_profile", "normal")
     p2_profile = s2.get("serve_profile", "normal")
     p1_big = p1_profile in ["big_server", "elite_server"]
@@ -643,8 +655,9 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
     fav_est = max(elo_prob(e1, e2), 1 - elo_prob(e1, e2))
     vol = calcular_match_volatility(e1, e2, surface, fav_est)
     if p1_big or p2_big: vol += 0.006
+    vol += fatigue_vol_extra
 
-    res = {"p1":0, "p2":0, "set3":0, "tb":0, "games":[], "p1_fs":0, "p2_fs":0, "fav_under22":0, "dog_over20":0}
+    res = {"p1":0, "p2":0, "set3":0, "tb":0, "games":[], "p1_fs":0, "p2_fs":0, "fav_under22":0, "dog_over20":0, "fav_2_0":0, "dog_wins_set":0, "long_match":0}
 
     for _ in range(n):
         sets1 = sets2 = games = 0
@@ -681,6 +694,24 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
 
         if fav_wins and games < 22.5: res["fav_under22"] += 1
         if dog_wins and games > 20.5: res["dog_over20"] += 1
+
+        # v17 Smart Markets
+        if p1_is_fav:
+            fav_sets = sets1
+            dog_sets = sets2
+        else:
+            fav_sets = sets2
+            dog_sets = sets1
+
+        if fav_wins and dog_sets == 0:
+            res["fav_2_0"] += 1
+
+        if dog_sets >= 1:
+            res["dog_wins_set"] += 1
+
+        if games > 22.5 or tb_seen or ((sets1, sets2) in [(2,1), (1,2)]):
+            res["long_match"] += 1
+
         res["games"].append(games)
 
     p1_raw = res["p1"] / n
@@ -691,13 +722,21 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
         "p1_fs": res["p1_fs"]/n, "p2_fs": res["p2_fs"]/n,
         "set3": res["set3"]/n, "tb": res["tb"]/n,
         "fav_under22": res["fav_under22"]/n, "dog_over20": res["dog_over20"]/n,
+        "fav_2_0": res["fav_2_0"]/n,
+        "dog_wins_set": res["dog_wins_set"]/n,
+        "long_match": res["long_match"]/n,
         "games": res["games"], "hold1": hold1, "hold2": hold2,
         "raw_hold1": raw1, "raw_hold2": raw2, "ret1": ret1, "ret2": ret2,
         "p1_profile": p1_profile, "p2_profile": p2_profile,
         "vol": vol, "fav_raw_est": fav_est,
         "tb_intel_boost": tb_intel_boost,
         "pressure_skill1": pressure_skill1,
-        "pressure_skill2": pressure_skill2
+        "pressure_skill2": pressure_skill2,
+        "fatigue1": fatigue1,
+        "fatigue2": fatigue2,
+        "fatigue_adj1": fat_adj1,
+        "fatigue_adj2": fat_adj2,
+        "fatigue_vol_extra": fatigue_vol_extra
     }
 
 def cargar_historicos(circuito):
@@ -712,6 +751,170 @@ def cargar_historicos(circuito):
         except Exception:
             pass
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
+@st.cache_data
+def crear_fatigue_map(circuito):
+    """
+    v17 Fatigue Engine.
+    Calcula desgaste reciente desde históricos:
+    - partidos últimos 7 días
+    - games últimos 7 días
+    - sets últimos 7 días
+    - tie-breaks últimos 7 días
+    - back-to-back
+    - descanso estimado
+    Nota: para predictor usa la fecha máxima del histórico cargado como referencia.
+    """
+    hist = cargar_historicos(circuito)
+    fatigue = {}
+
+    if hist.empty or "Date" not in hist.columns:
+        return fatigue
+
+    df = hist.copy()
+    df = df[df["Comment"].astype(str).str.contains("Completed", na=False)]
+    df["DateParsed"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
+    df = df.dropna(subset=["DateParsed", "Winner", "Loser"])
+    if df.empty:
+        return fatigue
+
+    ref_date = df["DateParsed"].max()
+
+    def row_games(row):
+        total = 0
+        sets = 0
+        tb = 0
+        for i in range(1, 6):
+            w = row.get(f"W{i}", np.nan)
+            l = row.get(f"L{i}", np.nan)
+            if not pd.isna(w) and not pd.isna(l):
+                try:
+                    wi, li = int(w), int(l)
+                    total += wi + li
+                    sets += 1
+                    if (wi, li) in [(7, 6), (6, 7)]:
+                        tb += 1
+                except:
+                    pass
+        return total, sets, tb
+
+    player_rows = {}
+
+    for _, row in df.iterrows():
+        date = row["DateParsed"]
+        surface = str(row.get("Surface", "Hard"))
+        games, sets, tbs = row_games(row)
+        for player in [normalizar_texto(row.get("Winner", "")), normalizar_texto(row.get("Loser", ""))]:
+            pid = limpiar(player)
+            if not pid:
+                continue
+            player_rows.setdefault(pid, []).append({
+                "date": date,
+                "surface": surface,
+                "games": games,
+                "sets": sets,
+                "tbs": tbs
+            })
+
+    for pid, rows in player_rows.items():
+        rows = sorted(rows, key=lambda x: x["date"])
+        recent7 = [r for r in rows if 0 <= (ref_date - r["date"]).days <= 7]
+        recent14 = [r for r in rows if 0 <= (ref_date - r["date"]).days <= 14]
+
+        last_date = rows[-1]["date"]
+        rest_days = int((ref_date - last_date).days)
+
+        matches7 = len(recent7)
+        games7 = sum(r["games"] for r in recent7)
+        sets7 = sum(r["sets"] for r in recent7)
+        tbs7 = sum(r["tbs"] for r in recent7)
+
+        matches14 = len(recent14)
+        clay_games7 = sum(r["games"] for r in recent7 if r["surface"] == "Clay")
+
+        fatigue_score = 0.0
+        fatigue_score += matches7 * 0.008
+        fatigue_score += max(0, games7 - 45) * 0.0007
+        fatigue_score += max(0, sets7 - 6) * 0.004
+        fatigue_score += tbs7 * 0.004
+        fatigue_score += max(0, clay_games7 - 35) * 0.0005
+
+        if rest_days <= 1:
+            fatigue_score += 0.018
+        elif rest_days <= 2:
+            fatigue_score += 0.010
+        elif rest_days >= 7:
+            fatigue_score -= 0.006
+        elif rest_days >= 4:
+            fatigue_score -= 0.003
+
+        fatigue_score = float(np.clip(fatigue_score, -0.010, 0.055))
+
+        fatigue[pid] = {
+            "fatigue_score": fatigue_score,
+            "matches7": matches7,
+            "matches14": matches14,
+            "games7": games7,
+            "sets7": sets7,
+            "tbs7": tbs7,
+            "rest_days": rest_days,
+            "latest_date": str(last_date.date())
+        }
+
+    return fatigue
+
+
+def buscar_fatigue(nombre, fatigue_map):
+    nid = limpiar(nombre)
+    if nid in fatigue_map:
+        return fatigue_map[nid]
+
+    mejor, best = None, 0
+    for fid, data in fatigue_map.items():
+        score = similitud_nombre(nombre, fid)
+        if score > best:
+            best, mejor = score, data
+
+    if mejor is not None and best >= 0.72:
+        return mejor
+
+    return {
+        "fatigue_score": 0.0,
+        "matches7": 0,
+        "matches14": 0,
+        "games7": 0,
+        "sets7": 0,
+        "tbs7": 0,
+        "rest_days": 7,
+        "latest_date": "N/A"
+    }
+
+
+def fatigue_adjustments(f1, f2, surface):
+    """
+    Devuelve ajustes suaves para cada jugador.
+    Mayor fatiga = menor hold/return y algo más de volatilidad.
+    """
+    fat1 = f1.get("fatigue_score", 0.0)
+    fat2 = f2.get("fatigue_score", 0.0)
+
+    if surface == "Clay":
+        mult = 1.18
+    elif surface == "Grass":
+        mult = 0.82
+    else:
+        mult = 1.0
+
+    adj1 = -fat1 * mult
+    adj2 = -fat2 * mult
+
+    vol_extra = abs(fat1 - fat2) * 0.35
+    if fat1 > 0.030 or fat2 > 0.030:
+        vol_extra += 0.003
+
+    return float(np.clip(adj1, -0.055, 0.010)), float(np.clip(adj2, -0.055, 0.010)), float(np.clip(vol_extra, 0, 0.018))
+
 
 def encontrar_jugador(nombre_hist, db):
     if nombre_hist in db: return nombre_hist
@@ -786,10 +989,16 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
             "Real3Sets": set3_real, "Model3Sets": sim["set3"],
             "RealTB": hay_tiebreak_row(row), "ModelTB": sim["tb"],
             "RealOver18": games_real > 18.5, "ModelOver18": sum(x > 18.5 for x in games_model)/sims_bt,
+            "RealOver19": games_real > 19.5, "ModelOver19": sum(x > 19.5 for x in games_model)/sims_bt,
             "RealOver20": games_real > 20.5, "ModelOver20": sum(x > 20.5 for x in games_model)/sims_bt,
             "RealOver22": games_real > 22.5, "ModelOver22": sum(x > 22.5 for x in games_model)/sims_bt,
             "RealFavUnder22": fav_under22_real, "ModelFavUnder22": sim["fav_under22"],
             "RealDogOver20": dog_over20_real, "ModelDogOver20": sim["dog_over20"],
+            "ModelFav2_0": sim.get("fav_2_0", 0),
+            "ModelDogWinsSet": sim.get("dog_wins_set", 0),
+            "ModelLongMatch": sim.get("long_match", 0),
+            "WinnerFatigueScore": sim.get("fatigue1", {}).get("fatigue_score", 0),
+            "LoserFatigueScore": sim.get("fatigue2", {}).get("fatigue_score", 0),
             "WinnerStats": get_stats_surface(d_win, surface).get("match_type", "N/A"), "LoserStats": get_stats_surface(d_los, surface).get("match_type", "N/A"),
             "WinnerHold": sim["hold1"], "LoserHold": sim["hold2"],
             "WinnerReturn": sim["ret1"], "LoserReturn": sim["ret2"],
@@ -821,12 +1030,16 @@ def crear_analyzer_tables(val, min_casos=20):
     rows = []
     for name, model, real in [
         ("Over 18.5","ModelOver18","RealOver18"),
+        ("Over 19.5","ModelOver19","RealOver19"),
         ("Over 20.5","ModelOver20","RealOver20"),
         ("Over 22.5","ModelOver22","RealOver22"),
         ("3 Sets","Model3Sets","Real3Sets"),
         ("Tie-break","ModelTB","RealTB"),
         ("Favorito + Under 22.5","ModelFavUnder22","RealFavUnder22"),
         ("Dog + Over 20.5","ModelDogOver20","RealDogOver20"),
+        ("Favorito 2-0","ModelFav2_0","CalFavWasWinner"),
+        ("Underdog gana set","ModelDogWinsSet","Real3Sets"),
+        ("Partido largo","ModelLongMatch","RealOver22"),
     ]:
         for th in [0.40,0.45,0.50,0.55,0.60,0.65,0.70]:
             r = market_hit_rate(val, model, real, th)
@@ -867,8 +1080,8 @@ def crear_analyzer_tables(val, min_casos=20):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v16")
-    st.caption("Tie-break Intelligence Engine")
+    st.header("🎾 Tennis IA v17")
+    st.caption("Fatigue + Smart Markets Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -907,6 +1120,7 @@ if modo == "Predictor":
         games = sim["games"]
         avg_games, med_games = np.mean(games), np.median(games)
         over18 = sum(x > 18.5 for x in games)/sims
+        over19 = sum(x > 19.5 for x in games)/sims
         over20 = sum(x > 20.5 for x in games)/sims
         over22 = sum(x > 22.5 for x in games)/sims
         under22 = 1-over22
@@ -935,17 +1149,19 @@ if modo == "Predictor":
 
         st.divider()
         st.subheader("📊 Mercados")
-        m1,m2,m3,m4 = st.columns(4)
+        m1,m2,m3,m4,m5 = st.columns(5)
         with m1: st.metric("Over 18.5", f"{over18:.1%}", nivel(over18))
-        with m2: st.metric("Over 20.5", f"{over20:.1%}", nivel(over20))
-        with m3: st.metric("Over 22.5", f"{over22:.1%}", nivel(over22))
-        with m4: st.metric("Under 22.5", f"{under22:.1%}", nivel(under22))
+        with m2: st.metric("Over 19.5", f"{over19:.1%}", nivel(over19))
+        with m3: st.metric("Over 20.5", f"{over20:.1%}", nivel(over20))
+        with m4: st.metric("Over 22.5", f"{over22:.1%}", nivel(over22))
+        with m5: st.metric("Under 22.5", f"{under22:.1%}", nivel(under22))
 
-        e1,e2,e3,e4 = st.columns(4)
+        e1,e2,e3,e4,e5 = st.columns(5)
         with e1: st.metric("3 sets", f"{sim['set3']:.1%}", nivel(sim["set3"]))
         with e2: st.metric("Tie-break", f"{sim['tb']:.1%}", nivel(sim["tb"]))
-        with e3: st.metric("Fav + Under 22.5", f"{sim['fav_under22']:.1%}", nivel(sim["fav_under22"]))
-        with e4: st.metric("Dog + Over 20.5", f"{sim['dog_over20']:.1%}", nivel(sim["dog_over20"]))
+        with e3: st.metric("Underdog gana set", f"{sim['dog_wins_set']:.1%}", nivel(sim["dog_wins_set"]))
+        with e4: st.metric("Favorito 2-0", f"{sim['fav_2_0']:.1%}", nivel(sim["fav_2_0"]))
+        with e5: st.metric("Partido largo", f"{sim['long_match']:.1%}", nivel(sim["long_match"]))
         st.caption(f"Media games: {avg_games:.1f} · Mediana games: {med_games:.0f}")
 
         st.divider()
@@ -970,6 +1186,19 @@ if modo == "Predictor":
             st.metric(f"Presión {d2['Player']}", f"{sim.get('pressure_skill2', 0):+.1%}")
 
         st.divider()
+        st.subheader("🔋 Fatigue Engine")
+
+        fcol1, fcol2 = st.columns(2)
+        with fcol1:
+            f = sim.get("fatigue1", {})
+            st.metric(d1["Player"], f"{f.get('fatigue_score',0):.1%}", f"Ajuste {sim.get('fatigue_adj1',0):+.1%}")
+            st.caption(f"7 días: {f.get('matches7',0)} partidos · {f.get('games7',0)} games · descanso {f.get('rest_days',7)} días")
+        with fcol2:
+            f = sim.get("fatigue2", {})
+            st.metric(d2["Player"], f"{f.get('fatigue_score',0):.1%}", f"Ajuste {sim.get('fatigue_adj2',0):+.1%}")
+            st.caption(f"7 días: {f.get('matches7',0)} partidos · {f.get('games7',0)} games · descanso {f.get('rest_days',7)} días")
+
+        st.divider()
         st.subheader("🧠 Perfil del Partido")
         tags = []
         if sim["p1_profile"] in ["big_server","elite_server"]: tags.append(f"🚀 {d1['Player']} gran sacador")
@@ -983,19 +1212,26 @@ if modo == "Predictor":
         if surface == "Hard" and sim["fav_raw_est"] >= 0.66: tags.append("🧊 Hard compression activada")
         if sim["hold1"] > 0.76 and sim["hold2"] > 0.76 and surface == "Hard": tags.append("🎯 Smart tie-break boost")
         if sim.get("tb_intel_boost", 0) >= 0.08: tags.append("🧠 TB Intelligence alto")
+        if sim.get("fatigue1", {}).get("fatigue_score", 0) >= 0.030: tags.append(f"🔋 Fatiga {d1['Player']}")
+        if sim.get("fatigue2", {}).get("fatigue_score", 0) >= 0.030: tags.append(f"🔋 Fatiga {d2['Player']}")
+        if sim.get("long_match", 0) >= 0.65: tags.append("📈 Partido largo probable")
+        if sim.get("fav_2_0", 0) >= 0.55: tags.append("🔥 Spot favorito 2-0")
         st.info(" · ".join(tags) if tags else "Sin perfil extremo detectado.")
 
         st.divider()
         st.subheader("🎯 Señal principal del modelo")
         markets = {
             "ML favorito calibrado": max(p1c,p2c), "Over 18.5": over18,
-            "Over 20.5": over20, "Over 22.5": over22, "Under 22.5": under22,
+            "Over 19.5": over19, "Over 20.5": over20, "Over 22.5": over22, "Under 22.5": under22,
             "Tie-break": sim["tb"], "Fav + Under 22.5": sim["fav_under22"],
-            "Dog + Over 20.5": sim["dog_over20"]
+            "Dog + Over 20.5": sim["dog_over20"],
+            "Underdog gana set": sim["dog_wins_set"],
+            "Favorito 2-0": sim["fav_2_0"],
+            "Partido largo": sim["long_match"]
         }
         best = max(markets.items(), key=lambda x: x[1])
         st.success(f"{best[0]} → {best[1]:.1%}")
-        st.caption(f"Tennis IA v16 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v17 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -1016,6 +1252,7 @@ elif modo == "Validador histórico":
             st.stop()
         ml_acc = val["CalFavWasWinner"].mean()
         over18_acc = ((val["ModelOver18"] >= 0.50) == val["RealOver18"]).mean()
+        over19_acc = ((val["ModelOver19"] >= 0.50) == val["RealOver19"]).mean() if "ModelOver19" in val.columns else 0
         over20_acc = ((val["ModelOver20"] >= 0.50) == val["RealOver20"]).mean()
         over22_acc = ((val["ModelOver22"] >= 0.50) == val["RealOver22"]).mean()
         set3_acc = ((val["Model3Sets"] >= 0.50) == val["Real3Sets"]).mean()
@@ -1030,10 +1267,11 @@ elif modo == "Validador histórico":
         with c4: st.metric("Error medio games", f"{games_error:.2f}")
         d1,d2,d3 = st.columns(3)
         with d1: st.metric("Over 18.5 accuracy", f"{over18_acc:.1%}")
-        with d2: st.metric("Over 22.5 accuracy", f"{over22_acc:.1%}")
+        with d2: st.metric("Over 19.5 accuracy", f"{over19_acc:.1%}")
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
+        st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v16.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v17.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
@@ -1083,4 +1321,4 @@ else:
         st.divider()
         st.subheader("🧾 Detalle base")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v16.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v17.csv", mime="text/csv")
