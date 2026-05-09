@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v17", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v17.1", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -274,6 +274,7 @@ def buscar_stats(nombre, stats_map):
 @st.cache_data
 def cargar_datos(circuito):
     r = rutas(circuito)
+    fatigue_map = crear_fatigue_map(circuito)
 
     # =========================
     # Mapas generales
@@ -1080,7 +1081,7 @@ def crear_analyzer_tables(val, min_casos=20):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v17")
+    st.header("🎾 Tennis IA v17.1")
     st.caption("Fatigue + Smart Markets Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -1231,7 +1232,7 @@ if modo == "Predictor":
         }
         best = max(markets.items(), key=lambda x: x[1])
         st.success(f"{best[0]} → {best[1]:.1%}")
-        st.caption(f"Tennis IA v17 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v17.1 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -1271,7 +1272,7 @@ elif modo == "Validador histórico":
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v17.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v17_1.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
@@ -1321,4 +1322,4 @@ else:
         st.divider()
         st.subheader("🧾 Detalle base")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v17.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v17_1.csv", mime="text/csv")
