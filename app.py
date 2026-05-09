@@ -499,7 +499,7 @@ def calc_hold(stats, elo_diff, surface, circuito):
 
     if circuito == "ATP":
         surface_adj = {
-            "Hard": -0.010,
+            "Hard": -0.005,
             "Clay": -0.105,
             "Grass": +0.015
         }
@@ -566,7 +566,7 @@ def aplicar_return_pressure(hold1, hold2, ret1, ret2, surface):
     if surface == "Clay":
         weight = 0.19
     elif surface == "Hard":
-        weight = 0.13
+        weight = 0.10
     else:
         weight = 0.09
 
@@ -644,6 +644,9 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big):
 
             if p1_big or p2_big:
                 p_tb += 0.06
+
+            if surface == "Hard":
+                p_tb += 0.03
 
             p_tb = np.clip(p_tb, 0.32, 0.72)
 
