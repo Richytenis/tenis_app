@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v14", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v15", page_icon="🎾", layout="wide")
 
 # =========================================================
-# TENNIS IA v14
+# TENNIS IA v15
 # Stable core + Hard Compression + Smart Tie-break + Analyzer
 # =========================================================
 
@@ -125,6 +125,37 @@ def rutas(circuito):
         "break": f"{base}/{circuito.lower()}_break.xlsx",
         "historicos": f"{base}/historicos"
     }
+
+def ruta_stats_superficie(circuito, tipo, surface):
+    """
+    v15 Surface Adaptive:
+    Intenta leer primero:
+      datos/atp/atp_serve_hard.xlsx
+      datos/atp/atp_return_clay.xlsx
+      datos/atp/atp_break_grass.xlsx
+    Si no existe, usa el archivo general:
+      datos/atp/atp_serve.xlsx
+    """
+    base = f"datos/{circuito.lower()}"
+    surf = str(surface).lower()
+    specific = f"{base}/{circuito.lower()}_{tipo}_{surf}.xlsx"
+    general = f"{base}/{circuito.lower()}_{tipo}.xlsx"
+    return specific if os.path.exists(specific) else general
+
+def merge_surface_stats(general_stats, surface_stats):
+    """
+    Combina general + superficie.
+    La superficie pisa al general cuando trae dato.
+    """
+    out = general_stats.copy()
+    for k, v in surface_stats.items():
+        if v is not None:
+            out[k] = v
+    return out
+
+def stats_filename_label(circuito, tipo, surface):
+    path = ruta_stats_superficie(circuito, tipo, surface)
+    return os.path.basename(path) if path else "N/A"
 
 def stats_default_por_elo(elo_surface, rank=999, surface="Clay", circuito="ATP"):
     if elo_surface >= 1800: hold, ace, ret, brk = 0.825, 0.075, 0.300, 0.300
@@ -243,31 +274,77 @@ def buscar_stats(nombre, stats_map):
 @st.cache_data
 def cargar_datos(circuito):
     r = rutas(circuito)
-    serve_map = leer_archivo_stats(r["serve"], "serve")
-    return_map = leer_archivo_stats(r["return"], "return")
-    break_map = leer_archivo_stats(r["break"], "break")
 
-    stats_map = {}
-    all_ids = set(serve_map) | set(return_map) | set(break_map)
+    # =========================
+    # Mapas generales
+    # =========================
+    serve_general = leer_archivo_stats(r["serve"], "serve")
+    return_general = leer_archivo_stats(r["return"], "return")
+    break_general = leer_archivo_stats(r["break"], "break")
 
-    for nid in all_ids:
-        base = {
-            "found_stats": False, "raw_name_stats": "NO ENCONTRADO",
-            "hold": 0.78, "ace": 0.05, "df": 0.035,
-            "1in": 0.62, "1w": 0.70, "2w": 0.50,
-            "rpw": None, "break_pct": None, "bp_conv": None, "bp_saved": None,
-            "serve_profile": "normal", "match_type": "stats"
-        }
-        if nid in serve_map: base = merge_stats(base, serve_map[nid])
-        if nid in return_map: base = merge_stats(base, return_map[nid])
-        if nid in break_map: base = merge_stats(base, break_map[nid])
-        base["serve_profile"] = perfil_saque(base.get("ace", 0.05))
-        stats_map[nid] = base
+    def construir_stats_map(serve_map, return_map, break_map):
+        stats_map = {}
+        all_ids = set(serve_map) | set(return_map) | set(break_map)
+
+        for nid in all_ids:
+            base = {
+                "found_stats": False, "raw_name_stats": "NO ENCONTRADO",
+                "hold": 0.78, "ace": 0.05, "df": 0.035,
+                "1in": 0.62, "1w": 0.70, "2w": 0.50,
+                "rpw": None, "break_pct": None, "bp_conv": None, "bp_saved": None,
+                "serve_profile": "normal", "match_type": "stats"
+            }
+            if nid in serve_map:
+                base = merge_stats(base, serve_map[nid])
+            if nid in return_map:
+                base = merge_stats(base, return_map[nid])
+            if nid in break_map:
+                base = merge_stats(base, break_map[nid])
+            base["serve_profile"] = perfil_saque(base.get("ace", 0.05))
+            stats_map[nid] = base
+
+        return stats_map
+
+    stats_general_map = construir_stats_map(serve_general, return_general, break_general)
+
+    # =========================
+    # Mapas por superficie
+    # =========================
+    stats_surface_maps = {}
+
+    for surface in ["Hard", "Clay", "Grass"]:
+        serve_surface = leer_archivo_stats(ruta_stats_superficie(circuito, "serve", surface), "serve")
+        return_surface = leer_archivo_stats(ruta_stats_superficie(circuito, "return", surface), "return")
+        break_surface = leer_archivo_stats(ruta_stats_superficie(circuito, "break", surface), "break")
+
+        surface_map_raw = construir_stats_map(serve_surface, return_surface, break_surface)
+
+        # Combina cada jugador con general + superficie
+        combined = {}
+        all_ids = set(stats_general_map) | set(surface_map_raw)
+
+        for nid in all_ids:
+            if nid in stats_general_map and nid in surface_map_raw:
+                combined[nid] = merge_surface_stats(stats_general_map[nid], surface_map_raw[nid])
+                combined[nid]["match_type"] = f"surface_{surface.lower()}"
+            elif nid in surface_map_raw:
+                combined[nid] = surface_map_raw[nid]
+                combined[nid]["match_type"] = f"surface_{surface.lower()}"
+            else:
+                combined[nid] = stats_general_map[nid].copy()
+                combined[nid]["match_type"] = "general_fallback"
+
+            combined[nid]["serve_profile"] = perfil_saque(combined[nid].get("ace", 0.05))
+
+        stats_surface_maps[surface] = combined
 
     players = {}
-    if not os.path.exists(r["elo"]): return players
+
+    if not os.path.exists(r["elo"]):
+        return players
 
     df = pd.read_excel(r["elo"])
+
     col_player = buscar_columna(df, ["Player", "Name", "Jugador"])
     col_rank = buscar_columna(df, ["ATP Rank", "WTA Rank", "Rank"])
     col_elo = buscar_columna(df, ["Elo"])
@@ -275,22 +352,47 @@ def cargar_datos(circuito):
     col_clay = buscar_columna(df, ["cElo", "Clay Elo"])
     col_grass = buscar_columna(df, ["gElo", "Grass Elo"])
 
-    if col_player is None: return players
+    if col_player is None:
+        return players
 
     for _, row in df.iterrows():
         nombre = normalizar_texto(row.get(col_player, ""))
-        if nombre == "": continue
+        if nombre == "":
+            continue
+
         rank = int(leer_float(row.get(col_rank), 999))
         elo_general = leer_float(row.get(col_elo), 1500)
+
         hard = leer_float(row.get(col_hard), elo_general)
         clay = leer_float(row.get(col_clay), elo_general)
         grass = leer_float(row.get(col_grass), elo_general)
-        stats = buscar_stats(nombre, stats_map)
-        if stats is None:
-            stats = stats_default_por_elo(clay, rank, "Clay", circuito)
-        players[nombre] = {"Player": nombre, "Rank": rank, "Hard": hard, "Clay": clay, "Grass": grass, "Stats": stats}
+
+        stats_general = buscar_stats(nombre, stats_general_map)
+        if stats_general is None:
+            stats_general = stats_default_por_elo(clay, rank, "Clay", circuito)
+
+        stats_by_surface = {}
+        for surface, elo_surface in [("Hard", hard), ("Clay", clay), ("Grass", grass)]:
+            s = buscar_stats(nombre, stats_surface_maps.get(surface, {}))
+            if s is None:
+                s = stats_default_por_elo(elo_surface, rank, surface, circuito)
+            stats_by_surface[surface] = s
+
+        players[nombre] = {
+            "Player": nombre,
+            "Rank": rank,
+            "Hard": hard,
+            "Clay": clay,
+            "Grass": grass,
+            "Stats": stats_general,
+            "StatsBySurface": stats_by_surface
+        }
 
     return players
+
+def get_stats_surface(player_data, surface):
+    return player_data.get("StatsBySurface", {}).get(surface, player_data.get("Stats", {}))
+
 
 def calc_hold(stats, elo_diff, surface, circuito):
     base = stats.get("hold", 0.78)
@@ -412,7 +514,9 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big, fav_raw_est=0.5):
 def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
     e1, e2 = d1[surface], d2[surface]
     elo_diff = e1 - e2
-    s1, s2 = d1["Stats"], d2["Stats"]
+    # v15: usa stats específicas de superficie si existen
+    s1 = get_stats_surface(d1, surface)
+    s2 = get_stats_surface(d2, surface)
 
     raw1 = calc_hold(s1, elo_diff, surface, circuito)
     raw2 = calc_hold(s2, -elo_diff, surface, circuito)
@@ -570,7 +674,7 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
             "RealOver22": games_real > 22.5, "ModelOver22": sum(x > 22.5 for x in games_model)/sims_bt,
             "RealFavUnder22": fav_under22_real, "ModelFavUnder22": sim["fav_under22"],
             "RealDogOver20": dog_over20_real, "ModelDogOver20": sim["dog_over20"],
-            "WinnerStats": d_win["Stats"]["match_type"], "LoserStats": d_los["Stats"]["match_type"],
+            "WinnerStats": get_stats_surface(d_win, surface).get("match_type", "N/A"), "LoserStats": get_stats_surface(d_los, surface).get("match_type", "N/A"),
             "WinnerHold": sim["hold1"], "LoserHold": sim["hold2"],
             "WinnerReturn": sim["ret1"], "LoserReturn": sim["ret2"],
             "WinnerServeProfile": sim["p1_profile"], "LoserServeProfile": sim["p2_profile"],
@@ -644,8 +748,8 @@ def crear_analyzer_tables(val, min_casos=20):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v14")
-    st.caption("Hard Compression + Smart TB")
+    st.header("🎾 Tennis IA v15")
+    st.caption("Surface Adaptive Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -673,6 +777,12 @@ if modo == "Predictor":
         best_of = 5 if "5" in formato else 3
         with st.spinner(f"Simulando {sims:,} partidos..."):
             sim = sim_match(d1,d2,surface,circuito,best_of,sims)
+
+        st.caption(
+            f"📁 Stats usadas: {stats_filename_label(circuito, 'serve', surface)} · "
+            f"{stats_filename_label(circuito, 'return', surface)} · "
+            f"{stats_filename_label(circuito, 'break', surface)}"
+        )
 
         p1, p2, p1c, p2c = sim["p1"], sim["p2"], sim["p1_cal"], sim["p2_cal"]
         games = sim["games"]
@@ -754,7 +864,7 @@ if modo == "Predictor":
         }
         best = max(markets.items(), key=lambda x: x[1])
         st.success(f"{best[0]} → {best[1]:.1%}")
-        st.caption(f"Tennis IA v14 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v15 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -792,7 +902,7 @@ elif modo == "Validador histórico":
         with d2: st.metric("Over 22.5 accuracy", f"{over22_acc:.1%}")
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v14.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v15.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
@@ -842,4 +952,4 @@ else:
         st.divider()
         st.subheader("🧾 Detalle base")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v14.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v15.csv", mime="text/csv")
