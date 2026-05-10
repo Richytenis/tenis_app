@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v19", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v19.1", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -700,6 +700,84 @@ def smart_set_dynamics(p1_win, p2_win, hold1, hold2, tb_rate, vol, surface, circ
 
 
 
+
+def elite_wta_separation(d1, d2, hold1, hold2, ret1, ret2, surface, circuito):
+    """
+    v19.1 Elite WTA Separation Engine.
+    La WTA no solo es caos: las top consolidan ventajas y castigan más.
+    Ajusta solo WTA y protege ATP.
+    """
+    info = {
+        "active": False,
+        "hold_adj1": 0.0,
+        "hold_adj2": 0.0,
+        "ret_adj1": 0.0,
+        "ret_adj2": 0.0,
+        "vol_mult": 1.0,
+        "top_player": "",
+        "edge_label": "normal"
+    }
+
+    if circuito != "WTA":
+        return hold1, hold2, ret1, ret2, info
+
+    r1 = d1.get("Rank", 999)
+    r2 = d2.get("Rank", 999)
+    e1 = d1.get(surface, 1500)
+    e2 = d2.get(surface, 1500)
+
+    elo_gap = abs(e1 - e2)
+    rank_gap = abs(r1 - r2)
+
+    p1_top = r1 <= 15
+    p2_top = r2 <= 15
+
+    # Jugadora top con ventaja Elo/ranking: más separación real.
+    if p1_top and (e1 >= e2 + 80 or r1 + 20 <= r2):
+        info["active"] = True
+        info["top_player"] = d1.get("Player", "Jugador 1")
+        info["hold_adj1"] += 0.020
+        info["ret_adj1"] += 0.020
+        info["hold_adj2"] -= 0.010
+        info["vol_mult"] *= 0.82
+        info["edge_label"] = "top_wta_p1"
+
+    if p2_top and (e2 >= e1 + 80 or r2 + 20 <= r1):
+        info["active"] = True
+        info["top_player"] = d2.get("Player", "Jugador 2")
+        info["hold_adj2"] += 0.020
+        info["ret_adj2"] += 0.020
+        info["hold_adj1"] -= 0.010
+        info["vol_mult"] *= 0.82
+        info["edge_label"] = "top_wta_p2"
+
+    # Diferencia grande aunque no sea top15.
+    if rank_gap >= 45 and elo_gap >= 120:
+        info["active"] = True
+        if e1 > e2:
+            info["hold_adj1"] += 0.012
+            info["ret_adj1"] += 0.012
+            info["hold_adj2"] -= 0.006
+        else:
+            info["hold_adj2"] += 0.012
+            info["ret_adj2"] += 0.012
+            info["hold_adj1"] -= 0.006
+        info["vol_mult"] *= 0.90
+        if info["edge_label"] == "normal":
+            info["edge_label"] = "rank_elo_gap"
+
+    # En clay dejamos algo más de swing, pero no anulamos élite.
+    if surface == "Clay":
+        info["vol_mult"] = min(1.0, info["vol_mult"] * 1.04)
+
+    hold1 = np.clip(hold1 + info["hold_adj1"], 0.42, 0.86)
+    hold2 = np.clip(hold2 + info["hold_adj2"], 0.42, 0.86)
+    ret1 = np.clip(ret1 + info["ret_adj1"], 0.10, 0.42)
+    ret2 = np.clip(ret2 + info["ret_adj2"], 0.10, 0.42)
+
+    return hold1, hold2, ret1, ret2, info
+
+
 def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     e1, e2 = d1[surface], d2[surface]
     elo_diff = e1 - e2
@@ -755,6 +833,11 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     hold1 = np.clip(hold1 + ctx["p1_adj"], 0.42, 0.86)
     hold2 = np.clip(hold2 + ctx["p2_adj"], 0.42, 0.86)
 
+    # v19.1 Elite WTA Separation
+    hold1, hold2, ret1, ret2, wta_sep = elite_wta_separation(
+        d1, d2, hold1, hold2, ret1, ret2, surface, circuito
+    )
+
     p1_profile = s1.get("serve_profile", "normal")
     p2_profile = s2.get("serve_profile", "normal")
     p1_big = p1_profile in ["big_server", "elite_server"]
@@ -790,7 +873,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         elif surface == "Grass":
             vol *= 0.94
 
-        vol = float(np.clip(vol, 0.018, 0.060))
+        vol *= wta_sep.get("vol_mult", 1.0)
+        vol = float(np.clip(vol, 0.016, 0.060))
 
     res = {
         "p1": 0, "p2": 0, "set3": 0, "tb": 0, "games": [],
@@ -875,7 +959,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     raw_dogset = res["dog_wins_set"] / n
     raw_long = res["long_match"] / n
 
-    # v18.1 WTA Chaos Engine FIX: se aplica después de simular, no antes.
+    # v18.1 Elite WTA Separation Engine: se aplica después de simular, no antes.
     set_dyn = smart_set_dynamics(
         p1_raw, 1 - p1_raw,
         hold1, hold2,
@@ -909,6 +993,19 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         if rank_gap >= 40 and fav_prob >= 0.63:
             dogset *= 0.88
             longm *= 0.94
+
+        # v19.1 Elite WTA set separation:
+        # Si hay top WTA con ventaja, no convertir automáticamente en partido largo.
+        if wta_sep.get("active", False):
+            fav_prob2 = max(p1_cal, 1 - p1_cal)
+            if fav_prob2 >= 0.60:
+                dogset *= 0.82
+                fav20 = min(0.92, fav20 * 1.16)
+                longm *= 0.82
+            elif fav_prob2 >= 0.56:
+                dogset *= 0.90
+                fav20 = min(0.90, fav20 * 1.08)
+                longm *= 0.90
 
         dogset = float(np.clip(dogset, 0.05, 0.90))
         fav20 = float(np.clip(fav20, 0.0, 0.92))
@@ -949,7 +1046,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         "fatigue_vol_extra": fatigue_vol_extra,
         "tournament_ctx": ctx,
         "set_dynamics": set_dyn,
-        "wta_engine_active": circuito == "WTA"
+        "wta_engine_active": circuito == "WTA",
+        "wta_separation": wta_sep
     }
 
 def cargar_historicos(circuito):
@@ -1107,7 +1205,7 @@ def buscar_fatigue(nombre, fatigue_map):
 
 def tournament_context_adjustments(context_row, p1_name="", p2_name=""):
     """
-    v18 WTA Chaos Engine FIX
+    v18 Elite WTA Separation Engine
     """
     import numpy as np
 
@@ -1395,8 +1493,8 @@ def crear_analyzer_tables(val, min_casos=20):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v19")
-    st.caption("WTA Chaos Engine FIX")
+    st.header("🎾 Tennis IA v19.1")
+    st.caption("Elite WTA Separation Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -1531,7 +1629,7 @@ if modo == "Predictor":
 
 
         st.divider()
-        st.subheader("🎾 WTA Chaos Engine FIX")
+        st.subheader("🎾 Elite WTA Separation Engine")
 
         sd = sim.get("set_dynamics", {})
 
@@ -1545,6 +1643,23 @@ if modo == "Predictor":
 
         with s3:
             st.metric("Long match adj", f"{sd.get('long_match_adj',0):+.1%}")
+
+
+        if sim.get("wta_engine_active", False):
+            st.divider()
+            st.subheader("🎾 Elite WTA Separation")
+
+            ws = sim.get("wta_separation", {})
+            w1,w2,w3 = st.columns(3)
+
+            with w1:
+                st.metric("Activo", "Sí" if ws.get("active", False) else "No")
+
+            with w2:
+                st.metric("Perfil", ws.get("edge_label", "normal"))
+
+            with w3:
+                st.metric("Vol mult", f"{ws.get('vol_mult',1.0):.2f}")
 
         st.divider()
         st.subheader("🧠 Perfil del Partido")
@@ -1569,6 +1684,7 @@ if modo == "Predictor":
         if "Final" in tc.get("round",""): tags.append("🎯 Final pressure")
         if "Grand Slam" in tc.get("series",""): tags.append("🏆 Grand Slam intensity")
         if sim.get("wta_engine_active", False): tags.append("🎾 WTA Chaos control")
+        if sim.get("wta_separation", {}).get("active", False): tags.append("👑 Elite WTA separation")
         st.info(" · ".join(tags) if tags else "Sin perfil extremo detectado.")
 
         st.divider()
@@ -1584,7 +1700,7 @@ if modo == "Predictor":
         }
         best = max(markets.items(), key=lambda x: x[1])
         st.success(f"{best[0]} → {best[1]:.1%}")
-        st.caption(f"Tennis IA v19 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v19.1 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -1624,7 +1740,7 @@ elif modo == "Validador histórico":
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v19.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v19_1.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
@@ -1674,4 +1790,4 @@ else:
         st.divider()
         st.subheader("🧾 Detalle base")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v19.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v19_1.csv", mime="text/csv")
