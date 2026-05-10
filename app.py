@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v19.2", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v20", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -704,7 +704,7 @@ def smart_set_dynamics(p1_win, p2_win, hold1, hold2, tb_rate, vol, surface, circ
 
 def wta_match_script_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, circuito):
     """
-    v19.2 WTA Match Script Engine
+    v19.2 Betting Filters Engine
     Detecta perfiles reales WTA:
     - dominadora top
     - clay grinder
@@ -784,7 +784,7 @@ def wta_match_script_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, c
 
 def elite_wta_separation(d1, d2, hold1, hold2, ret1, ret2, surface, circuito):
     """
-    v19.1 WTA Match Script Engine.
+    v19.1 Betting Filters Engine.
     La WTA no solo es caos: las top consolidan ventajas y castigan más.
     Ajusta solo WTA y protege ATP.
     """
@@ -1049,7 +1049,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     raw_dogset = res["dog_wins_set"] / n
     raw_long = res["long_match"] / n
 
-    # v18.1 WTA Match Script Engine: se aplica después de simular, no antes.
+    # v18.1 Betting Filters Engine: se aplica después de simular, no antes.
     set_dyn = smart_set_dynamics(
         p1_raw, 1 - p1_raw,
         hold1, hold2,
@@ -1301,7 +1301,7 @@ def buscar_fatigue(nombre, fatigue_map):
 
 def tournament_context_adjustments(context_row, p1_name="", p2_name=""):
     """
-    v18 WTA Match Script Engine
+    v18 Betting Filters Engine
     """
     import numpy as np
 
@@ -1584,13 +1584,191 @@ def crear_analyzer_tables(val, min_casos=20):
     tables["Ranking gap"] = rg[rg["Casos"] >= min_casos]
     return tables
 
+
+# =========================================================
+# v20 BETTING FILTERS ENGINE
+# =========================================================
+
+def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
+    p1c = sim.get("p1_cal", 0.5)
+    p2c = sim.get("p2_cal", 0.5)
+    fav_prob = max(p1c, p2c)
+    fav_name = p1_name if p1c >= p2c else p2_name
+
+    games = sim.get("games", [])
+    if games:
+        over18 = sum(x > 18.5 for x in games) / len(games)
+        over19 = sum(x > 19.5 for x in games) / len(games)
+        over20 = sum(x > 20.5 for x in games) / len(games)
+        over22 = sum(x > 22.5 for x in games) / len(games)
+        under22 = 1 - over22
+    else:
+        over18 = over19 = over20 = over22 = under22 = 0.0
+
+    fav20 = sim.get("fav_2_0", 0)
+    dogset = sim.get("dog_wins_set", 0)
+    longm = sim.get("long_match", 0)
+    tb = sim.get("tb", 0)
+    vol = sim.get("vol", 0)
+
+    risk_notes = []
+
+    zone_score = 0
+    if circuito == "ATP" and surface == "Hard":
+        zone_score = 3
+    elif circuito == "ATP" and surface == "Clay":
+        zone_score = 2
+    elif circuito == "WTA":
+        zone_score = 1
+        risk_notes.append("WTA: filtros más exigentes")
+    else:
+        zone_score = 1
+
+    if vol >= 0.060:
+        risk_notes.append("volatilidad alta")
+    if fav_prob < 0.56:
+        risk_notes.append("favorito débil")
+    if tb >= 0.34:
+        risk_notes.append("tie-break alto")
+
+    f1 = sim.get("fatigue1", {}).get("fatigue_score", 0)
+    f2 = sim.get("fatigue2", {}).get("fatigue_score", 0)
+    if f1 >= 0.04 or f2 >= 0.04:
+        risk_notes.append("fatiga relevante")
+
+    signals = []
+
+    def add_signal(name, prob, min_prob, market_type, reason, bonus=0):
+        score = zone_score + bonus
+
+        if prob >= min_prob:
+            score += 2
+        if prob >= min_prob + 0.06:
+            score += 1
+        if prob >= min_prob + 0.12:
+            score += 1
+
+        if circuito == "WTA" and market_type in ["over", "long"]:
+            score -= 1
+        if vol >= 0.060 and market_type in ["ml", "fav20"]:
+            score -= 1
+        if fav_prob < 0.56 and market_type in ["ml", "fav20"]:
+            score -= 2
+
+        if score >= 6:
+            grade = "🔥 A+"
+            action = "APTO fuerte"
+        elif score >= 5:
+            grade = "✅ A"
+            action = "APTO"
+        elif score >= 4:
+            grade = "⚖️ B"
+            action = "Solo si acompaña lectura"
+        else:
+            grade = "⚠️ C"
+            action = "Evitar / observar"
+
+        signals.append({
+            "Mercado": name,
+            "Probabilidad": prob,
+            "Umbral mínimo": min_prob,
+            "Grade": grade,
+            "Acción": action,
+            "Motivo": reason
+        })
+
+    if circuito == "ATP" and surface == "Hard":
+        add_signal("Over 18.5", over18, 0.72, "over", "ATP Hard: mercado históricamente más fuerte", 2)
+        add_signal("Over 19.5", over19, 0.66, "over", "ATP Hard: mejor equilibrio riesgo/calidad", 2)
+        add_signal("Over 20.5", over20, 0.62, "over", "ATP Hard si hay señal clara de games", 1)
+        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.68, "ml", "ATP Hard favorito medio/fuerte", 1)
+
+    elif circuito == "ATP" and surface == "Clay":
+        add_signal("Over 18.5", over18, 0.72, "over", "ATP Clay: over bajo muy fuerte", 2)
+        add_signal("Over 19.5", over19, 0.65, "over", "ATP Clay: buena señal si no hay favorito arrasador", 1)
+        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.72, "ml", "ATP Clay exige más margen ML", 0)
+
+    elif circuito == "WTA":
+        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.68, "ml", "WTA: exigir probabilidad alta", 1)
+        add_signal("Favorito 2-0", fav20, 0.58, "fav20", "WTA: solo con perfil dominador/top", 1)
+        add_signal("Underdog gana set", dogset, 0.62, "dogset", "WTA: útil con dog peligroso", 0)
+        add_signal("Over 18.5", over18, 0.76, "over", "WTA overs solo con umbral alto", 0)
+        add_signal("Partido largo", longm, 0.66, "long", "WTA long match solo con señal clara", 0)
+
+    else:
+        add_signal("Over 18.5", over18, 0.74, "over", "Filtro general", 0)
+        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.70, "ml", "Filtro general ML", 0)
+
+    grade_order = {"🔥 A+": 4, "✅ A": 3, "⚖️ B": 2, "⚠️ C": 1}
+    signals = sorted(signals, key=lambda x: (grade_order.get(x["Grade"], 0), x["Probabilidad"]), reverse=True)
+
+    main = None
+    for s in signals:
+        if s["Acción"] in ["APTO fuerte", "APTO"]:
+            main = s
+            break
+    if main is None and signals:
+        main = signals[0]
+
+    if main and main["Acción"] == "APTO fuerte":
+        status = "🔥 SPOT FUERTE"
+    elif main and main["Acción"] == "APTO":
+        status = "✅ SPOT APTO"
+    elif main and main["Acción"].startswith("Solo"):
+        status = "⚖️ SPOT DUDOSO"
+    else:
+        status = "⚠️ NO BET / SOLO OBSERVAR"
+
+    return {
+        "status": status,
+        "main": main,
+        "signals": signals,
+        "risk_notes": risk_notes,
+        "zone_score": zone_score
+    }
+
+
+def render_betting_filters(filters):
+    st.divider()
+    st.subheader("💎 Betting Filters Engine")
+
+    main = filters.get("main")
+    status = filters.get("status", "⚠️ NO BET")
+
+    if main:
+        if "FUERTE" in status or "APTO" in status:
+            st.success(f"{status} · {main['Mercado']} → {main['Probabilidad']:.1%}")
+        elif "DUDOSO" in status:
+            st.warning(f"{status} · {main['Mercado']} → {main['Probabilidad']:.1%}")
+        else:
+            st.error(f"{status} · mejor señal: {main['Mercado']} → {main['Probabilidad']:.1%}")
+        st.caption(main.get("Motivo", ""))
+
+    if filters.get("risk_notes"):
+        st.warning("Riesgos: " + " · ".join(filters["risk_notes"]))
+
+    rows = []
+    for s in filters.get("signals", []):
+        rows.append({
+            "Mercado": s["Mercado"],
+            "Prob": f"{s['Probabilidad']:.1%}",
+            "Mín": f"{s['Umbral mínimo']:.1%}",
+            "Grade": s["Grade"],
+            "Acción": s["Acción"],
+            "Motivo": s["Motivo"]
+        })
+
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 # =========================================================
 # UI
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v19.2")
-    st.caption("WTA Match Script Engine")
+    st.header("🎾 Tennis IA v20")
+    st.caption("Betting Filters Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -1725,7 +1903,7 @@ if modo == "Predictor":
 
 
         st.divider()
-        st.subheader("🎾 WTA Match Script Engine")
+        st.subheader("🎾 Betting Filters Engine")
 
         sd = sim.get("set_dynamics", {})
 
@@ -1817,7 +1995,10 @@ if modo == "Predictor":
         }
         best = max(markets.items(), key=lambda x: x[1])
         st.success(f"{best[0]} → {best[1]:.1%}")
-        st.caption(f"Tennis IA v19.2 · {sims:,} simulaciones Monte Carlo")
+        filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
+        render_betting_filters(filters)
+
+        st.caption(f"Tennis IA v20 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -1857,7 +2038,7 @@ elif modo == "Validador histórico":
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v19_2.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v20.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
@@ -1907,4 +2088,4 @@ else:
         st.divider()
         st.subheader("🧾 Detalle base")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v19_2.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v20.csv", mime="text/csv")
