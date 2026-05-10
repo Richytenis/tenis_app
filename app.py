@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v18.1", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v18.1 FIX", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -685,6 +685,7 @@ def smart_set_dynamics(p1_win, p2_win, hold1, hold2, tb_rate, vol, surface):
 def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     e1, e2 = d1[surface], d2[surface]
     elo_diff = e1 - e2
+
     # v15: usa stats específicas de superficie si existen
     s1 = get_stats_surface(d1, surface)
     s2 = get_stats_surface(d2, surface)
@@ -709,8 +710,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     # v18 Tournament Engine
     ctx = tournament_context_adjustments(
         context_row,
-        p1_name=s1.get("raw_name_stats",""),
-        p2_name=s2.get("raw_name_stats","")
+        p1_name=s1.get("raw_name_stats", ""),
+        p2_name=s2.get("raw_name_stats", "")
     )
 
     hold1 = np.clip(hold1 + ctx["p1_adj"], 0.42, 0.86)
@@ -723,24 +724,24 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
 
     tb_intel_boost = calcular_tiebreak_boost(s1, s2, hold1, hold2, surface, p1_big, p2_big)
     tb_intel_boost += ctx.get("tb_adj", 0)
-    pressure_skill1, pressure_skill2 = pressure_collapse_params(s1, s2, surface)
 
-    set_dyn = smart_set_dynamics(
-        p1_win, p2_win,
-        hold1, hold2,
-        tb_intel_boost,
-        vol,
-        surface
-    )
+    pressure_skill1, pressure_skill2 = pressure_collapse_params(s1, s2, surface)
 
     sets_to_win = 3 if best_of == 5 else 2
     fav_est = max(elo_prob(e1, e2), 1 - elo_prob(e1, e2))
+
     vol = calcular_match_volatility(e1, e2, surface, fav_est)
-    if p1_big or p2_big: vol += 0.006
+    if p1_big or p2_big:
+        vol += 0.006
     vol += fatigue_vol_extra
     vol += ctx.get("vol_adj", 0)
 
-    res = {"p1":0, "p2":0, "set3":0, "tb":0, "games":[], "p1_fs":0, "p2_fs":0, "fav_under22":0, "dog_over20":0, "fav_2_0":0, "dog_wins_set":0, "long_match":0}
+    res = {
+        "p1": 0, "p2": 0, "set3": 0, "tb": 0, "games": [],
+        "p1_fs": 0, "p2_fs": 0,
+        "fav_under22": 0, "dog_over20": 0,
+        "fav_2_0": 0, "dog_wins_set": 0, "long_match": 0
+    }
 
     for _ in range(n):
         sets1 = sets2 = games = 0
@@ -753,37 +754,50 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
                 hold1, hold2, surface, shift, p1_big, p2_big, fav_est,
                 stats1=s1, stats2=s2
             )
+
             games += g1 + g2
-            if tb: tb_seen = True
+
+            if tb:
+                tb_seen = True
 
             if not first_done:
-                if g1 > g2: res["p1_fs"] += 1
-                else: res["p2_fs"] += 1
+                if g1 > g2:
+                    res["p1_fs"] += 1
+                else:
+                    res["p2_fs"] += 1
                 first_done = True
 
-            if g1 > g2: sets1 += 1
-            else: sets2 += 1
+            if g1 > g2:
+                sets1 += 1
+            else:
+                sets2 += 1
 
         p1_wins = sets1 > sets2
-        if p1_wins: res["p1"] += 1
-        else: res["p2"] += 1
 
-        if (sets1, sets2) in [(2,1), (1,2)]: res["set3"] += 1
-        if tb_seen: res["tb"] += 1
+        if p1_wins:
+            res["p1"] += 1
+        else:
+            res["p2"] += 1
+
+        if (sets1, sets2) in [(2, 1), (1, 2)]:
+            res["set3"] += 1
+
+        if tb_seen:
+            res["tb"] += 1
 
         p1_is_fav = e1 >= e2
         fav_wins = p1_wins if p1_is_fav else (not p1_wins)
         dog_wins = not fav_wins
 
-        if fav_wins and games < 22.5: res["fav_under22"] += 1
-        if dog_wins and games > 20.5: res["dog_over20"] += 1
+        if fav_wins and games < 22.5:
+            res["fav_under22"] += 1
 
-        # v17 Smart Markets
+        if dog_wins and games > 20.5:
+            res["dog_over20"] += 1
+
         if p1_is_fav:
-            fav_sets = sets1
             dog_sets = sets2
         else:
-            fav_sets = sets2
             dog_sets = sets1
 
         if fav_wins and dog_sets == 0:
@@ -792,7 +806,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         if dog_sets >= 1:
             res["dog_wins_set"] += 1
 
-        if games > 22.5 or tb_seen or ((sets1, sets2) in [(2,1), (1,2)]):
+        if games > 22.5 or tb_seen or ((sets1, sets2) in [(2, 1), (1, 2)]):
             res["long_match"] += 1
 
         res["games"].append(games)
@@ -800,18 +814,49 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     p1_raw = res["p1"] / n
     p1_cal = calibrar_probabilidad(p1_raw, surface)
 
+    raw_tb = res["tb"] / n
+    raw_fav20 = res["fav_2_0"] / n
+    raw_dogset = res["dog_wins_set"] / n
+    raw_long = res["long_match"] / n
+
+    # v18.1 Smart Set Dynamics: se aplica después de simular, no antes.
+    set_dyn = smart_set_dynamics(
+        p1_raw, 1 - p1_raw,
+        hold1, hold2,
+        raw_tb,
+        vol,
+        surface
+    )
+
+    fav20 = float(np.clip(raw_fav20 + set_dyn["fav20_boost"], 0.0, 0.95))
+    dogset = float(np.clip(raw_dogset - set_dyn["dog_set_suppress"], 0.05, 0.95))
+    longm = float(np.clip(raw_long + set_dyn["long_match_adj"], 0.05, 0.95))
+
     return {
-        "p1": p1_raw, "p2": 1-p1_raw, "p1_cal": p1_cal, "p2_cal": 1-p1_cal,
-        "p1_fs": res["p1_fs"]/n, "p2_fs": res["p2_fs"]/n,
-        "set3": res["set3"]/n, "tb": res["tb"]/n,
-        "fav_under22": res["fav_under22"]/n, "dog_over20": res["dog_over20"]/n,
+        "p1": p1_raw,
+        "p2": 1 - p1_raw,
+        "p1_cal": p1_cal,
+        "p2_cal": 1 - p1_cal,
+        "p1_fs": res["p1_fs"] / n,
+        "p2_fs": res["p2_fs"] / n,
+        "set3": res["set3"] / n,
+        "tb": raw_tb,
+        "fav_under22": res["fav_under22"] / n,
+        "dog_over20": res["dog_over20"] / n,
         "fav_2_0": fav20,
         "dog_wins_set": dogset,
         "long_match": longm,
-        "games": res["games"], "hold1": hold1, "hold2": hold2,
-        "raw_hold1": raw1, "raw_hold2": raw2, "ret1": ret1, "ret2": ret2,
-        "p1_profile": p1_profile, "p2_profile": p2_profile,
-        "vol": vol, "fav_raw_est": fav_est,
+        "games": res["games"],
+        "hold1": hold1,
+        "hold2": hold2,
+        "raw_hold1": raw1,
+        "raw_hold2": raw2,
+        "ret1": ret1,
+        "ret2": ret2,
+        "p1_profile": p1_profile,
+        "p2_profile": p2_profile,
+        "vol": vol,
+        "fav_raw_est": fav_est,
         "tb_intel_boost": tb_intel_boost,
         "pressure_skill1": pressure_skill1,
         "pressure_skill2": pressure_skill2,
@@ -1239,7 +1284,7 @@ def crear_analyzer_tables(val, min_casos=20):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v18.1")
+    st.header("🎾 Tennis IA v18.1 FIX")
     st.caption("Smart Set Dynamics")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -1427,7 +1472,7 @@ if modo == "Predictor":
         }
         best = max(markets.items(), key=lambda x: x[1])
         st.success(f"{best[0]} → {best[1]:.1%}")
-        st.caption(f"Tennis IA v18.1 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v18.1 FIX · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -1467,7 +1512,7 @@ elif modo == "Validador histórico":
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v18_1.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v18_1_fix.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
