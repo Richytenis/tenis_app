@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v18", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v18.1", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -620,6 +620,68 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big, fav_raw_est=0.5, stats
             p_tb = np.clip(p_tb, 0.30, 0.82)
             return (7, 6, tb) if random.random() < p_tb else (6, 7, tb)
 
+
+def smart_set_dynamics(p1_win, p2_win, hold1, hold2, tb_rate, vol, surface):
+    """
+    v18.1 Smart Set Dynamics
+    Ajusta:
+    - favorito 2-0
+    - underdog gana set
+    - partidos largos
+    """
+    diff = abs(p1_win - p2_win)
+    fav = max(p1_win, p2_win)
+
+    dog_set_suppress = 0.0
+    fav20_boost = 0.0
+    long_match_adj = 0.0
+
+    # Favoritos fuertes
+    if fav >= 0.72:
+        fav20_boost += 0.08
+        dog_set_suppress += 0.10
+        long_match_adj -= 0.05
+
+    elif fav >= 0.66:
+        fav20_boost += 0.05
+        dog_set_suppress += 0.06
+        long_match_adj -= 0.03
+
+    # Diferencia de hold
+    hold_gap = abs(hold1 - hold2)
+
+    if hold_gap >= 0.09:
+        fav20_boost += 0.05
+        dog_set_suppress += 0.06
+
+    elif hold_gap >= 0.06:
+        fav20_boost += 0.03
+        dog_set_suppress += 0.03
+
+    # TB bajo = menos sets largos
+    if tb_rate <= 0.24:
+        fav20_boost += 0.04
+        dog_set_suppress += 0.04
+        long_match_adj -= 0.04
+
+    # Clay favorece más breaks/remontadas
+    if surface == "Clay":
+        dog_set_suppress *= 0.85
+        fav20_boost *= 0.90
+
+    # Alta volatilidad devuelve vida al underdog
+    if vol >= 0.035:
+        dog_set_suppress *= 0.70
+        fav20_boost *= 0.75
+        long_match_adj += 0.05
+
+    return {
+        "dog_set_suppress": float(np.clip(dog_set_suppress, 0, 0.20)),
+        "fav20_boost": float(np.clip(fav20_boost, 0, 0.18)),
+        "long_match_adj": float(np.clip(long_match_adj, -0.10, 0.10))
+    }
+
+
 def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     e1, e2 = d1[surface], d2[surface]
     elo_diff = e1 - e2
@@ -662,6 +724,14 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     tb_intel_boost = calcular_tiebreak_boost(s1, s2, hold1, hold2, surface, p1_big, p2_big)
     tb_intel_boost += ctx.get("tb_adj", 0)
     pressure_skill1, pressure_skill2 = pressure_collapse_params(s1, s2, surface)
+
+    set_dyn = smart_set_dynamics(
+        p1_win, p2_win,
+        hold1, hold2,
+        tb_intel_boost,
+        vol,
+        surface
+    )
 
     sets_to_win = 3 if best_of == 5 else 2
     fav_est = max(elo_prob(e1, e2), 1 - elo_prob(e1, e2))
@@ -735,9 +805,9 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         "p1_fs": res["p1_fs"]/n, "p2_fs": res["p2_fs"]/n,
         "set3": res["set3"]/n, "tb": res["tb"]/n,
         "fav_under22": res["fav_under22"]/n, "dog_over20": res["dog_over20"]/n,
-        "fav_2_0": res["fav_2_0"]/n,
-        "dog_wins_set": res["dog_wins_set"]/n,
-        "long_match": res["long_match"]/n,
+        "fav_2_0": fav20,
+        "dog_wins_set": dogset,
+        "long_match": longm,
         "games": res["games"], "hold1": hold1, "hold2": hold2,
         "raw_hold1": raw1, "raw_hold2": raw2, "ret1": ret1, "ret2": ret2,
         "p1_profile": p1_profile, "p2_profile": p2_profile,
@@ -750,7 +820,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         "fatigue_adj1": fat_adj1,
         "fatigue_adj2": fat_adj2,
         "fatigue_vol_extra": fatigue_vol_extra,
-        "tournament_ctx": ctx
+        "tournament_ctx": ctx,
+        "set_dynamics": set_dyn
     }
 
 def cargar_historicos(circuito):
@@ -908,7 +979,7 @@ def buscar_fatigue(nombre, fatigue_map):
 
 def tournament_context_adjustments(context_row, p1_name="", p2_name=""):
     """
-    v18 Tournament & Motivation Engine
+    v18 Smart Set Dynamics
     """
     import numpy as np
 
@@ -1168,8 +1239,8 @@ def crear_analyzer_tables(val, min_casos=20):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v18")
-    st.caption("Tournament & Motivation Engine")
+    st.header("🎾 Tennis IA v18.1")
+    st.caption("Smart Set Dynamics")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -1302,6 +1373,23 @@ if modo == "Predictor":
             st.metric(d2["Player"], f"{f.get('fatigue_score',0):.1%}", f"Ajuste {sim.get('fatigue_adj2',0):+.1%}")
             st.caption(f"7 días: {f.get('matches7',0)} partidos · {f.get('games7',0)} games · descanso {f.get('rest_days',7)} días")
 
+
+        st.divider()
+        st.subheader("🎾 Smart Set Dynamics")
+
+        sd = sim.get("set_dynamics", {})
+
+        s1,s2,s3 = st.columns(3)
+
+        with s1:
+            st.metric("2-0 boost", f"{sd.get('fav20_boost',0):+.1%}")
+
+        with s2:
+            st.metric("Dog suppression", f"{sd.get('dog_set_suppress',0):+.1%}")
+
+        with s3:
+            st.metric("Long match adj", f"{sd.get('long_match_adj',0):+.1%}")
+
         st.divider()
         st.subheader("🧠 Perfil del Partido")
         tags = []
@@ -1339,7 +1427,7 @@ if modo == "Predictor":
         }
         best = max(markets.items(), key=lambda x: x[1])
         st.success(f"{best[0]} → {best[1]:.1%}")
-        st.caption(f"Tennis IA v18 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v18.1 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -1379,7 +1467,7 @@ elif modo == "Validador histórico":
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v18.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v18_1.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
