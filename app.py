@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v18.1 FIX", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v19", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -621,65 +621,83 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big, fav_raw_est=0.5, stats
             return (7, 6, tb) if random.random() < p_tb else (6, 7, tb)
 
 
-def smart_set_dynamics(p1_win, p2_win, hold1, hold2, tb_rate, vol, surface):
+def smart_set_dynamics(p1_win, p2_win, hold1, hold2, tb_rate, vol, surface, circuito="ATP", rank1=999, rank2=999):
     """
-    v18.1 Smart Set Dynamics
-    Ajusta:
-    - favorito 2-0
-    - underdog gana set
-    - partidos largos
+    v19 Smart Set Dynamics.
+    ATP: mantiene estructura.
+    WTA: evita coinflips artificiales y dog-set exagerado.
     """
-    diff = abs(p1_win - p2_win)
     fav = max(p1_win, p2_win)
+    hold_gap = abs(hold1 - hold2)
 
     dog_set_suppress = 0.0
     fav20_boost = 0.0
     long_match_adj = 0.0
 
-    # Favoritos fuertes
     if fav >= 0.72:
         fav20_boost += 0.08
         dog_set_suppress += 0.10
         long_match_adj -= 0.05
-
     elif fav >= 0.66:
         fav20_boost += 0.05
         dog_set_suppress += 0.06
         long_match_adj -= 0.03
 
-    # Diferencia de hold
-    hold_gap = abs(hold1 - hold2)
-
     if hold_gap >= 0.09:
         fav20_boost += 0.05
         dog_set_suppress += 0.06
-
     elif hold_gap >= 0.06:
         fav20_boost += 0.03
         dog_set_suppress += 0.03
 
-    # TB bajo = menos sets largos
     if tb_rate <= 0.24:
         fav20_boost += 0.04
         dog_set_suppress += 0.04
         long_match_adj -= 0.04
 
-    # Clay favorece más breaks/remontadas
     if surface == "Clay":
         dog_set_suppress *= 0.85
         fav20_boost *= 0.90
 
-    # Alta volatilidad devuelve vida al underdog
     if vol >= 0.035:
         dog_set_suppress *= 0.70
         fav20_boost *= 0.75
         long_match_adj += 0.05
 
+    if circuito == "WTA":
+        top_player = rank1 <= 15 or rank2 <= 15
+        rank_gap = abs(rank1 - rank2)
+
+        if fav >= 0.68 and top_player:
+            dog_set_suppress += 0.055
+            fav20_boost += 0.040
+            long_match_adj -= 0.035
+        elif fav >= 0.64 and top_player:
+            dog_set_suppress += 0.035
+            fav20_boost += 0.025
+            long_match_adj -= 0.020
+
+        if rank_gap >= 40 and fav >= 0.62:
+            dog_set_suppress += 0.035
+            fav20_boost += 0.020
+            long_match_adj -= 0.020
+
+        if surface == "Clay":
+            dog_set_suppress *= 0.92
+            fav20_boost *= 0.92
+            long_match_adj *= 0.85
+
+        if fav < 0.58:
+            dog_set_suppress *= 0.50
+            fav20_boost *= 0.45
+            long_match_adj += 0.025
+
     return {
-        "dog_set_suppress": float(np.clip(dog_set_suppress, 0, 0.20)),
-        "fav20_boost": float(np.clip(fav20_boost, 0, 0.18)),
-        "long_match_adj": float(np.clip(long_match_adj, -0.10, 0.10))
+        "dog_set_suppress": float(np.clip(dog_set_suppress, 0, 0.22)),
+        "fav20_boost": float(np.clip(fav20_boost, 0, 0.20)),
+        "long_match_adj": float(np.clip(long_match_adj, -0.12, 0.12))
     }
+
 
 
 def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
@@ -694,12 +712,32 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     raw2 = calc_hold(s2, -elo_diff, surface, circuito)
     ret1 = calc_return_strength(s1, e1, surface)
     ret2 = calc_return_strength(s2, e2, surface)
+
+    # v19 WTA Return Compression:
+    # evita que todas las jugadoras parezcan returners elite y vuelvan el partido coinflip.
+    if circuito == "WTA":
+        ret1 *= 0.90
+        ret2 *= 0.90
+
+        if d1.get("Rank", 999) <= 10:
+            ret1 *= 1.06
+        elif d1.get("Rank", 999) <= 20:
+            ret1 *= 1.03
+
+        if d2.get("Rank", 999) <= 10:
+            ret2 *= 1.06
+        elif d2.get("Rank", 999) <= 20:
+            ret2 *= 1.03
+
+        ret1 = np.clip(ret1, 0.10, 0.38)
+        ret2 = np.clip(ret2, 0.10, 0.38)
+
     hold1, hold2 = aplicar_return_pressure(raw1, raw2, ret1, ret2, surface)
 
     # v17 Fatigue Engine
     fatigue1 = d1.get("Fatigue", {})
     fatigue2 = d2.get("Fatigue", {})
-    fat_adj1, fat_adj2, fatigue_vol_extra = fatigue_adjustments(fatigue1, fatigue2, surface)
+    fat_adj1, fat_adj2, fatigue_vol_extra = fatigue_adjustments(fatigue1, fatigue2, surface, circuito, d1.get('Rank',999), d2.get('Rank',999))
 
     hold1 = np.clip(hold1 + fat_adj1, 0.42, 0.84)
     hold2 = np.clip(hold2 + fat_adj2, 0.42, 0.84)
@@ -735,6 +773,24 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         vol += 0.006
     vol += fatigue_vol_extra
     vol += ctx.get("vol_adj", 0)
+
+    # v19 WTA Controlled Chaos:
+    # WTA sigue siendo variable, pero protegemos top players y gaps grandes.
+    if circuito == "WTA":
+        rank_gap = abs(d1.get("Rank",999) - d2.get("Rank",999))
+
+        if d1.get("Rank",999) <= 15 or d2.get("Rank",999) <= 15:
+            vol *= 0.78
+
+        if rank_gap >= 40 and fav_est >= 0.62:
+            vol *= 0.86
+
+        if surface == "Clay":
+            vol *= 1.04
+        elif surface == "Grass":
+            vol *= 0.94
+
+        vol = float(np.clip(vol, 0.018, 0.060))
 
     res = {
         "p1": 0, "p2": 0, "set3": 0, "tb": 0, "games": [],
@@ -819,18 +875,44 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     raw_dogset = res["dog_wins_set"] / n
     raw_long = res["long_match"] / n
 
-    # v18.1 Smart Set Dynamics: se aplica después de simular, no antes.
+    # v18.1 WTA Chaos Engine FIX: se aplica después de simular, no antes.
     set_dyn = smart_set_dynamics(
         p1_raw, 1 - p1_raw,
         hold1, hold2,
         raw_tb,
         vol,
-        surface
+        surface,
+        circuito,
+        d1.get("Rank",999),
+        d2.get("Rank",999)
     )
 
     fav20 = float(np.clip(raw_fav20 + set_dyn["fav20_boost"], 0.0, 0.95))
     dogset = float(np.clip(raw_dogset - set_dyn["dog_set_suppress"], 0.05, 0.95))
     longm = float(np.clip(raw_long + set_dyn["long_match_adj"], 0.05, 0.95))
+
+    # v19 WTA caps: corrige exceso de "dog gana set" en favoritas claras.
+    if circuito == "WTA":
+        fav_prob = max(p1_cal, 1 - p1_cal)
+        top_player = d1.get("Rank",999) <= 15 or d2.get("Rank",999) <= 15
+        rank_gap = abs(d1.get("Rank",999) - d2.get("Rank",999))
+
+        if fav_prob >= 0.70 and top_player:
+            dogset *= 0.78
+            fav20 = min(0.90, fav20 * 1.12)
+            longm *= 0.88
+        elif fav_prob >= 0.65 and top_player:
+            dogset *= 0.85
+            fav20 = min(0.88, fav20 * 1.08)
+            longm *= 0.92
+
+        if rank_gap >= 40 and fav_prob >= 0.63:
+            dogset *= 0.88
+            longm *= 0.94
+
+        dogset = float(np.clip(dogset, 0.05, 0.90))
+        fav20 = float(np.clip(fav20, 0.0, 0.92))
+        longm = float(np.clip(longm, 0.05, 0.92))
 
     return {
         "p1": p1_raw,
@@ -866,7 +948,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         "fatigue_adj2": fat_adj2,
         "fatigue_vol_extra": fatigue_vol_extra,
         "tournament_ctx": ctx,
-        "set_dynamics": set_dyn
+        "set_dynamics": set_dyn,
+        "wta_engine_active": circuito == "WTA"
     }
 
 def cargar_historicos(circuito):
@@ -1024,7 +1107,7 @@ def buscar_fatigue(nombre, fatigue_map):
 
 def tournament_context_adjustments(context_row, p1_name="", p2_name=""):
     """
-    v18 Smart Set Dynamics
+    v18 WTA Chaos Engine FIX
     """
     import numpy as np
 
@@ -1095,29 +1178,57 @@ def tournament_context_adjustments(context_row, p1_name="", p2_name=""):
     }
 
 
-def fatigue_adjustments(f1, f2, surface):
+def fatigue_adjustments(f1, f2, surface, circuito="ATP", rank1=999, rank2=999):
     """
-    Devuelve ajustes suaves para cada jugador.
-    Mayor fatiga = menor hold/return y algo más de volatilidad.
+    v19 Fatigue Engine.
+    ATP: lógica anterior.
+    WTA: menos castigo de fatiga y protección de top players.
     """
     fat1 = f1.get("fatigue_score", 0.0)
     fat2 = f2.get("fatigue_score", 0.0)
 
-    if surface == "Clay":
-        mult = 1.18
-    elif surface == "Grass":
-        mult = 0.82
+    if circuito == "WTA":
+        if rank1 <= 15:
+            fat1 *= 0.62
+        elif rank1 <= 30:
+            fat1 *= 0.75
+
+        if rank2 <= 15:
+            fat2 *= 0.62
+        elif rank2 <= 30:
+            fat2 *= 0.75
+
+        if surface == "Clay":
+            mult = 0.72
+        elif surface == "Grass":
+            mult = 0.48
+        else:
+            mult = 0.58
     else:
-        mult = 1.0
+        if surface == "Clay":
+            mult = 1.18
+        elif surface == "Grass":
+            mult = 0.82
+        else:
+            mult = 1.0
 
     adj1 = -fat1 * mult
     adj2 = -fat2 * mult
 
-    vol_extra = abs(fat1 - fat2) * 0.35
-    if fat1 > 0.030 or fat2 > 0.030:
-        vol_extra += 0.003
+    vol_extra = abs(fat1 - fat2) * (0.20 if circuito == "WTA" else 0.35)
 
-    return float(np.clip(adj1, -0.055, 0.010)), float(np.clip(adj2, -0.055, 0.010)), float(np.clip(vol_extra, 0, 0.018))
+    if circuito == "ATP":
+        if fat1 > 0.030 or fat2 > 0.030:
+            vol_extra += 0.003
+    else:
+        if (fat1 > 0.040 or fat2 > 0.040) and rank1 > 30 and rank2 > 30:
+            vol_extra += 0.002
+
+    return (
+        float(np.clip(adj1, -0.032 if circuito == "WTA" else -0.055, 0.010)),
+        float(np.clip(adj2, -0.032 if circuito == "WTA" else -0.055, 0.010)),
+        float(np.clip(vol_extra, 0, 0.010 if circuito == "WTA" else 0.018))
+    )
 
 
 def encontrar_jugador(nombre_hist, db):
@@ -1284,8 +1395,8 @@ def crear_analyzer_tables(val, min_casos=20):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v18.1 FIX")
-    st.caption("Smart Set Dynamics")
+    st.header("🎾 Tennis IA v19")
+    st.caption("WTA Chaos Engine FIX")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -1420,7 +1531,7 @@ if modo == "Predictor":
 
 
         st.divider()
-        st.subheader("🎾 Smart Set Dynamics")
+        st.subheader("🎾 WTA Chaos Engine FIX")
 
         sd = sim.get("set_dynamics", {})
 
@@ -1457,6 +1568,7 @@ if modo == "Predictor":
         if "Indoor" in tc.get("court",""): tags.append("🏟️ Indoor boost")
         if "Final" in tc.get("round",""): tags.append("🎯 Final pressure")
         if "Grand Slam" in tc.get("series",""): tags.append("🏆 Grand Slam intensity")
+        if sim.get("wta_engine_active", False): tags.append("🎾 WTA Chaos control")
         st.info(" · ".join(tags) if tags else "Sin perfil extremo detectado.")
 
         st.divider()
@@ -1472,7 +1584,7 @@ if modo == "Predictor":
         }
         best = max(markets.items(), key=lambda x: x[1])
         st.success(f"{best[0]} → {best[1]:.1%}")
-        st.caption(f"Tennis IA v18.1 FIX · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v19 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -1512,7 +1624,7 @@ elif modo == "Validador histórico":
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v18_1_fix.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v19.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
@@ -1562,4 +1674,4 @@ else:
         st.divider()
         st.subheader("🧾 Detalle base")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v18.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v19.csv", mime="text/csv")
