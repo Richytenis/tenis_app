@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v17.1", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v18", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -620,7 +620,7 @@ def sim_set(hold1, hold2, surface, shift, p1_big, p2_big, fav_raw_est=0.5, stats
             p_tb = np.clip(p_tb, 0.30, 0.82)
             return (7, 6, tb) if random.random() < p_tb else (6, 7, tb)
 
-def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
+def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     e1, e2 = d1[surface], d2[surface]
     elo_diff = e1 - e2
     # v15: usa stats específicas de superficie si existen
@@ -644,12 +644,23 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
     ret1 = np.clip(ret1 + fat_adj1 * 0.35, 0.10, 0.40)
     ret2 = np.clip(ret2 + fat_adj2 * 0.35, 0.10, 0.40)
 
+    # v18 Tournament Engine
+    ctx = tournament_context_adjustments(
+        context_row,
+        p1_name=s1.get("raw_name_stats",""),
+        p2_name=s2.get("raw_name_stats","")
+    )
+
+    hold1 = np.clip(hold1 + ctx["p1_adj"], 0.42, 0.86)
+    hold2 = np.clip(hold2 + ctx["p2_adj"], 0.42, 0.86)
+
     p1_profile = s1.get("serve_profile", "normal")
     p2_profile = s2.get("serve_profile", "normal")
     p1_big = p1_profile in ["big_server", "elite_server"]
     p2_big = p2_profile in ["big_server", "elite_server"]
 
     tb_intel_boost = calcular_tiebreak_boost(s1, s2, hold1, hold2, surface, p1_big, p2_big)
+    tb_intel_boost += ctx.get("tb_adj", 0)
     pressure_skill1, pressure_skill2 = pressure_collapse_params(s1, s2, surface)
 
     sets_to_win = 3 if best_of == 5 else 2
@@ -657,6 +668,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
     vol = calcular_match_volatility(e1, e2, surface, fav_est)
     if p1_big or p2_big: vol += 0.006
     vol += fatigue_vol_extra
+    vol += ctx.get("vol_adj", 0)
 
     res = {"p1":0, "p2":0, "set3":0, "tb":0, "games":[], "p1_fs":0, "p2_fs":0, "fav_under22":0, "dog_over20":0, "fav_2_0":0, "dog_wins_set":0, "long_match":0}
 
@@ -737,7 +749,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000):
         "fatigue2": fatigue2,
         "fatigue_adj1": fat_adj1,
         "fatigue_adj2": fat_adj2,
-        "fatigue_vol_extra": fatigue_vol_extra
+        "fatigue_vol_extra": fatigue_vol_extra,
+        "tournament_ctx": ctx
     }
 
 def cargar_historicos(circuito):
@@ -892,6 +905,80 @@ def buscar_fatigue(nombre, fatigue_map):
     }
 
 
+
+def tournament_context_adjustments(context_row, p1_name="", p2_name=""):
+    """
+    v18 Tournament & Motivation Engine
+    """
+    import numpy as np
+
+    if context_row is None:
+        context_row = {}
+
+    series = str(context_row.get("Series", ""))
+    rnd = str(context_row.get("Round", ""))
+    court = str(context_row.get("Court", "Outdoor"))
+    location = str(context_row.get("Location", ""))
+
+    p1_adj = 0.0
+    p2_adj = 0.0
+    vol_adj = 0.0
+    tb_adj = 0.0
+
+    # Tournament importance
+    if "Grand Slam" in series:
+        vol_adj -= 0.004
+    elif "Masters" in series or "1000" in series:
+        vol_adj -= 0.002
+    elif "250" in series:
+        vol_adj += 0.003
+
+    # Round pressure
+    if "Final" in rnd:
+        vol_adj -= 0.004
+    elif "Semi" in rnd:
+        vol_adj -= 0.002
+    elif "1st" in rnd:
+        vol_adj += 0.003
+
+    # Indoor boosts
+    if "Indoor" in court:
+        tb_adj += 0.025
+
+    # Tiny home boosts
+    home_map = {
+        "Paris": "FRA",
+        "Lyon": "FRA",
+        "Marseille": "FRA",
+        "Madrid": "ESP",
+        "Barcelona": "ESP",
+        "Mallorca": "ESP",
+        "Rome": "ITA",
+        "Turin": "ITA",
+        "Milan": "ITA",
+        "Munich": "GER",
+        "Hamburg": "GER"
+    }
+
+    hc = home_map.get(location)
+
+    if hc:
+        if f"[{hc}]" in str(p1_name):
+            p1_adj += 0.006
+        if f"[{hc}]" in str(p2_name):
+            p2_adj += 0.006
+
+    return {
+        "p1_adj": float(np.clip(p1_adj, -0.01, 0.01)),
+        "p2_adj": float(np.clip(p2_adj, -0.01, 0.01)),
+        "vol_adj": float(np.clip(vol_adj, -0.01, 0.01)),
+        "tb_adj": float(np.clip(tb_adj, 0, 0.04)),
+        "series": series,
+        "round": rnd,
+        "court": court
+    }
+
+
 def fatigue_adjustments(f1, f2, surface):
     """
     Devuelve ajustes suaves para cada jugador.
@@ -963,7 +1050,7 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
         if p_win is None or p_los is None: continue
 
         d_win, d_los = db[p_win], db[p_los]
-        sim = sim_match(d_win, d_los, surface, circuito, best_of, sims_bt)
+        sim = sim_match(d_win, d_los, surface, circuito, best_of, sims_bt, context_row=row)
 
         p_raw, p_cal = sim["p1"], sim["p1_cal"]
         games_real = total_games_row(row)
@@ -1081,8 +1168,8 @@ def crear_analyzer_tables(val, min_casos=20):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v17.1")
-    st.caption("Fatigue + Smart Markets Engine")
+    st.header("🎾 Tennis IA v18")
+    st.caption("Tournament & Motivation Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -1109,7 +1196,7 @@ if modo == "Predictor":
         d1, d2 = db[p1_name], db[p2_name]
         best_of = 5 if "5" in formato else 3
         with st.spinner(f"Simulando {sims:,} partidos..."):
-            sim = sim_match(d1,d2,surface,circuito,best_of,sims)
+            sim = sim_match(d1,d2,surface,circuito,best_of,sims,context_row={})
 
         st.caption(
             f"📁 Stats usadas: {stats_filename_label(circuito, 'serve', surface)} · "
@@ -1186,6 +1273,22 @@ if modo == "Predictor":
         with tb3:
             st.metric(f"Presión {d2['Player']}", f"{sim.get('pressure_skill2', 0):+.1%}")
 
+
+        st.divider()
+        st.subheader("🏟️ Tournament Engine")
+
+        tc = sim.get("tournament_ctx", {})
+        t1,t2,t3 = st.columns(3)
+
+        with t1:
+            st.metric("Series", tc.get("series","ATP"))
+
+        with t2:
+            st.metric("Court", tc.get("court","Outdoor"))
+
+        with t3:
+            st.metric("Round", tc.get("round","Main"))
+
         st.divider()
         st.subheader("🔋 Fatigue Engine")
 
@@ -1217,6 +1320,10 @@ if modo == "Predictor":
         if sim.get("fatigue2", {}).get("fatigue_score", 0) >= 0.030: tags.append(f"🔋 Fatiga {d2['Player']}")
         if sim.get("long_match", 0) >= 0.65: tags.append("📈 Partido largo probable")
         if sim.get("fav_2_0", 0) >= 0.55: tags.append("🔥 Spot favorito 2-0")
+        tc = sim.get("tournament_ctx", {})
+        if "Indoor" in tc.get("court",""): tags.append("🏟️ Indoor boost")
+        if "Final" in tc.get("round",""): tags.append("🎯 Final pressure")
+        if "Grand Slam" in tc.get("series",""): tags.append("🏆 Grand Slam intensity")
         st.info(" · ".join(tags) if tags else "Sin perfil extremo detectado.")
 
         st.divider()
@@ -1232,7 +1339,7 @@ if modo == "Predictor":
         }
         best = max(markets.items(), key=lambda x: x[1])
         st.success(f"{best[0]} → {best[1]:.1%}")
-        st.caption(f"Tennis IA v17.1 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v18 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -1272,7 +1379,7 @@ elif modo == "Validador histórico":
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v17_1.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v18.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
@@ -1322,4 +1429,4 @@ else:
         st.divider()
         st.subheader("🧾 Detalle base")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v17_1.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v18.csv", mime="text/csv")
