@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v19.1", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v19.2", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -701,9 +701,90 @@ def smart_set_dynamics(p1_win, p2_win, hold1, hold2, tb_rate, vol, surface, circ
 
 
 
+
+def wta_match_script_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, circuito):
+    """
+    v19.2 WTA Match Script Engine
+    Detecta perfiles reales WTA:
+    - dominadora top
+    - clay grinder
+    - streaky hitter
+    - dangerous dog
+    """
+    out = {
+        "active": False,
+        "script": "neutral",
+        "fav20_mult": 1.0,
+        "dogset_mult": 1.0,
+        "long_mult": 1.0,
+        "vol_mult": 1.0
+    }
+
+    if circuito != "WTA":
+        return out
+
+    r1 = d1.get("Rank", 999)
+    r2 = d2.get("Rank", 999)
+
+    e1 = d1.get(surface, 1500)
+    e2 = d2.get(surface, 1500)
+
+    fav_is_p1 = e1 >= e2
+    fav_rank = r1 if fav_is_p1 else r2
+    dog_rank = r2 if fav_is_p1 else r1
+
+    fav_hold = hold1 if fav_is_p1 else hold2
+    fav_ret = ret1 if fav_is_p1 else ret2
+
+    dog_hold = hold2 if fav_is_p1 else hold1
+
+    hold_gap = abs(hold1 - hold2)
+
+    ace1 = s1.get("Ace%", 0)
+    ace2 = s2.get("Ace%", 0)
+
+    # 1) Dominadora top WTA
+    if fav_rank <= 12 and fav_ret >= 0.36 and hold_gap >= 0.06:
+        out["active"] = True
+        out["script"] = "top_dominator"
+        out["fav20_mult"] = 1.22
+        out["dogset_mult"] = 0.78
+        out["long_mult"] = 0.78
+        out["vol_mult"] = 0.82
+
+    # 2) Clay grinder
+    elif surface == "Clay" and fav_ret >= 0.34 and dog_hold <= 0.58:
+        out["active"] = True
+        out["script"] = "clay_grinder"
+        out["fav20_mult"] = 1.14
+        out["dogset_mult"] = 0.84
+        out["long_mult"] = 0.88
+        out["vol_mult"] = 0.90
+
+    # 3) Streaky hitter
+    elif ace1 >= 8 or ace2 >= 8:
+        out["active"] = True
+        out["script"] = "streaky_hitter"
+        out["fav20_mult"] = 0.92
+        out["dogset_mult"] = 1.10
+        out["long_mult"] = 1.08
+        out["vol_mult"] = 1.10
+
+    # 4) Dangerous underdog
+    elif dog_rank <= 35 and hold_gap <= 0.04:
+        out["active"] = True
+        out["script"] = "dangerous_dog"
+        out["fav20_mult"] = 0.88
+        out["dogset_mult"] = 1.14
+        out["long_mult"] = 1.12
+        out["vol_mult"] = 1.12
+
+    return out
+
+
 def elite_wta_separation(d1, d2, hold1, hold2, ret1, ret2, surface, circuito):
     """
-    v19.1 Elite WTA Separation Engine.
+    v19.1 WTA Match Script Engine.
     La WTA no solo es caos: las top consolidan ventajas y castigan más.
     Ajusta solo WTA y protege ATP.
     """
@@ -838,6 +919,14 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         d1, d2, hold1, hold2, ret1, ret2, surface, circuito
     )
 
+    # v19.2 Match Script Engine
+    wta_script = wta_match_script_engine(
+        d1, d2, s1, s2,
+        hold1, hold2,
+        ret1, ret2,
+        surface, circuito
+    )
+
     p1_profile = s1.get("serve_profile", "normal")
     p2_profile = s2.get("serve_profile", "normal")
     p1_big = p1_profile in ["big_server", "elite_server"]
@@ -874,7 +963,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
             vol *= 0.94
 
         vol *= wta_sep.get("vol_mult", 1.0)
-        vol = float(np.clip(vol, 0.016, 0.060))
+        vol *= wta_script.get("vol_mult", 1.0)
+        vol = float(np.clip(vol, 0.014, 0.060))
 
     res = {
         "p1": 0, "p2": 0, "set3": 0, "tb": 0, "games": [],
@@ -959,7 +1049,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     raw_dogset = res["dog_wins_set"] / n
     raw_long = res["long_match"] / n
 
-    # v18.1 Elite WTA Separation Engine: se aplica después de simular, no antes.
+    # v18.1 WTA Match Script Engine: se aplica después de simular, no antes.
     set_dyn = smart_set_dynamics(
         p1_raw, 1 - p1_raw,
         hold1, hold2,
@@ -1007,6 +1097,11 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
                 fav20 = min(0.90, fav20 * 1.08)
                 longm *= 0.90
 
+        # v19.2 Match Script multipliers
+        fav20 *= wta_script.get("fav20_mult", 1.0)
+        dogset *= wta_script.get("dogset_mult", 1.0)
+        longm *= wta_script.get("long_mult", 1.0)
+
         dogset = float(np.clip(dogset, 0.05, 0.90))
         fav20 = float(np.clip(fav20, 0.0, 0.92))
         longm = float(np.clip(longm, 0.05, 0.92))
@@ -1047,7 +1142,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         "tournament_ctx": ctx,
         "set_dynamics": set_dyn,
         "wta_engine_active": circuito == "WTA",
-        "wta_separation": wta_sep
+        "wta_separation": wta_sep,
+        "wta_script": wta_script
     }
 
 def cargar_historicos(circuito):
@@ -1205,7 +1301,7 @@ def buscar_fatigue(nombre, fatigue_map):
 
 def tournament_context_adjustments(context_row, p1_name="", p2_name=""):
     """
-    v18 Elite WTA Separation Engine
+    v18 WTA Match Script Engine
     """
     import numpy as np
 
@@ -1493,8 +1589,8 @@ def crear_analyzer_tables(val, min_casos=20):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v19.1")
-    st.caption("Elite WTA Separation Engine")
+    st.header("🎾 Tennis IA v19.2")
+    st.caption("WTA Match Script Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -1629,7 +1725,7 @@ if modo == "Predictor":
 
 
         st.divider()
-        st.subheader("🎾 Elite WTA Separation Engine")
+        st.subheader("🎾 WTA Match Script Engine")
 
         sd = sim.get("set_dynamics", {})
 
@@ -1644,6 +1740,26 @@ if modo == "Predictor":
         with s3:
             st.metric("Long match adj", f"{sd.get('long_match_adj',0):+.1%}")
 
+
+
+        if sim.get("wta_engine_active", False):
+            st.divider()
+            st.subheader("🎭 WTA Match Script")
+
+            ws2 = sim.get("wta_script", {})
+            m1,m2,m3,m4 = st.columns(4)
+
+            with m1:
+                st.metric("Activo", "Sí" if ws2.get("active", False) else "No")
+
+            with m2:
+                st.metric("Script", ws2.get("script","neutral"))
+
+            with m3:
+                st.metric("Fav2-0", f"{ws2.get('fav20_mult',1.0):.2f}x")
+
+            with m4:
+                st.metric("Long", f"{ws2.get('long_mult',1.0):.2f}x")
 
         if sim.get("wta_engine_active", False):
             st.divider()
@@ -1685,6 +1801,7 @@ if modo == "Predictor":
         if "Grand Slam" in tc.get("series",""): tags.append("🏆 Grand Slam intensity")
         if sim.get("wta_engine_active", False): tags.append("🎾 WTA Chaos control")
         if sim.get("wta_separation", {}).get("active", False): tags.append("👑 Elite WTA separation")
+        if sim.get("wta_script", {}).get("active", False): tags.append(f"🎭 {sim.get('wta_script',{}).get('script','neutral')}")
         st.info(" · ".join(tags) if tags else "Sin perfil extremo detectado.")
 
         st.divider()
@@ -1700,7 +1817,7 @@ if modo == "Predictor":
         }
         best = max(markets.items(), key=lambda x: x[1])
         st.success(f"{best[0]} → {best[1]:.1%}")
-        st.caption(f"Tennis IA v19.1 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v19.2 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -1740,7 +1857,7 @@ elif modo == "Validador histórico":
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v19_1.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v19_2.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
@@ -1790,4 +1907,4 @@ else:
         st.divider()
         st.subheader("🧾 Detalle base")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v19_1.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v19_2.csv", mime="text/csv")
