@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.23", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.24", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.23"
-QUALITY_ENGINE_VERSION = "v22.23-clean-ui-debug-toggle-2026-05-11"
+APP_VERSION = "v22.24"
+QUALITY_ENGINE_VERSION = "v22.24-clean-ui-debug-toggle-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -1515,6 +1515,89 @@ def straight_sets_guard_engine(circuito, surface, fav_prob, hold1, hold2, tb_rat
 
     return fav20, dogset, longm, out
 
+
+def favorite_2_0_sanity_guard(circuito, surface, fav_prob, fav20, dogset, longm, rating_sanity):
+    """
+    v22.24 Favorite 2-0 Sanity Guard.
+    Evita probabilidades absurdamente altas de 2-0 cuando la confianza
+    real o la calidad del histórico no justifican tanta seguridad.
+    No toca ML ni overs; solo mercados derivados de sets.
+    """
+    out = {
+        "active": False,
+        "fav20_cap": None,
+        "dogset_floor": None,
+        "long_floor": None,
+        "notes": []
+    }
+
+    if circuito != "ATP":
+        return fav20, dogset, longm, out
+
+    rs = rating_sanity or {}
+    p1 = rs.get("p1", {}) or {}
+    p2 = rs.get("p2", {}) or {}
+    min_conf = min(p1.get("confidence", 1.0), p2.get("confidence", 1.0))
+    min_quality = min(p1.get("tour_quality", 1.0), p2.get("tour_quality", 1.0))
+    min_surface = min(p1.get("matches_surface", 99), p2.get("matches_surface", 99))
+    min_stability = min(p1.get("stability", 1.0), p2.get("stability", 1.0))
+
+    flags = []
+    flags += list(p1.get("flags", []) or [])
+    flags += list(p2.get("flags", []) or [])
+    challenger_flag = any("challenger" in str(x).lower() or "qualy" in str(x).lower() for x in flags)
+
+    cap = None
+    floor = None
+    long_floor = None
+
+    # Con confianza real limitada no puede existir un 2-0 del 90-95%.
+    if min_conf < 0.60:
+        cap = 0.66
+        floor = 0.26
+        long_floor = 0.24
+        out["notes"].append("cap 2-0 por confianza limitada")
+    elif min_conf < 0.68:
+        cap = 0.74
+        floor = 0.20
+        long_floor = 0.22
+        out["notes"].append("cap 2-0 por confianza media")
+
+    # Mucho Challenger/Qualy o calidad <70%: menos seguridad en sets corridos.
+    if min_quality < 0.70 or challenger_flag:
+        cap = min(cap if cap is not None else 0.82, 0.76)
+        floor = max(floor if floor is not None else 0.16, 0.18)
+        long_floor = max(long_floor if long_floor is not None else 0.18, 0.20)
+        out["notes"].append("cap 2-0 por calidad Challenger/Qualy")
+
+    # Muestra en superficie suficiente pero no elite: no bloquear, solo evitar 95%.
+    if min_surface < 60 or min_stability < 0.78:
+        cap = min(cap if cap is not None else 0.84, 0.80)
+        floor = max(floor if floor is not None else 0.14, 0.16)
+        out["notes"].append("cap 2-0 por muestra/stability no elite")
+
+    # Incluso un favorito ATP clay al 80% rara vez merece 95% de 2-0 salvo confianza extrema.
+    if fav_prob < 0.82:
+        cap = min(cap if cap is not None else 0.86, 0.82)
+
+    if cap is not None and fav20 > cap:
+        out["active"] = True
+        out["fav20_cap"] = float(cap)
+        fav20 = float(cap)
+
+    if floor is not None and dogset < floor:
+        out["active"] = True
+        out["dogset_floor"] = float(floor)
+        dogset = float(floor)
+
+    if long_floor is not None and longm < long_floor:
+        out["active"] = True
+        out["long_floor"] = float(long_floor)
+        longm = float(long_floor)
+
+    return float(np.clip(fav20, 0.0, 0.95)), float(np.clip(dogset, 0.05, 0.95)), float(np.clip(longm, 0.05, 0.95)), out
+
+
 def wta_match_script_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, circuito):
     """
     v19.2 Rating Sanity Engine
@@ -2197,7 +2280,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "p1_fs": 0, "p2_fs": 0,
         "fav_under22": 0, "dog_over20": 0,
         "fav_2_0": 0, "dog_wins_set": 0, "long_match": 0,
-        # v22.23 Favorite Identity Engine:
+        # v22.24 Favorite Identity Engine:
         # count straight sets / set wins by player, then decide favorite by final model probability,
         # not by raw surface Elo. This avoids labels such as "underdog wins set" being tied to Elo
         # when the final model has flipped the favorite.
@@ -2255,7 +2338,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         if tb_seen:
             res["tb"] += 1
 
-        # v22.23: player-specific set outcomes for final-model favorite markets.
+        # v22.24: player-specific set outcomes for final-model favorite markets.
         if sets1 == sets_to_win and sets2 == 0:
             res["p1_2_0"] += 1
         if sets2 == sets_to_win and sets1 == 0:
@@ -2302,7 +2385,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
 
     raw_tb = res["tb"] / n
 
-    # v22.23 Favorite Identity Engine:
+    # v22.24 Favorite Identity Engine:
     # Favorite/underdog derived markets follow the calibrated model favorite, not raw Elo.
     model_fav_is_p1 = p1_cal >= 0.50
     model_fav_name = d1.get("Player", "Jugador 1") if model_fav_is_p1 else d2.get("Player", "Jugador 2")
@@ -2400,6 +2483,11 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         rating_sanity, fav20, dogset, longm
     )
 
+    fav20_sanity_guard = {"active": False}
+    fav20, dogset, longm, fav20_sanity_guard = favorite_2_0_sanity_guard(
+        circuito, surface, fav_prob_guard, fav20, dogset, longm, rating_sanity
+    )
+
     return {
         "p1": p1_raw,
         "p2": 1 - p1_raw,
@@ -2446,6 +2534,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "elite_clay": elite_clay,
         "dominance_clay": dominance_clay,
         "straight_sets_guard": straight_sets_guard,
+        "fav20_sanity_guard": fav20_sanity_guard,
         "wta_separation": wta_sep,
         "wta_script": wta_script
     }
@@ -3205,6 +3294,8 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         risk_notes.append("confianza de datos muy baja")
     elif min_conf < 0.50:
         risk_notes.append("confianza de datos baja")
+    elif min_conf < 0.65:
+        risk_notes.append("confianza insuficiente para ML/2-0 fuerte")
     if min_surface_matches < 5:
         risk_notes.append("muestra de superficie insuficiente")
     elif min_surface_matches < 10:
@@ -3284,6 +3375,13 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         else:
             grade = "⚠️ C"
             action = "Evitar / observar"
+
+        # v22.24: con confianza <65% no dejamos señales agresivas ML/fav20.
+        # Evita casos tipo favorito 80% + 2-0 95% con calidad Challenger/Qualy.
+        if market_type in ["ml", "fav20"] and min_conf < 0.65 and action in ["APTO fuerte", "APTO"]:
+            grade = "⚖️ B"
+            action = "Solo si acompaña lectura"
+            reason = reason + " · degradado por confianza insuficiente para ML/2-0"
 
         # Trust Gate final: con confianza muy baja, como máximo B.
         if min_conf < 0.35 and action in ["APTO fuerte", "APTO"]:
@@ -3414,7 +3512,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.23")
+    st.header("🎾 Tennis IA v22.24")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3769,7 +3867,7 @@ if modo == "Predictor":
                 )
                 if qm1.get("sample_names"):
                     st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-                st.caption("Tour Quality v22.23: Favorite Identity Engine · Name Match Strict + Straight Sets Guard para favoritos claros.")
+                st.caption("Tour Quality v22.24: Favorite Identity + 2-0 Sanity Guard; evita 2-0 extremos con confianza/calidad limitada.")
             else:
                 st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
             if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -3869,7 +3967,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.23 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.24 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
