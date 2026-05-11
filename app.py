@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v21.3.3", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -704,7 +704,7 @@ def smart_set_dynamics(p1_win, p2_win, hold1, hold2, tb_rate, vol, surface, circ
 
 def wta_match_script_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, circuito):
     """
-    v19.2 ATP Clay Specialist Engine
+    v19.2 Rating Sanity Engine
     Detecta perfiles reales WTA:
     - dominadora top
     - clay grinder
@@ -784,7 +784,7 @@ def wta_match_script_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, c
 
 def elite_wta_separation(d1, d2, hold1, hold2, ret1, ret2, surface, circuito):
     """
-    v19.1 ATP Clay Specialist Engine.
+    v19.1 Rating Sanity Engine.
     La WTA no solo es caos: las top consolidan ventajas y castigan más.
     Ajusta solo WTA y protege ATP.
     """
@@ -1096,9 +1096,81 @@ def clay_dominance_preservation(d1, d2, hold1, hold2, ret1, ret2, surface, circu
         out
     )
 
+
+# =========================================================
+# v22 RATING SANITY ENGINE
+# =========================================================
+
+def rating_sanity_engine(d1, d2, surface, circuito):
+    """
+    v22 Rating Sanity Engine.
+    Detecta ratings potencialmente inflados o incoherentes.
+    De momento no destruye el core: ajusta ligeramente volatilidad
+    y sirve como diagnóstico visible.
+    """
+    def player_sanity(d):
+        rank = d.get("Rank", 999)
+        elo_surface = d.get(surface, 1500)
+        elo_hard = d.get("Hard", 1500)
+        elo_clay = d.get("Clay", 1500)
+        elo_grass = d.get("Grass", 1500)
+
+        confidence = 1.0
+        flags = []
+
+        # Elo muy alto con ranking no equivalente
+        if elo_surface >= 1900 and rank > 50:
+            confidence -= 0.25
+            flags.append("elo_surface_inflado")
+
+        if elo_surface >= 1850 and rank > 80:
+            confidence -= 0.30
+            flags.append("elo/rank incoherente")
+
+        # Delta clay-hard sospechoso
+        if surface == "Clay" and (elo_clay - elo_hard) >= 180:
+            confidence -= 0.18
+            flags.append("delta clay-hard alto")
+
+        # Jugador fuera top100 con Elo top
+        if rank > 100 and elo_surface >= 1800:
+            confidence -= 0.25
+            flags.append("muestra posible challenger/junior")
+
+        confidence = float(np.clip(confidence, 0.40, 1.00))
+        return {
+            "confidence": confidence,
+            "flags": flags,
+            "rank": rank,
+            "elo_surface": elo_surface
+        }
+
+    s1 = player_sanity(d1)
+    s2 = player_sanity(d2)
+
+    # Ajuste suave de volatilidad si hay baja confianza
+    min_conf = min(s1["confidence"], s2["confidence"])
+    vol_mult = 1.0
+    if min_conf < 0.70:
+        vol_mult = 1.10
+    elif min_conf < 0.85:
+        vol_mult = 1.05
+
+    return {
+        "p1": s1,
+        "p2": s2,
+        "vol_mult": vol_mult,
+        "active": bool(s1["flags"] or s2["flags"])
+    }
+
+
+
 def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     e1, e2 = d1[surface], d2[surface]
     elo_diff = e1 - e2
+
+    # v22 Rating Sanity Engine
+    rating_sanity = rating_sanity_engine(d1, d2, surface, circuito)
 
     # v15: usa stats específicas de superficie si existen
     s1 = get_stats_surface(d1, surface)
@@ -1130,7 +1202,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
 
     hold1, hold2 = aplicar_return_pressure(raw1, raw2, ret1, ret2, surface)
 
-    # v21 ATP Clay Specialist Engine
+    # v21 Rating Sanity Engine
     hold1, hold2, ret1, ret2, clay_engine = clay_return_weight_engine(
         d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, circuito
     )
@@ -1193,6 +1265,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     fav_est = max(elo_prob(e1, e2), 1 - elo_prob(e1, e2))
 
     vol = calcular_match_volatility(e1, e2, surface, fav_est)
+    vol *= rating_sanity.get("vol_mult", 1.0)
     if p1_big or p2_big:
         vol += 0.006
     vol += fatigue_vol_extra
@@ -1307,7 +1380,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     raw_dogset = res["dog_wins_set"] / n
     raw_long = res["long_match"] / n
 
-    # v18.1 ATP Clay Specialist Engine: se aplica después de simular, no antes.
+    # v18.1 Rating Sanity Engine: se aplica después de simular, no antes.
     set_dyn = smart_set_dynamics(
         p1_raw, 1 - p1_raw,
         hold1, hold2,
@@ -1425,6 +1498,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         "set_dynamics": set_dyn,
         "wta_engine_active": circuito == "WTA",
         "clay_engine": clay_engine,
+        "rating_sanity": rating_sanity,
         "elite_clay": elite_clay,
         "dominance_clay": dominance_clay,
         "wta_separation": wta_sep,
@@ -1586,7 +1660,7 @@ def buscar_fatigue(nombre, fatigue_map):
 
 def tournament_context_adjustments(context_row, p1_name="", p2_name=""):
     """
-    v18 ATP Clay Specialist Engine
+    v18 Rating Sanity Engine
     """
     import numpy as np
 
@@ -2015,7 +2089,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
 
 def render_betting_filters(filters):
     st.divider()
-    st.subheader("💎 ATP Clay Specialist Engine")
+    st.subheader("💎 Rating Sanity Engine")
 
     main = filters.get("main")
     status = filters.get("status", "⚠️ NO BET")
@@ -2052,8 +2126,8 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v21.3.3")
-    st.caption("ATP Clay Specialist Engine")
+    st.header("🎾 Tennis IA v22")
+    st.caption("Rating Sanity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -2166,7 +2240,7 @@ if modo == "Predictor":
 
         if circuito == "ATP" and surface == "Clay":
             st.divider()
-            st.subheader("🧱 ATP Clay Specialist Engine")
+            st.subheader("🧱 Rating Sanity Engine")
 
             ce = sim.get("clay_engine", {})
             c1,c2,c3 = st.columns(3)
@@ -2225,7 +2299,7 @@ if modo == "Predictor":
 
 
         st.divider()
-        st.subheader("🎾 ATP Clay Specialist Engine")
+        st.subheader("🎾 Rating Sanity Engine")
 
         sd = sim.get("set_dynamics", {})
 
@@ -2277,6 +2351,28 @@ if modo == "Predictor":
             with w3:
                 st.metric("Vol mult", f"{ws.get('vol_mult',1.0):.2f}")
 
+
+        st.divider()
+        st.subheader("🧠 Rating Sanity Engine")
+
+        rs = sim.get("rating_sanity", {})
+        r1c, r2c, r3c = st.columns(3)
+
+        with r1c:
+            p = rs.get("p1", {})
+            st.metric(d1["Player"], f"{p.get('confidence',1):.0%}")
+            if p.get("flags"):
+                st.caption(" · ".join(p.get("flags", [])))
+
+        with r2c:
+            p = rs.get("p2", {})
+            st.metric(d2["Player"], f"{p.get('confidence',1):.0%}")
+            if p.get("flags"):
+                st.caption(" · ".join(p.get("flags", [])))
+
+        with r3c:
+            st.metric("Vol mult", f"{rs.get('vol_mult',1.0):.2f}")
+
         st.divider()
         st.subheader("🧠 Perfil del Partido")
         tags = []
@@ -2294,6 +2390,7 @@ if modo == "Predictor":
         if sim.get("fatigue1", {}).get("fatigue_score", 0) >= 0.030: tags.append(f"🔋 Fatiga {d1['Player']}")
         if sim.get("fatigue2", {}).get("fatigue_score", 0) >= 0.030: tags.append(f"🔋 Fatiga {d2['Player']}")
         if sim.get("long_match", 0) >= 0.65: tags.append("📈 Partido largo probable")
+        if sim.get("rating_sanity", {}).get("active", False): tags.append("🧠 Rating sanity activo")
         if circuito == "ATP" and surface == "Clay" and sim.get("clay_engine", {}).get("active", False):
             tags.append(f"🧱 Clay engine: {sim.get('clay_engine', {}).get('profile','neutral')}")
         if sim.get("fav_2_0", 0) >= 0.55: tags.append("🔥 Spot favorito 2-0")
@@ -2322,7 +2419,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v21.3.3 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -2362,7 +2459,7 @@ elif modo == "Validador histórico":
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v21_2.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v22.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
@@ -2412,4 +2509,4 @@ else:
         st.divider()
         st.subheader("🧾 Detalle base")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v21_2.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v22.csv", mime="text/csv")
