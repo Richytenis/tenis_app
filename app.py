@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.19", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.20", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.19"
-QUALITY_ENGINE_VERSION = "v22.19-ux-polish-direct-challenger-2026-05-11"
+APP_VERSION = "v22.20"
+QUALITY_ENGINE_VERSION = "v22.20-straight-sets-guard-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -1405,6 +1405,84 @@ def smart_set_dynamics(p1_win, p2_win, hold1, hold2, tb_rate, vol, surface, circ
 
 
 
+
+
+def straight_sets_guard_engine(circuito, surface, fav_prob, hold1, hold2, tb_rate, vol, rating_sanity, fav20, dogset, longm):
+    """
+    v22.20 Straight Sets Guard.
+    Separa dos ideas que antes se mezclaban demasiado:
+    - Over bajo útil: 6-4 6-4 / 7-5 6-3 puede ser buen over.
+    - Partido largo / dog gana set: no debe inflarse si el favorito tiene control real.
+
+    No toca ganador ni mercados over calculados por games. Solo ajusta:
+    - favorito 2-0
+    - underdog gana set
+    - partido largo
+    """
+    out = {
+        "active": False,
+        "profile": "neutral",
+        "fav20_boost": 0.0,
+        "dogset_cut": 0.0,
+        "long_cut": 0.0,
+        "hold_gap": float(abs(hold1 - hold2)),
+        "notes": []
+    }
+
+    if circuito != "ATP":
+        return fav20, dogset, longm, out
+
+    rs = rating_sanity or {}
+    p1_rs = rs.get("p1", {}) or {}
+    p2_rs = rs.get("p2", {}) or {}
+    min_conf = min(p1_rs.get("confidence", 1.0), p2_rs.get("confidence", 1.0))
+    min_surface = min(p1_rs.get("matches_surface", 99), p2_rs.get("matches_surface", 99))
+    min_stability = min(p1_rs.get("stability", 1.0), p2_rs.get("stability", 1.0))
+
+    hold_gap = abs(hold1 - hold2)
+
+    # Condiciones de activación: favorito real, datos fiables y diferencia clara de hold.
+    if fav_prob < 0.615:
+        return fav20, dogset, longm, out
+    if fav_prob > 0.735:
+        # Los favoritos muy fuertes ya tienen protecciones previas; evitamos doble conteo.
+        return fav20, dogset, longm, out
+    if min_conf < 0.74 or min_surface < 35 or min_stability < 0.72:
+        return fav20, dogset, longm, out
+    if hold_gap < 0.070:
+        return fav20, dogset, longm, out
+    if tb_rate >= 0.34:
+        # Si hay entorno fuerte de tie-break, no forzamos 2-0.
+        return fav20, dogset, longm, out
+
+    boost = 0.030
+    if fav_prob >= 0.64: boost += 0.012
+    if fav_prob >= 0.67: boost += 0.010
+    if hold_gap >= 0.085: boost += 0.018
+    if hold_gap >= 0.105: boost += 0.012
+    if min_conf >= 0.82: boost += 0.010
+    if min_surface >= 100: boost += 0.008
+    if tb_rate <= 0.27: boost += 0.006
+    if surface == "Clay": boost *= 0.95
+
+    boost = float(np.clip(boost, 0.0, 0.095))
+    dog_cut = float(np.clip(boost * 1.05, 0.0, 0.105))
+    long_cut = float(np.clip(boost * 0.82, 0.0, 0.085))
+
+    out["active"] = True
+    out["profile"] = "controlled_favorite"
+    out["fav20_boost"] = boost
+    out["dogset_cut"] = dog_cut
+    out["long_cut"] = long_cut
+    out["notes"].append("favorito fiable con ventaja clara de hold")
+    out["notes"].append("over bajo no implica partido largo")
+
+    fav20 = float(np.clip(fav20 + boost, 0.0, 0.95))
+    dogset = float(np.clip(dogset - dog_cut, 0.05, 0.95))
+    longm = float(np.clip(longm - long_cut, 0.05, 0.95))
+
+    return fav20, dogset, longm, out
+
 def wta_match_script_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, circuito):
     """
     v19.2 Rating Sanity Engine
@@ -2260,6 +2338,14 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         dogset = float(np.clip(dogset, 0.05, 0.95))
         longm = float(np.clip(longm, 0.05, 0.95))
 
+    # v22.20 Straight Sets Guard: buen over bajo no debe inflar dog set/partido largo.
+    straight_sets_guard = {"active": False, "profile": "neutral"}
+    fav_prob_guard = max(p1_cal, 1 - p1_cal)
+    fav20, dogset, longm, straight_sets_guard = straight_sets_guard_engine(
+        circuito, surface, fav_prob_guard, hold1, hold2, raw_tb, vol,
+        rating_sanity, fav20, dogset, longm
+    )
+
     return {
         "p1": p1_raw,
         "p2": 1 - p1_raw,
@@ -2302,6 +2388,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "rating_sanity": rating_sanity,
         "elite_clay": elite_clay,
         "dominance_clay": dominance_clay,
+        "straight_sets_guard": straight_sets_guard,
         "wta_separation": wta_sep,
         "wta_script": wta_script
     }
@@ -3269,7 +3356,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.19")
+    st.header("🎾 Tennis IA v22.20")
     st.caption("UX Polish + Direct Challenger Count")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3517,6 +3604,16 @@ if modo == "Predictor":
         with s3:
             st.metric("Long match adj", f"{sd.get('long_match_adj',0):+.1%}")
 
+        ssg = sim.get("straight_sets_guard", {}) or {}
+        if ssg.get("active", False):
+            st.info(
+                f"🧭 Straight Sets Guard activo · 2-0 {ssg.get('fav20_boost',0):+.1%} · "
+                f"Dog set {ssg.get('dogset_cut',0):-.1%} · Largo {ssg.get('long_cut',0):-.1%}"
+            )
+            notes = ssg.get("notes", [])
+            if notes:
+                st.caption(" · ".join(notes))
+
 
 
         if sim.get("wta_engine_active", False):
@@ -3612,7 +3709,7 @@ if modo == "Predictor":
             )
             if qm1.get("sample_names"):
                 st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-            st.caption("Tour Quality v22.19: conteo directo cacheado por jugador + pulido UX de carga/simulación.")
+            st.caption("Tour Quality v22.20: añade Straight Sets Guard para separar over bajo fuerte de partido largo/dog set.")
         else:
             st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
         if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -3712,7 +3809,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.19 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.20 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
