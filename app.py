@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.33 Elite Blowout", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.34 Fast Mode", page_icon="🎾", layout="wide")
 
 APP_VERSION = "v22.27"
-QUALITY_ENGINE_VERSION = "v22.33-elite-blowout-2026-05-11"
+QUALITY_ENGINE_VERSION = "v22.34-fast-mode-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -2570,7 +2570,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "p1_wins_set_any": 0, "p2_wins_set_any": 0
     }
 
-    progress_step = max(1, min(100, n // 100))
+    # v22.34: menos llamadas a Streamlit durante la simulación = más rápido
+    progress_step = max(1, n // 25)
 
     if progress_callback is not None:
         try:
@@ -3880,7 +3881,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.33 Elite Blowout")
+    st.header("🎾 Tennis IA v22.34 Fast Mode")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3917,7 +3918,26 @@ if modo == "Predictor":
         players = sorted(db.keys())
         surface = st.selectbox("Superficie", ["Hard","Clay","Grass"])
         formato = st.radio("Formato", ["ATP Tour (3 sets)", "Grand Slam (5 sets)"])
-        sims = st.select_slider("Simulaciones", [5000,10000,20000], value=10000)
+        modo_velocidad = st.radio(
+            "Velocidad",
+            ["⚡ Rápido", "⚖️ Equilibrado", "🎯 Preciso"],
+            index=1,
+            help="Rápido usa menos simulaciones y responde antes. Preciso es más lento."
+        )
+        sims = st.select_slider(
+            "Simulaciones",
+            [1000, 2500, 5000, 10000, 20000],
+            value=5000
+        )
+
+        if modo_velocidad.startswith("⚡"):
+            sims = min(sims, 2500)
+            st.caption("⚡ Modo rápido: máximo 2.500 sims para acelerar.")
+        elif modo_velocidad.startswith("⚖️"):
+            sims = min(sims, 5000)
+            st.caption("⚖️ Modo equilibrado: máximo 5.000 sims.")
+        else:
+            st.caption("🎯 Modo preciso: usa el valor seleccionado.")
 
     c1, c2 = st.columns(2)
     with c1: p1_name = st.selectbox("Jugador 1", players)
@@ -3926,6 +3946,8 @@ if modo == "Predictor":
     if st.button("🚀 ANALIZAR PARTIDO", width='stretch'):
         d1, d2 = db[p1_name], db[p2_name]
         best_of = 5 if "5" in formato else 3
+        if sims >= 10000:
+            st.warning("🎯 Modo preciso: puede tardar bastante en Streamlit Cloud. Para pruebas rápidas usa 2.500 o 5.000 sims.")
         sim_status = st.status(f"🎲 Simulando {sims:,} partidos Monte Carlo...", expanded=True)
         with sim_status:
             sim_bar = st.progress(0, text="Preparando motores de simulación...")
@@ -4355,7 +4377,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.33 Elite Blowout · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.34 Fast Mode · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
