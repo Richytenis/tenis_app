@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.4", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.5", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -494,6 +494,47 @@ def crear_quality_map(circuito):
     return quality
 
 
+
+def closest_quality_candidates(nombre, quality_map, limit=6):
+    """
+    v22.5 Name Radar.
+    Devuelve los candidatos históricos más parecidos aunque no pasen el umbral.
+    Sirve para detectar si el histórico usa otro formato de nombre o si el jugador no existe.
+    """
+    candidates = []
+    for qid, data in quality_map.items():
+        if str(qid).startswith("__"):
+            continue
+        labels = [qid] + list(data.get("raw_names", [])) + list(data.get("aliases", []))
+        best_score = 0.0
+        best_label = qid
+        for cand in labels:
+            sc = similitud_nombre(nombre, cand)
+            t_user = tokens(nombre)
+            t_cand = tokens(cand)
+            if len(t_user) >= 2 and len(t_cand) >= 1:
+                user_first = t_user[0]
+                user_last = t_user[-1]
+                # Apellido + inicial en cualquier orden: Matteo Arnaldi vs Arnaldi M / M Arnaldi
+                if user_last in t_cand and any(x.startswith(user_first[0]) for x in t_cand if x != user_last):
+                    sc = max(sc, 0.94)
+                # Formato invertido completo: Arnaldi Matteo
+                if user_last in t_cand and user_first in t_cand:
+                    sc = max(sc, 0.98)
+            if sc > best_score:
+                best_score = sc
+                best_label = cand
+        if best_score > 0:
+            candidates.append({
+                "name": best_label,
+                "score": float(best_score),
+                "matches_total": int(data.get("matches_total", 0)),
+                "surface": data.get("matches_surface", {}),
+                "source_files": data.get("source_files", [])[:3],
+            })
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    return candidates[:limit]
+
 def buscar_quality(nombre, quality_map):
     """
     v22.3: busca primero por alias fuerte y después por similitud contra nombres reales.
@@ -547,6 +588,7 @@ def buscar_quality(nombre, quality_map):
         out["match_score"] = float(best)
         return out
 
+    # No encontrado: devolvemos radar de candidatos para depurar el histórico.
     return {
         "matches_total": 0,
         "matches_surface": {"Hard": 0, "Clay": 0, "Grass": 0},
@@ -559,6 +601,8 @@ def buscar_quality(nombre, quality_map):
         "source_files": [],
         "matched_name": "NO ENCONTRADO",
         "match_score": 0.0,
+        "quality_map_size": len([k for k in quality_map.keys() if not str(k).startswith("__")]),
+        "candidate_matches": closest_quality_candidates(nombre, quality_map, limit=6),
     }
 
 @st.cache_data
@@ -1491,7 +1535,9 @@ def rating_sanity_engine(d1, d2, surface, circuito):
             "matched_name": q.get("matched_name", "N/A"),
             "match_score": float(q.get("match_score", 0.0)),
             "raw_names": q.get("raw_names", []),
-            "source_files": q.get("source_files", [])
+            "source_files": q.get("source_files", []),
+            "quality_map_size": int(q.get("quality_map_size", 0)),
+            "candidate_matches": q.get("candidate_matches", [])
         }
 
     s1 = player_sanity(d1)
@@ -1511,7 +1557,7 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         "p2": s2,
         "vol_mult": vol_mult,
         "active": bool(s1["flags"] or s2["flags"]),
-        "version": "v22.4"
+        "version": "v22.5"
     }
 
 
@@ -1861,7 +1907,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
 
 def cargar_historicos(circuito):
     """
-    v22.4 Historical Loader Fix.
+    v22.5 Historical Loader + Name Radar.
     Antes solo leía .xlsx. Ahora lee .xlsx/.xls/.csv y no falla si los históricos
     vienen de tennis-data, Ultimate Tennis Stats exportado o ficheros propios.
     """
@@ -2653,8 +2699,8 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.4")
-    st.caption("Match Count Loader Fix + Tour Quality Engine")
+    st.header("🎾 Tennis IA v22.5")
+    st.caption("Match Count Loader Fix + Name Radar")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -2920,6 +2966,12 @@ if modo == "Predictor":
 
         st.caption("🔎 Match Count Debug")
         hist_diag = historicos_diagnostics(circuito)
+        st.caption(
+            f"Históricos: files={hist_diag.get('files_count',0)} · rows={hist_diag.get('rows',0)} · "
+            f"Winner={hist_diag.get('winner_col')} · Loser={hist_diag.get('loser_col')} · Surface={hist_diag.get('surface_col')}"
+        )
+        if hist_diag.get("sample_players"):
+            st.caption("Ejemplos histórico: " + ", ".join(hist_diag.get("sample_players", [])[:8]))
         if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
             st.warning(
                 "Históricos no detectados bien: "
@@ -2948,6 +3000,12 @@ if modo == "Predictor":
             st.caption(f"Tour/Ch/ITF/Q/Unk {lc.get('tour',0)}/{lc.get('challenger',0)}/{lc.get('itf',0)}/{lc.get('qualy',0)}/{lc.get('unknown',0)}")
             if dbg1.get('source_files'):
                 st.caption("Files: " + ", ".join(dbg1.get('source_files', [])[:4]))
+            if dbg1.get('candidate_matches'):
+                radar = []
+                for c in dbg1.get('candidate_matches', [])[:4]:
+                    sf = c.get('surface', {}) if isinstance(c.get('surface', {}), dict) else {}
+                    radar.append(f"{c.get('name','?')} {c.get('score',0):.0%} ({c.get('matches_total',0)} · C{sf.get('Clay',0)})")
+                st.caption("Radar nombres: " + " | ".join(radar))
         with dc2:
             st.caption(
                 f"{d2['Player']} → match: {dbg2.get('matched_name','N/A')} "
@@ -2960,6 +3018,12 @@ if modo == "Predictor":
             st.caption(f"Tour/Ch/ITF/Q/Unk {lc.get('tour',0)}/{lc.get('challenger',0)}/{lc.get('itf',0)}/{lc.get('qualy',0)}/{lc.get('unknown',0)}")
             if dbg2.get('source_files'):
                 st.caption("Files: " + ", ".join(dbg2.get('source_files', [])[:4]))
+            if dbg2.get('candidate_matches'):
+                radar = []
+                for c in dbg2.get('candidate_matches', [])[:4]:
+                    sf = c.get('surface', {}) if isinstance(c.get('surface', {}), dict) else {}
+                    radar.append(f"{c.get('name','?')} {c.get('score',0):.0%} ({c.get('matches_total',0)} · C{sf.get('Clay',0)})")
+                st.caption("Radar nombres: " + " | ".join(radar))
 
         st.divider()
         st.subheader("🧠 Perfil del Partido")
@@ -3007,7 +3071,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.4 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.5 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
