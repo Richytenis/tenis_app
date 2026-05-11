@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.2 SAFE", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.27", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.2-safe"
-QUALITY_ENGINE_VERSION = "v23.2-safe-rollback-2026-05-11"
+APP_VERSION = "v22.27"
+QUALITY_ENGINE_VERSION = "v22.27-upset-label-cleanup-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -3654,7 +3654,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.2 SAFE")
+    st.header("🎾 Tennis IA v22.27")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -4009,7 +4009,7 @@ if modo == "Predictor":
                 )
                 if qm1.get("sample_names"):
                     st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-                st.caption("Tour Quality v23.2 SAFE: amplía Upset Risk Guard para favoritos clay con dog de muestra corta; limpia etiquetas contradictorias.")
+                st.caption("Tour Quality v22.27: amplía Upset Risk Guard para favoritos clay con dog de muestra corta; limpia etiquetas contradictorias.")
             else:
                 st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
             if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -4117,7 +4117,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.2 SAFE · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.27 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
