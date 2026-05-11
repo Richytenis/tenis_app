@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.30 Low Over Split", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.31 Elite Clay Opponent", page_icon="🎾", layout="wide")
 
 APP_VERSION = "v22.27"
-QUALITY_ENGINE_VERSION = "v22.30-low-over-split-2026-05-11"
+QUALITY_ENGINE_VERSION = "v22.31-elite-clay-opponent-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -1804,6 +1804,82 @@ def low_over_long_match_split_guard(circuito, surface, p1_cal, e1, e2, hold1, ho
 
     return fav20, dogset, longm, out
 
+
+def elite_clay_opponent_guard(circuito, surface, p1_cal, e1, e2, rating_sanity, fav20, dogset, longm):
+    """
+    v22.31 Elite Clay Opponent Guard.
+    Evita 2-0 demasiado extremos cuando el underdog también es jugador clay fuerte.
+    No toca ML ni overs; solo mercados derivados de sets.
+    """
+    out = {
+        "active": False,
+        "profile": "neutral",
+        "fav20_cap": None,
+        "dogset_floor": None,
+        "notes": []
+    }
+
+    if circuito != "ATP" or surface != "Clay":
+        return fav20, dogset, longm, out
+
+    rs = rating_sanity or {}
+    p1 = rs.get("p1", {}) or {}
+    p2 = rs.get("p2", {}) or {}
+
+    min_conf = min(p1.get("confidence", 1.0), p2.get("confidence", 1.0))
+    min_surface = min(p1.get("matches_surface", 99), p2.get("matches_surface", 99))
+    min_quality = min(p1.get("tour_quality", 1.0), p2.get("tour_quality", 1.0))
+
+    fav_prob = max(float(p1_cal), 1.0 - float(p1_cal))
+    fav_is_p1 = p1_cal >= 0.50
+
+    fav_elo = e1 if fav_is_p1 else e2
+    dog_elo = e2 if fav_is_p1 else e1
+    elo_gap = fav_elo - dog_elo
+
+    # Rival clay fuerte: no tratar su set como casi imposible.
+    trigger = (
+        circuito == "ATP"
+        and surface == "Clay"
+        and 0.68 <= fav_prob <= 0.80
+        and fav20 >= 0.74
+        and dog_elo >= 1840
+        and elo_gap <= 115
+        and min_conf >= 0.78
+        and min_surface >= 90
+        and min_quality >= 0.72
+    )
+
+    if not trigger:
+        return fav20, dogset, longm, out
+
+    cap = 0.72
+    floor = 0.26
+
+    # Si el favorito no llega al 75%, todavía menos agresivo con el 2-0.
+    if fav_prob < 0.75:
+        cap = 0.70
+        floor = 0.28
+
+    # Si el underdog clay está por encima de 1870, subir un poco su capacidad de set.
+    if dog_elo >= 1870:
+        cap = min(cap, 0.70)
+        floor = max(floor, 0.28)
+
+    fav20 = float(min(fav20, cap))
+    dogset = float(max(dogset, floor))
+
+    # Partido largo no lo subimos demasiado: puede ser 7-6 6-4 como Musetti/Cerundolo.
+    longm = float(max(longm, 0.30))
+
+    out["active"] = True
+    out["profile"] = "elite_clay_opponent"
+    out["fav20_cap"] = float(cap)
+    out["dogset_floor"] = float(floor)
+    out["notes"].append("underdog clay fuerte: 2-0 no debe ser extremo")
+
+    return float(np.clip(fav20, 0.0, 0.95)), float(np.clip(dogset, 0.05, 0.95)), float(np.clip(longm, 0.05, 0.95)), out
+
 def wta_match_script_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, circuito):
     """
     v19.2 Rating Sanity Engine
@@ -2708,6 +2784,11 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         rating_sanity, fav20, dogset, longm, upset_risk_guard
     )
 
+    elite_clay_opponent_guard_info = {"active": False, "profile": "neutral"}
+    fav20, dogset, longm, elite_clay_opponent_guard_info = elite_clay_opponent_guard(
+        circuito, surface, p1_cal, e1, e2, rating_sanity, fav20, dogset, longm
+    )
+
     return {
         "p1": p1_raw,
         "p2": 1 - p1_raw,
@@ -2757,6 +2838,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "fav20_sanity_guard": fav20_sanity_guard,
         "upset_risk_guard": upset_risk_guard,
         "low_over_split_guard": low_over_split_guard,
+        "elite_clay_opponent_guard": elite_clay_opponent_guard_info,
         "wta_separation": wta_sep,
         "wta_script": wta_script
     }
@@ -3751,7 +3833,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.30 Low Over Split")
+    st.header("🎾 Tennis IA v22.31 Elite Clay Opponent")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -4216,7 +4298,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.30 Low Over Split · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.31 Elite Clay Opponent · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
