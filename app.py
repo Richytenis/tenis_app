@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.9", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.10", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.9"
-QUALITY_ENGINE_VERSION = "v22.9-tour-quality-fix-2026-05-11"
+APP_VERSION = "v22.10"
+QUALITY_ENGINE_VERSION = "v22.10-signal-quality-guard-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -1807,6 +1807,9 @@ def rating_sanity_engine(d1, d2, surface, circuito):
             confidence -= 0.06
             flags.append("pocos partidos totales")
 
+        if matches_surface < 10 and matches_total < 30 and level_counts.get("tour", 0) >= max(1, int(matches_total * 0.80)):
+            flags.append("muestra ATP pequeña")
+
         if tour_quality < 0.52:
             confidence -= 0.10
             flags.append("calidad ITF/unknown alta")
@@ -1885,7 +1888,7 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         "p2": s2,
         "vol_mult": vol_mult,
         "active": bool(s1["flags"] or s2["flags"]),
-        "version": "v22.8"
+        "version": APP_VERSION
     }
 
 
@@ -2287,6 +2290,14 @@ def historicos_diagnostics(circuito):
     col_winner = buscar_columna(hist, ["Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"] )
     col_loser = buscar_columna(hist, ["Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"] )
     col_surface = buscar_columna(hist, ["Surface", "Superficie", "Court Surface", "Court", "surface_name"] )
+    level_cols_found = [c for c in ["Series", "Level", "Tour", "Category", "Circuit", "Event Type", "Tournament", "Event", "Round", "Comment", "SourceFile"] if c in hist.columns]
+    level_samples = {}
+    for c in level_cols_found[:8]:
+        try:
+            vals = [normalizar_texto(x) for x in hist[c].dropna().astype(str).unique().tolist()[:6]]
+            level_samples[c] = vals
+        except Exception:
+            level_samples[c] = []
 
     samples = []
     if col_winner is not None:
@@ -2310,6 +2321,8 @@ def historicos_diagnostics(circuito):
         "date_min": date_min, "date_max": date_max,
         "sample_players": samples[:8],
         "sample_files": [os.path.basename(x) for x in files[:6]],
+        "level_cols": level_cols_found,
+        "level_samples": level_samples,
     }
 
 
@@ -2757,6 +2770,7 @@ def aplicar_market_sanity_caps(sim, circuito, surface, over18, over19, over20, o
     min_conf = min(p1_rs.get("confidence", 1.0), p2_rs.get("confidence", 1.0))
     min_surface_matches = min(p1_rs.get("matches_surface", 99), p2_rs.get("matches_surface", 99))
     fav_prob = max(sim.get("p1_cal", 0.5), sim.get("p2_cal", 0.5))
+    elo_pure_gap = abs(sim.get("fav_raw_est", 0.5) - fav_prob)
 
     notes = []
     o18, o19, o20, o22 = over18, over19, over20, over22
@@ -2774,6 +2788,19 @@ def aplicar_market_sanity_caps(sim, circuito, surface, over18, over19, over20, o
             if o19 > cap19:
                 o19 = cap19
                 notes.append(f"Over 19.5 capado a {cap19:.0%} por baja confianza clay")
+
+        # v22.10: muestra aceptable pero todavía corta + Elo puro muy separado del modelo.
+        # Ejemplo: dog con 8 partidos clay y gap ~15-16%; no debe escalar a SPOT APTO.
+        if min_surface_matches < 10 and elo_pure_gap >= 0.14:
+            cap18 = 0.74 if fav_prob < 0.58 else 0.75
+            if o18 > cap18:
+                o18 = cap18
+                notes.append(f"Over 18.5 capado a {cap18:.0%} por muestra clay corta + gap Elo/modelo")
+
+            cap19 = 0.68 if fav_prob < 0.58 else 0.69
+            if o19 > cap19:
+                o19 = cap19
+                notes.append(f"Over 19.5 capado a {cap19:.0%} por muestra clay corta + gap Elo/modelo")
 
         # Si el favorito es muy débil, evitamos transformar un partido abierto
         # automáticamente en spot fuerte de over bajo.
@@ -2839,7 +2866,9 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         risk_notes.append("confianza de datos baja")
     if min_surface_matches < 5:
         risk_notes.append("muestra de superficie insuficiente")
-    if elo_pure_gap >= 0.16:
+    elif min_surface_matches < 10:
+        risk_notes.append("muestra de superficie corta")
+    if elo_pure_gap >= 0.14:
         risk_notes.append("Elo puro y modelo final muy separados")
 
     zone_score = 0
@@ -2879,7 +2908,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         if min_surface_matches < 5:
             score -= 1
 
-        if elo_pure_gap >= 0.16:
+        if elo_pure_gap >= 0.14:
             score -= 1
 
         # Over 18.5 es útil, pero antes salía demasiado como "spot fuerte".
@@ -2924,6 +2953,13 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             grade = "✅ A"
             action = "APTO"
             reason = reason + " · sin A+ por confianza limitada"
+
+        # v22.10: guardia de calidad combinada. Aunque la probabilidad sea alta,
+        # una muestra clay corta y un gap Elo/modelo alto no pueden salir como APTO.
+        if min_surface_matches < 10 and elo_pure_gap >= 0.14 and action in ["APTO fuerte", "APTO"]:
+            grade = "⚖️ B"
+            action = "Solo si acompaña lectura"
+            reason = reason + " · degradado por muestra clay corta + gap Elo/modelo"
 
         signals.append({
             "Mercado": name,
@@ -3036,7 +3072,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.9")
+    st.header("🎾 Tennis IA v22.10")
     st.caption("Match Count Loader Fix + Name Radar Pro + Cache Breaker")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3310,6 +3346,14 @@ if modo == "Predictor":
         )
         if hist_diag.get("sample_players"):
             st.caption("Ejemplos histórico: " + ", ".join(hist_diag.get("sample_players", [])[:8]))
+        if hist_diag.get("level_cols"):
+            st.caption("Columnas nivel: " + ", ".join([str(x) for x in hist_diag.get("level_cols", [])[:8]]))
+            sample_bits = []
+            for col, vals in (hist_diag.get("level_samples", {}) or {}).items():
+                if vals:
+                    sample_bits.append(f"{col}={', '.join([str(v) for v in vals[:4]])}")
+            if sample_bits:
+                st.caption("Ejemplos nivel: " + " · ".join(sample_bits[:4]))
         # Debug interno del Quality Map/cache. Si esto sale a 0, Streamlit está usando un mapa vacío o cache viejo.
         qm1 = rs.get("p1", {}).get("quality_meta", {}) or rs.get("p2", {}).get("quality_meta", {}) or {}
         if qm1:
@@ -3318,7 +3362,7 @@ if modo == "Predictor":
             )
             if qm1.get("sample_names"):
                 st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-            st.caption("Tour Quality v22.9: Tour solo con evidencia explícita; si el histórico no trae Series/Level claro, cuenta como Unknown.")
+            st.caption("Tour Quality v22.10: Tour solo con evidencia explícita; añade guardia extra si hay muestra pequeña + gap Elo/modelo alto.")
         else:
             st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
         if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -3418,7 +3462,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.9 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.10 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
