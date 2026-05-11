@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v21.1", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v21.2.2", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -1047,6 +1047,55 @@ def clay_market_adjustments(circuito, surface, clay_engine, fav20, dogset, longm
     )
 
 
+
+def clay_dominance_preservation(d1, d2, hold1, hold2, ret1, ret2, surface, circuito):
+    out = {
+        "active": False, "fav": "", "profile": "neutral", "vol_mult": 1.0,
+        "market_fav20_mult": 1.0, "market_dogset_mult": 1.0, "market_long_mult": 1.0
+    }
+    if circuito != "ATP" or surface != "Clay":
+        return hold1, hold2, ret1, ret2, out
+
+    r1, r2 = d1.get("Rank",999), d2.get("Rank",999)
+    e1, e2 = d1.get("Clay",1500), d2.get("Clay",1500)
+    h1elo, h2elo = d1.get("Hard",1500), d2.get("Hard",1500)
+
+    if e1 >= e2:
+        fav = "p1"; fav_rank = r1; fav_elo = e1; dog_elo = e2; fav_delta = e1-h1elo; dog_delta = e2-h2elo
+    else:
+        fav = "p2"; fav_rank = r2; fav_elo = e2; dog_elo = e1; fav_delta = e2-h2elo; dog_delta = e1-h1elo
+
+    elo_gap = fav_elo - dog_elo
+    elite_specialist = fav_elo >= 1920 and elo_gap >= 70
+    clay_identity = fav_delta >= dog_delta + 45 and elo_gap >= 60
+    proven = fav_rank <= 30 and elo_gap >= 75
+
+    if elite_specialist or clay_identity or proven:
+        out["active"] = True
+        out["fav"] = fav
+        out["profile"] = "clay_dominator"
+        hold_boost = 0.022 if elite_specialist else 0.016
+        ret_boost = 0.016 if elite_specialist else 0.012
+        dog_hold_nerf = -0.012
+        dog_ret_nerf = -0.006
+        out["vol_mult"] = 0.82 if elite_specialist else 0.88
+        out["market_fav20_mult"] = 1.24 if elite_specialist else 1.16
+        out["market_dogset_mult"] = 0.72 if elite_specialist else 0.82
+        out["market_long_mult"] = 0.76 if elite_specialist else 0.84
+
+        if fav == "p1":
+            hold1 += hold_boost; ret1 += ret_boost; hold2 += dog_hold_nerf; ret2 += dog_ret_nerf
+        else:
+            hold2 += hold_boost; ret2 += ret_boost; hold1 += dog_hold_nerf; ret1 += dog_ret_nerf
+
+    return (
+        np.clip(hold1,0.42,0.86),
+        np.clip(hold2,0.42,0.86),
+        np.clip(ret1,0.10,0.42),
+        np.clip(ret2,0.10,0.42),
+        out
+    )
+
 def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     e1, e2 = d1[surface], d2[surface]
     elo_diff = e1 - e2
@@ -1088,6 +1137,11 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
 
     # v21.1 Elite ATP Clay Protection
     hold1, hold2, ret1, ret2, elite_clay = elite_atp_clay_protection(
+        d1, d2, hold1, hold2, ret1, ret2, surface, circuito
+    )
+
+    # v21.2 Clay Dominance Preservation
+    hold1, hold2, ret1, ret2, dominance_clay = clay_dominance_preservation(
         d1, d2, hold1, hold2, ret1, ret2, surface, circuito
     )
 
@@ -1147,7 +1201,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     if circuito == "ATP" and surface == "Clay":
         vol *= clay_engine.get("vol_mult", 1.0)
         vol *= elite_clay.get("vol_mult", 1.0)
-        vol = float(np.clip(vol, 0.018, 0.070))
+        vol *= dominance_clay.get("vol_mult", 1.0)
+        vol = float(np.clip(vol, 0.016, 0.070))
 
     # v19 WTA Controlled Chaos:
     # WTA sigue siendo variable, pero protegemos top players y gaps grandes.
@@ -1324,6 +1379,15 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         dogset = float(np.clip(dogset, 0.05, 0.95))
         longm = float(np.clip(longm, 0.05, 0.95))
 
+    # v21.2 Clay Dominance market logic
+    if circuito == "ATP" and surface == "Clay" and dominance_clay.get("active", False):
+        fav20 *= dominance_clay.get("market_fav20_mult", 1.0)
+        dogset *= dominance_clay.get("market_dogset_mult", 1.0)
+        longm *= dominance_clay.get("market_long_mult", 1.0)
+        fav20 = float(np.clip(fav20, 0.0, 0.95))
+        dogset = float(np.clip(dogset, 0.05, 0.95))
+        longm = float(np.clip(longm, 0.05, 0.95))
+
     return {
         "p1": p1_raw,
         "p2": 1 - p1_raw,
@@ -1362,6 +1426,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         "wta_engine_active": circuito == "WTA",
         "clay_engine": clay_engine,
         "elite_clay": elite_clay,
+        "dominance_clay": dominance_clay,
         "wta_separation": wta_sep,
         "wta_script": wta_script
     }
@@ -1987,7 +2052,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v21.1")
+    st.header("🎾 Tennis IA v21.2.2")
     st.caption("ATP Clay Specialist Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -2257,7 +2322,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v21.1 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v21.2.2 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -2297,7 +2362,7 @@ elif modo == "Validador histórico":
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v21_1.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v21_2.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
@@ -2347,4 +2412,4 @@ else:
         st.divider()
         st.subheader("🧾 Detalle base")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v21_1.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v21_2.csv", mime="text/csv")
