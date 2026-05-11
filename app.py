@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.2", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -278,19 +278,44 @@ def buscar_stats(nombre, stats_map):
 def detectar_nivel_torneo(row):
     """
     Clasifica la calidad de procedencia del partido histórico.
-    Funciona aunque el Excel use Series/Tournament/Level/SourceFile.
+    v22.2: lectura más robusta de Series/Tournament/Level/SourceFile.
     """
-    txt = " ".join(str(row.get(c, "")) for c in ["Series", "Tournament", "Level", "SourceFile", "Comment"]).lower()
+    txt = " ".join(str(row.get(c, "")) for c in ["Series", "Tournament", "Level", "Round", "SourceFile", "Comment"]).lower()
+    txt_clean = re.sub(r"[^a-z0-9]+", " ", txt)
 
-    if any(x in txt for x in ["grand slam", "masters", "atp 1000", "wta 1000", "atp 500", "wta 500", "atp 250", "wta 250", "tour"]):
-        return "tour"
-    if "challenger" in txt or "ch " in txt or " ch" in txt:
-        return "challenger"
-    if any(x in txt for x in ["itf", "futures", "m15", "m25", "w15", "w25", "w35", "w50", "w75", "w100"]):
-        return "itf"
-    if "qual" in txt or "q-" in txt:
+    # Qualy primero: no queremos tratar una qualy ATP/WTA como main tour completo.
+    if any(x in txt_clean for x in [" qual", " qualifying", " qualification", " q ", " q1 ", " q2 ", " q3 "]):
         return "qualy"
+
+    if any(x in txt_clean for x in [
+        "grand slam", "masters", "masters 1000", "atp1000", "wta1000",
+        "atp 1000", "wta 1000", "atp500", "wta500", "atp 500", "wta 500",
+        "atp250", "wta250", "atp 250", "wta 250", "main tour", "tour"
+    ]):
+        return "tour"
+
+    if any(x in txt_clean for x in ["challenger", " challenger ", " ch ", "ch125", "ch 125", "ch100", "ch 100", "ch75", "ch 75", "ch50", "ch 50"]):
+        return "challenger"
+
+    if any(x in txt_clean for x in ["itf", "futures", "m15", "m25", "m35", "w15", "w25", "w35", "w50", "w75", "w100"]):
+        return "itf"
+
     return "unknown"
+
+
+def normalizar_superficie_hist(v, default="Hard"):
+    """Normaliza superficies históricas: C/Clay/Red Clay, H/Hard, G/Grass."""
+    raw = normalizar_texto(v).strip()
+    key = limpiar(raw)
+    if key in ["C", "CL", "CLAY", "REDCLAY", "RCLAY", "TIERRA", "TIERRABATIDA"] or "CLAY" in key:
+        return "Clay"
+    if key in ["G", "GR", "GRASS", "LAWN", "HIERBA"] or "GRASS" in key:
+        return "Grass"
+    if key in ["H", "HD", "HARD", "HARDO", "INDOORHARD", "OUTDOORHARD"] or "HARD" in key:
+        return "Hard"
+    if key in ["CARPET", "CARPETA"]:
+        return "Hard"
+    return default
 
 
 def crear_quality_map(circuito):
@@ -323,9 +348,7 @@ def crear_quality_map(circuito):
 
     for _, row in df.iterrows():
         level = detectar_nivel_torneo(row)
-        surface = str(row.get("Surface", "Hard")).strip().title()
-        if surface not in ["Hard", "Clay", "Grass"]:
-            surface = "Hard"
+        surface = normalizar_superficie_hist(row.get("Surface", "Hard"), default="Hard")
 
         for player in [normalizar_texto(row.get("Winner", "")), normalizar_texto(row.get("Loser", ""))]:
             pid = limpiar(player)
@@ -2142,6 +2165,55 @@ def crear_analyzer_tables(val, min_casos=20):
 
 
 # =========================================================
+# v22.2 MARKET SANITY CAPS
+# =========================================================
+
+def aplicar_market_sanity_caps(sim, circuito, surface, over18, over19, over20, over22):
+    """
+    v22.2: suaviza mercados de games cuando el propio Rating Sanity
+    dice que la confianza del Elo/superficie es baja.
+    No cambia el resultado simulado; cambia la probabilidad operativa mostrada.
+    """
+    rs = sim.get("rating_sanity", {}) or {}
+    p1_rs = rs.get("p1", {}) or {}
+    p2_rs = rs.get("p2", {}) or {}
+    min_conf = min(p1_rs.get("confidence", 1.0), p2_rs.get("confidence", 1.0))
+    min_surface_matches = min(p1_rs.get("matches_surface", 99), p2_rs.get("matches_surface", 99))
+    fav_prob = max(sim.get("p1_cal", 0.5), sim.get("p2_cal", 0.5))
+
+    notes = []
+    o18, o19, o20, o22 = over18, over19, over20, over22
+
+    if circuito == "ATP" and surface == "Clay":
+        # Caso detectado: Over 18.5 salía demasiado alto como señal principal
+        # aunque ambos jugadores tuvieran confidence ~25% y pocos partidos clay.
+        if min_conf < 0.35 or min_surface_matches < 5:
+            cap18 = 0.72 if fav_prob < 0.58 else 0.74
+            if o18 > cap18:
+                o18 = cap18
+                notes.append(f"Over 18.5 capado a {cap18:.0%} por baja confianza clay")
+
+            cap19 = 0.68 if fav_prob < 0.58 else 0.70
+            if o19 > cap19:
+                o19 = cap19
+                notes.append(f"Over 19.5 capado a {cap19:.0%} por baja confianza clay")
+
+        # Si el favorito es muy débil, evitamos transformar un partido abierto
+        # automáticamente en spot fuerte de over bajo.
+        if fav_prob < 0.56 and o18 > 0.72:
+            o18 = 0.72
+            notes.append("Over 18.5 limitado por favorito débil")
+
+    return {
+        "over18": float(np.clip(o18, 0.0, 0.95)),
+        "over19": float(np.clip(o19, 0.0, 0.95)),
+        "over20": float(np.clip(o20, 0.0, 0.95)),
+        "over22": float(np.clip(o22, 0.0, 0.95)),
+        "notes": notes
+    }
+
+
+# =========================================================
 # v20 BETTING FILTERS ENGINE
 # =========================================================
 
@@ -2152,7 +2224,13 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     fav_name = p1_name if p1c >= p2c else p2_name
 
     games = sim.get("games", [])
-    if games:
+    if sim.get("market_over18") is not None:
+        over18 = sim.get("market_over18", 0.0)
+        over19 = sim.get("market_over19", 0.0)
+        over20 = sim.get("market_over20", 0.0)
+        over22 = sim.get("market_over22", 0.0)
+        under22 = 1 - over22
+    elif games:
         over18 = sum(x > 18.5 for x in games) / len(games)
         over19 = sum(x > 19.5 for x in games) / len(games)
         over20 = sum(x > 20.5 for x in games) / len(games)
@@ -2167,7 +2245,25 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     tb = sim.get("tb", 0)
     vol = sim.get("vol", 0)
 
+    # v22.2 Signal Trust Gate: una probabilidad puede ser buena,
+    # pero no debe etiquetarse como fuerte si el Elo viene de poca muestra.
+    rs = sim.get("rating_sanity", {}) or {}
+    p1_rs = rs.get("p1", {}) or {}
+    p2_rs = rs.get("p2", {}) or {}
+    min_conf = min(p1_rs.get("confidence", 1.0), p2_rs.get("confidence", 1.0))
+    avg_conf = (p1_rs.get("confidence", 1.0) + p2_rs.get("confidence", 1.0)) / 2
+    min_surface_matches = min(p1_rs.get("matches_surface", 99), p2_rs.get("matches_surface", 99))
+    elo_pure_gap = abs(sim.get("fav_raw_est", 0.5) - fav_prob)
+
     risk_notes = []
+    if min_conf < 0.35:
+        risk_notes.append("confianza de datos muy baja")
+    elif min_conf < 0.50:
+        risk_notes.append("confianza de datos baja")
+    if min_surface_matches < 5:
+        risk_notes.append("muestra de superficie insuficiente")
+    if elo_pure_gap >= 0.16:
+        risk_notes.append("Elo puro y modelo final muy separados")
 
     zone_score = 0
     if circuito == "ATP" and surface == "Hard":
@@ -2197,6 +2293,24 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     def add_signal(name, prob, min_prob, market_type, reason, bonus=0):
         score = zone_score + bonus
 
+        # v22.2: no permitimos A+ fácil con muestra pobre.
+        if min_conf < 0.35:
+            score -= 2
+        elif min_conf < 0.50:
+            score -= 1
+
+        if min_surface_matches < 5:
+            score -= 1
+
+        if elo_pure_gap >= 0.16:
+            score -= 1
+
+        # Over 18.5 es útil, pero antes salía demasiado como "spot fuerte".
+        if name == "Over 18.5" and min_conf < 0.45:
+            score -= 1
+        if name == "Over 18.5" and fav_prob < 0.58:
+            score -= 1
+
         if prob >= min_prob:
             score += 2
         if prob >= min_prob + 0.06:
@@ -2224,6 +2338,16 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             grade = "⚠️ C"
             action = "Evitar / observar"
 
+        # Trust Gate final: con confianza muy baja, como máximo B.
+        if min_conf < 0.35 and action in ["APTO fuerte", "APTO"]:
+            grade = "⚖️ B"
+            action = "Solo si acompaña lectura"
+            reason = reason + " · degradado por baja confianza de datos"
+        elif min_conf < 0.50 and action == "APTO fuerte":
+            grade = "✅ A"
+            action = "APTO"
+            reason = reason + " · sin A+ por confianza limitada"
+
         signals.append({
             "Mercado": name,
             "Probabilidad": prob,
@@ -2240,7 +2364,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         add_signal(f"ML favorito: {fav_name}", fav_prob, 0.68, "ml", "ATP Hard favorito medio/fuerte", 1)
 
     elif circuito == "ATP" and surface == "Clay":
-        add_signal("Over 18.5", over18, 0.72, "over", "ATP Clay: over bajo muy fuerte", 2)
+        add_signal("Over 18.5", over18, 0.72, "over", "ATP Clay: over bajo útil, exige confianza", 2)
         add_signal("Over 19.5", over19, 0.64, "over", "ATP Clay: buena señal si clay engine acompaña", 1)
         add_signal(f"ML favorito: {fav_name}", fav_prob, 0.70, "ml", "ATP Clay con especialista/favorito claro", 0)
 
@@ -2280,13 +2404,17 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         "main": main,
         "signals": signals,
         "risk_notes": risk_notes,
-        "zone_score": zone_score
+        "zone_score": zone_score,
+        "min_confidence": min_conf,
+        "avg_confidence": avg_conf,
+        "min_surface_matches": min_surface_matches,
+        "elo_pure_gap": elo_pure_gap
     }
 
 
 def render_betting_filters(filters):
     st.divider()
-    st.subheader("💎 Rating Sanity Engine")
+    st.subheader("💎 Signal Trust Engine")
 
     main = filters.get("main")
     status = filters.get("status", "⚠️ NO BET")
@@ -2302,6 +2430,14 @@ def render_betting_filters(filters):
 
     if filters.get("risk_notes"):
         st.warning("Riesgos: " + " · ".join(filters["risk_notes"]))
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Confianza mínima", f"{filters.get('min_confidence', 1.0):.0%}")
+    with c2:
+        st.metric("Mín. partidos superficie", f"{filters.get('min_surface_matches', 0)}")
+    with c3:
+        st.metric("Gap Elo puro/modelo", f"{filters.get('elo_pure_gap', 0):.1%}")
 
     rows = []
     for s in filters.get("signals", []):
@@ -2323,7 +2459,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.1")
+    st.header("🎾 Tennis IA v22.2")
     st.caption("Match Count + Tour Quality Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -2362,11 +2498,24 @@ if modo == "Predictor":
         p1, p2, p1c, p2c = sim["p1"], sim["p2"], sim["p1_cal"], sim["p2_cal"]
         games = sim["games"]
         avg_games, med_games = np.mean(games), np.median(games)
-        over18 = sum(x > 18.5 for x in games)/sims
-        over19 = sum(x > 19.5 for x in games)/sims
-        over20 = sum(x > 20.5 for x in games)/sims
-        over22 = sum(x > 22.5 for x in games)/sims
+        over18_raw = sum(x > 18.5 for x in games)/sims
+        over19_raw = sum(x > 19.5 for x in games)/sims
+        over20_raw = sum(x > 20.5 for x in games)/sims
+        over22_raw = sum(x > 22.5 for x in games)/sims
+
+        market_caps = aplicar_market_sanity_caps(sim, circuito, surface, over18_raw, over19_raw, over20_raw, over22_raw)
+        over18 = market_caps["over18"]
+        over19 = market_caps["over19"]
+        over20 = market_caps["over20"]
+        over22 = market_caps["over22"]
         under22 = 1-over22
+
+        sim["market_over18"] = over18
+        sim["market_over19"] = over19
+        sim["market_over20"] = over20
+        sim["market_over22"] = over22
+        sim["market_cap_notes"] = market_caps.get("notes", [])
+
         elo_ref = elo_prob(d1[surface], d2[surface])
 
         risk = "🟢 Riesgo bajo"
@@ -2406,6 +2555,8 @@ if modo == "Predictor":
         with e4: st.metric("Favorito 2-0", f"{sim['fav_2_0']:.1%}", nivel(sim["fav_2_0"]))
         with e5: st.metric("Partido largo", f"{sim['long_match']:.1%}", nivel(sim["long_match"]))
         st.caption(f"Media games: {avg_games:.1f} · Mediana games: {med_games:.0f}")
+        if sim.get("market_cap_notes"):
+            st.caption("🧯 Market sanity: " + " · ".join(sim.get("market_cap_notes", [])))
 
         st.divider()
         st.subheader("🎾 Hold / Return Engine")
@@ -2619,7 +2770,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.2 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
