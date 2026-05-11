@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.25", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.26", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.25"
-QUALITY_ENGINE_VERSION = "v22.25-upset-risk-guard-2026-05-11"
+APP_VERSION = "v22.26"
+QUALITY_ENGINE_VERSION = "v22.26-upset-label-cleanup-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -3569,6 +3569,14 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     else:
         status = "⚠️ NO BET / SOLO OBSERVAR"
 
+    # v22.26 Upset Label Cleanup:
+    # Si el guardia anti-upset está activo, no mostramos una lectura limpia de ML/2-0.
+    # No cambia probabilidades; solo evita una etiqueta contradictoria en la señal final.
+    if upset_guard.get("active", False) and main:
+        mt = str(main.get("Mercado", "")).lower()
+        if "ml favorito" in mt or "favorito 2-0" in mt:
+            status = "⚠️ NO BET / RIESGO UPSET"
+
     return {
         "status": status,
         "main": main,
@@ -3630,7 +3638,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.25")
+    st.header("🎾 Tennis IA v22.26")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3985,7 +3993,7 @@ if modo == "Predictor":
                 )
                 if qm1.get("sample_names"):
                     st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-                st.caption("Tour Quality v22.25: añade Upset Risk Guard para favoritos ATP Clay inflados con confianza/calidad limitada.")
+                st.caption("Tour Quality v22.26: limpia etiquetas contradictorias cuando hay riesgo upset; no cambia probabilidades.")
             else:
                 st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
             if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -4059,8 +4067,15 @@ if modo == "Predictor":
         if sim.get("rating_sanity", {}).get("active", False): tags.append("🧠 Rating sanity activo")
         if circuito == "ATP" and surface == "Clay" and sim.get("clay_engine", {}).get("active", False):
             tags.append(f"🧱 Clay engine: {sim.get('clay_engine', {}).get('profile','neutral')}")
-        if sim.get("fav_2_0", 0) >= 0.55: tags.append("🔥 Spot favorito 2-0")
-        if (sim.get("upset_risk_guard", {}) or {}).get("active", False): tags.append("⚠️ Riesgo upset")
+        upset_active = (sim.get("upset_risk_guard", {}) or {}).get("active", False)
+        if sim.get("fav_2_0", 0) >= 0.55:
+            if upset_active:
+                tags.append("⚠️ Favorito vulnerable")
+            elif sim.get("fav_2_0", 0) >= 0.70:
+                tags.append("🔥 Spot favorito 2-0")
+            else:
+                tags.append("⚖️ Favorito 2-0 moderado")
+        if upset_active: tags.append("⚠️ Riesgo upset")
         tc = sim.get("tournament_ctx", {})
         if "Indoor" in tc.get("court",""): tags.append("🏟️ Indoor boost")
         if "Final" in tc.get("round",""): tags.append("🎯 Final pressure")
@@ -4086,7 +4101,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.25 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.26 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
