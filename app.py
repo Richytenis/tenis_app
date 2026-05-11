@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.10", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.11", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.10"
-QUALITY_ENGINE_VERSION = "v22.10-signal-quality-guard-2026-05-11"
+APP_VERSION = "v22.11"
+QUALITY_ENGINE_VERSION = "v22.11-challenger-csv-loader-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -280,20 +280,64 @@ def buscar_stats(nombre, stats_map):
 
 def detectar_nivel_torneo(row):
     """
-    v22.9 Tour Quality Fix.
-    Clasificación conservadora del nivel del partido.
+    v22.11 Tour Quality + Challenger CSV Fix.
 
-    Regla principal:
-    - Solo cuenta como Tour si hay evidencia explícita en Series/Tournament/Event/Level.
-    - SourceFile tipo 2026.xlsx NO convierte automáticamente a Tour.
-    - Qualy se detecta antes que Tour.
-    - Si no hay evidencia clara, Unknown. Esto evita inflar jugadores con históricos opacos.
+    Soporta dos familias de históricos:
+    1) Excel tipo tennis-data ATP Tour con columnas Series/Tournament/Round.
+    2) CSV Jeff Sackmann / tennis-data qual_chall con columnas:
+       tourney_level, tourney_name, round, winner_name, loser_name.
+
+    Reglas:
+    - tourney_level = C => Challenger.
+    - round Q1/Q2/Q3/QR... o winner_entry/loser_entry=Q => Qualy, salvo Challenger explícito.
+    - tourney_level = G/M/A/F/D => Tour si NO es qualy.
+    - SourceFile con qual_chall no convierte por sí solo; solo ayuda al diagnóstico.
+    - Si no hay evidencia clara, Unknown.
     """
-    def _txt(cols):
-        return " ".join(str(row.get(c, "")) for c in cols if c in row.index or hasattr(row, 'get'))
+    def val(*names):
+        for c in names:
+            try:
+                if c in row.index:
+                    v = normalizar_texto(row.get(c, ""))
+                    if v != "" and v.lower() != "nan":
+                        return v
+            except Exception:
+                pass
+        return ""
 
-    level_txt = _txt(["Series", "Level", "Tour", "Category", "Circuit", "Event Type"])
-    event_txt = _txt(["Tournament", "Event", "Location", "Round", "Comment"])
+    # Columnas estándar Jeff Sackmann / tennis-data CSV.
+    tl_raw = val("tourney_level", "Tourney Level", "level", "Level", "Series")
+    round_raw = val("round", "Round", "ronda")
+    entry_raw = " ".join([
+        val("winner_entry", "Winner Entry", "w_entry"),
+        val("loser_entry", "Loser Entry", "l_entry")
+    ])
+    tourney_raw = val("tourney_name", "Tournament", "Event", "Location")
+    source_raw = val("SourceFile", "source_file")
+
+    tl = limpiar(tl_raw)
+    rnd = limpiar(round_raw)
+    entry = limpiar(entry_raw)
+
+    # 1) Challenger explícito por tourney_level C. Esto es lo más importante para tus CSV qual_chall.
+    if tl in ["C", "CH", "CHALLENGER", "ATPCHALLENGER"]:
+        return "challenger"
+
+    # 2) Qualy explícita. En CSV qual_chall los partidos de previa ATP suelen venir como tourney_level=A + round=Q1/Q2.
+    if rnd in ["Q", "Q1", "Q2", "Q3", "Q4", "QR", "QR1", "QR2", "QR3"]:
+        return "qualy"
+    if entry in ["Q", "WCQ"] or "QUAL" in entry:
+        return "qualy"
+
+    # 3) Tour explícito por código o texto.
+    if tl in ["G", "M", "A", "F", "D", "ATPM", "ATP", "ATP250", "ATP500", "MASTERS1000", "GRANDSLAM"]:
+        return "tour"
+
+    def _txt(cols):
+        return " ".join(str(row.get(c, "")) for c in cols if c in getattr(row, 'index', []))
+
+    level_txt = _txt(["Series", "Level", "Tour", "Category", "Circuit", "Event Type", "tourney_level"])
+    event_txt = _txt(["Tournament", "Event", "Location", "Round", "Comment", "tourney_name", "round"])
     source_txt = _txt(["SourceFile", "source_file"])
 
     all_txt = f" {level_txt} {event_txt} {source_txt} ".lower()
@@ -301,7 +345,7 @@ def detectar_nivel_torneo(row):
     level_clean = " " + re.sub(r"[^a-z0-9]+", " ", level_txt.lower()) + " "
     event_clean = " " + re.sub(r"[^a-z0-9]+", " ", event_txt.lower()) + " "
 
-    # Qualy primero: qualifying no es main-draw tour.
+    # Qualy por texto.
     qualy_tokens = [
         " qual ", " qualifying ", " qualification ", " qualies ",
         " q1 ", " q2 ", " q3 ", " qr1 ", " qr2 ", " qr3 ",
@@ -310,7 +354,6 @@ def detectar_nivel_torneo(row):
     if any(x in all_clean for x in qualy_tokens):
         return "qualy"
 
-    # Challenger: detección amplia, pero evitando que una simple letra C de superficie cuente.
     challenger_tokens = [
         " challenger ", " atp challenger ", " wta 125 ", " wta125 ",
         " ch50 ", " ch 50 ", " ch75 ", " ch 75 ", " ch100 ", " ch 100 ",
@@ -319,7 +362,6 @@ def detectar_nivel_torneo(row):
     if any(x in all_clean for x in challenger_tokens):
         return "challenger"
 
-    # ITF/Futures.
     itf_tokens = [
         " itf ", " futures ", " future ", " m15 ", " m25 ", " m35 ",
         " w15 ", " w25 ", " w35 ", " w50 ", " w75 ", " w100 "
@@ -327,7 +369,6 @@ def detectar_nivel_torneo(row):
     if any(x in all_clean for x in itf_tokens):
         return "itf"
 
-    # Tour solo si hay evidencia explícita. Preferimos Series/Level si existe.
     tour_tokens = [
         " grand slam ", " grandslam ", " gs ",
         " masters 1000 ", " atp masters ", " wta 1000 ", " wta1000 ", " atp1000 ", " atp 1000 ",
@@ -339,8 +380,6 @@ def detectar_nivel_torneo(row):
     if any(x in level_clean for x in tour_tokens):
         return "tour"
 
-    # Algunos datasets tennis-data ponen Series = ATP250 / ATP500 / Masters 1000 / Grand Slam.
-    # Si no hay Series/Level, permitimos torneos inequívocamente main tour por nombre.
     major_tour_events = [
         " australian open ", " roland garros ", " french open ", " wimbledon ", " us open ",
         " monte carlo ", " indian wells ", " miami ", " madrid ", " rome ", " roma ",
@@ -351,7 +390,6 @@ def detectar_nivel_torneo(row):
     if any(x in event_clean for x in major_tour_events):
         return "tour"
 
-    # SourceFile por año o carpeta ATP/WTA no basta para confirmar Tour.
     return "unknown"
 
 def normalizar_superficie_hist(v, default="Hard"):
@@ -2238,15 +2276,31 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
 
 def cargar_historicos(circuito):
     """
-    v22.8 Historical Loader + Name Radar + Cache Breaker.
-    Antes solo leía .xlsx. Ahora lee .xlsx/.xls/.csv y no falla si los históricos
-    vienen de tennis-data, Ultimate Tennis Stats exportado o ficheros propios.
+    v22.11 Historical Loader.
+
+    Lee históricos Tour y, además, CSV Challenger/Qualy si los colocas en cualquiera de estas carpetas:
+      datos/atp/historicos
+      datos/atp/challenger
+      datos/atp/qual_chall
+      datos/atp/historicos_challenger
+
+    Formatos soportados: .xlsx, .xls, .csv.
+    CSV tipo Jeff Sackmann: atp_matches_qual_chall_2015.csv ... 2026.csv.
     """
-    folder = rutas(circuito)["historicos"]
+    base = rutas(circuito)["base"]
+    folders = [
+        rutas(circuito)["historicos"],
+        os.path.join(base, "challenger"),
+        os.path.join(base, "qual_chall"),
+        os.path.join(base, "historicos_challenger"),
+        os.path.join(base, "historicos_qual_chall"),
+    ]
+
     patterns = ["*.xlsx", "*.xls", "*.csv"]
     files = []
-    for pat in patterns:
-        files.extend(glob.glob(os.path.join(folder, pat)))
+    for folder in folders:
+        for pat in patterns:
+            files.extend(glob.glob(os.path.join(folder, pat)))
     files = sorted(set(files))
 
     dfs = []
@@ -2262,20 +2316,29 @@ def cargar_historicos(circuito):
                     df = pd.read_csv(f, sep=";")
             else:
                 continue
-            df["SourceFile"] = os.path.basename(f)
+            rel_folder = os.path.basename(os.path.dirname(f))
+            df["SourceFile"] = f"{rel_folder}/{os.path.basename(f)}"
             dfs.append(df)
         except Exception:
             pass
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
 
-
 def historicos_diagnostics(circuito):
     """Diagnóstico visible para saber si el Match Count está leyendo archivos/columnas."""
+    base = rutas(circuito)["base"]
     folder = rutas(circuito)["historicos"]
+    folders = [
+        rutas(circuito)["historicos"],
+        os.path.join(base, "challenger"),
+        os.path.join(base, "qual_chall"),
+        os.path.join(base, "historicos_challenger"),
+        os.path.join(base, "historicos_qual_chall"),
+    ]
     patterns = ["*.xlsx", "*.xls", "*.csv"]
     files = []
-    for pat in patterns:
-        files.extend(glob.glob(os.path.join(folder, pat)))
+    for fd in folders:
+        for pat in patterns:
+            files.extend(glob.glob(os.path.join(fd, pat)))
     files = sorted(set(files))
     hist = cargar_historicos(circuito)
 
@@ -2290,7 +2353,7 @@ def historicos_diagnostics(circuito):
     col_winner = buscar_columna(hist, ["Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"] )
     col_loser = buscar_columna(hist, ["Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"] )
     col_surface = buscar_columna(hist, ["Surface", "Superficie", "Court Surface", "Court", "surface_name"] )
-    level_cols_found = [c for c in ["Series", "Level", "Tour", "Category", "Circuit", "Event Type", "Tournament", "Event", "Round", "Comment", "SourceFile"] if c in hist.columns]
+    level_cols_found = [c for c in ["Series", "Level", "Tour", "Category", "Circuit", "Event Type", "Tournament", "Event", "Round", "Comment", "SourceFile", "tourney_level", "tourney_name", "round", "winner_entry", "loser_entry"] if c in hist.columns]
     level_samples = {}
     for c in level_cols_found[:8]:
         try:
@@ -2305,7 +2368,7 @@ def historicos_diagnostics(circuito):
     if col_loser is not None:
         samples += [normalizar_texto(x) for x in hist[col_loser].dropna().astype(str).head(5).tolist()]
 
-    col_date = buscar_columna(hist, ["Date", "Fecha", "date", "match_date"])
+    col_date = buscar_columna(hist, ["Date", "Fecha", "date", "match_date", "tourney_date", "Tourney Date"])
     date_min = date_max = "N/A"
     if col_date is not None:
         dt = pd.to_datetime(hist[col_date], dayfirst=True, errors="coerce")
@@ -2789,7 +2852,7 @@ def aplicar_market_sanity_caps(sim, circuito, surface, over18, over19, over20, o
                 o19 = cap19
                 notes.append(f"Over 19.5 capado a {cap19:.0%} por baja confianza clay")
 
-        # v22.10: muestra aceptable pero todavía corta + Elo puro muy separado del modelo.
+        # v22.11: muestra aceptable pero todavía corta + Elo puro muy separado del modelo.
         # Ejemplo: dog con 8 partidos clay y gap ~15-16%; no debe escalar a SPOT APTO.
         if min_surface_matches < 10 and elo_pure_gap >= 0.14:
             cap18 = 0.74 if fav_prob < 0.58 else 0.75
@@ -2954,7 +3017,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             action = "APTO"
             reason = reason + " · sin A+ por confianza limitada"
 
-        # v22.10: guardia de calidad combinada. Aunque la probabilidad sea alta,
+        # v22.11: guardia de calidad combinada. Aunque la probabilidad sea alta,
         # una muestra clay corta y un gap Elo/modelo alto no pueden salir como APTO.
         if min_surface_matches < 10 and elo_pure_gap >= 0.14 and action in ["APTO fuerte", "APTO"]:
             grade = "⚖️ B"
@@ -3072,7 +3135,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.10")
+    st.header("🎾 Tennis IA v22.11")
     st.caption("Match Count Loader Fix + Name Radar Pro + Cache Breaker")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3362,7 +3425,7 @@ if modo == "Predictor":
             )
             if qm1.get("sample_names"):
                 st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-            st.caption("Tour Quality v22.10: Tour solo con evidencia explícita; añade guardia extra si hay muestra pequeña + gap Elo/modelo alto.")
+            st.caption("Tour Quality v22.11: integra CSV qual/challenger tipo tennis-data; tourney_level=C cuenta como Challenger y rondas Q como Qualy.")
         else:
             st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
         if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -3462,7 +3525,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.10 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.11 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
