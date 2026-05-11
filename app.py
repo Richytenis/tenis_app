@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.11", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.12", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.11"
-QUALITY_ENGINE_VERSION = "v22.11-challenger-csv-loader-2026-05-11"
+APP_VERSION = "v22.12"
+QUALITY_ENGINE_VERSION = "v22.12-unified-schema-challenger-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -280,7 +280,7 @@ def buscar_stats(nombre, stats_map):
 
 def detectar_nivel_torneo(row):
     """
-    v22.11 Tour Quality + Challenger CSV Fix.
+    v22.12 Tour Quality + Challenger CSV Fix.
 
     Soporta dos familias de históricos:
     1) Excel tipo tennis-data ATP Tour con columnas Series/Tournament/Round.
@@ -306,13 +306,13 @@ def detectar_nivel_torneo(row):
         return ""
 
     # Columnas estándar Jeff Sackmann / tennis-data CSV.
-    tl_raw = val("tourney_level", "Tourney Level", "level", "Level", "Series")
-    round_raw = val("round", "Round", "ronda")
+    tl_raw = val("MC_Level", "tourney_level", "Tourney Level", "level", "Level", "Series")
+    round_raw = val("MC_Round", "round", "Round", "ronda")
     entry_raw = " ".join([
         val("winner_entry", "Winner Entry", "w_entry"),
         val("loser_entry", "Loser Entry", "l_entry")
     ])
-    tourney_raw = val("tourney_name", "Tournament", "Event", "Location")
+    tourney_raw = val("MC_Tournament", "tourney_name", "Tournament", "Event", "Location")
     source_raw = val("SourceFile", "source_file")
 
     tl = limpiar(tl_raw)
@@ -336,8 +336,8 @@ def detectar_nivel_torneo(row):
     def _txt(cols):
         return " ".join(str(row.get(c, "")) for c in cols if c in getattr(row, 'index', []))
 
-    level_txt = _txt(["Series", "Level", "Tour", "Category", "Circuit", "Event Type", "tourney_level"])
-    event_txt = _txt(["Tournament", "Event", "Location", "Round", "Comment", "tourney_name", "round"])
+    level_txt = _txt(["MC_Level", "Series", "Level", "Tour", "Category", "Circuit", "Event Type", "tourney_level"])
+    event_txt = _txt(["MC_Tournament", "MC_Round", "Tournament", "Event", "Location", "Round", "Comment", "tourney_name", "round"])
     source_txt = _txt(["SourceFile", "source_file"])
 
     all_txt = f" {level_txt} {event_txt} {source_txt} ".lower()
@@ -417,7 +417,7 @@ def detectar_superficie_quality(row, col_surface=None):
         return surf
 
     txt = " ".join(str(row.get(c, "")) for c in [
-        "Surface", "Superficie", "Court", "Court Surface", "Tournament", "Event", "SourceFile", "Location"
+        "MC_Surface", "Surface", "surface", "Superficie", "Court", "Court Surface", "MC_Tournament", "Tournament", "Event", "SourceFile", "Location"
     ])
     key = limpiar(txt)
     if any(x in key for x in ["CLAY", "REDCLAY", "TIERRA", "RG", "ROLANDGARROS", "MONTECARLO", "MADRID", "ROMA", "ROME"]):
@@ -590,9 +590,9 @@ def crear_quality_map(circuito):
         if completed_mask.sum() > 0:
             df = df[completed_mask]
 
-    col_winner = buscar_columna(df, ["Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"])
-    col_loser = buscar_columna(df, ["Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"])
-    col_surface = buscar_columna(df, ["Surface", "Superficie", "Court Surface", "Court", "surface_name"])
+    col_winner = buscar_columna(df, ["MC_Winner", "Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"])
+    col_loser = buscar_columna(df, ["MC_Loser", "Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"])
+    col_surface = buscar_columna(df, ["MC_Surface", "Surface", "surface", "Superficie", "Court Surface", "Court", "surface_name"])
 
     if col_winner is None or col_loser is None:
         return quality
@@ -793,9 +793,9 @@ def buscar_quality_directo_historicos(nombre, circuito):
         if completed_mask.sum() > 0:
             df = df[completed_mask]
 
-    col_winner = buscar_columna(df, ["Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"])
-    col_loser = buscar_columna(df, ["Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"])
-    col_surface = buscar_columna(df, ["Surface", "Superficie", "Court Surface", "Court", "surface_name"])
+    col_winner = buscar_columna(df, ["MC_Winner", "Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"])
+    col_loser = buscar_columna(df, ["MC_Loser", "Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"])
+    col_surface = buscar_columna(df, ["MC_Surface", "Surface", "surface", "Superficie", "Court Surface", "Court", "surface_name"])
 
     if col_winner is None or col_loser is None:
         return fallback
@@ -2274,9 +2274,56 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         "wta_script": wta_script
     }
 
+
+def _first_nonempty_from_columns(df, candidates):
+    """v22.12: crea una serie unificada usando la primera columna no vacía por fila."""
+    existing = [c for c in candidates if c in df.columns]
+    if not existing:
+        return pd.Series([""] * len(df), index=df.index)
+    tmp = df[existing].copy()
+    for c in existing:
+        tmp[c] = tmp[c].apply(normalizar_texto)
+        tmp[c] = tmp[c].replace({"nan": "", "NaN": "", "None": ""})
+    return tmp.replace("", np.nan).bfill(axis=1).iloc[:, 0].fillna("")
+
+
+def normalizar_schema_historicos(df):
+    """
+    v22.12 Unified Historical Schema.
+    Al concatenar Excel ATP Tour con CSV qual_chall, pandas deja columnas separadas:
+    Winner/Loser para Excel y winner_name/loser_name para CSV. Antes buscar_columna elegía Winner
+    y las filas CSV quedaban vacías. Esta función crea columnas MC_* para que todos los loaders
+    cuenten Tour + Challenger/Qualy en el mismo mapa.
+    """
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    out["MC_Winner"] = _first_nonempty_from_columns(out, [
+        "MC_Winner", "Winner", "Ganador", "Player1", "Player 1", "WName",
+        "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"
+    ])
+    out["MC_Loser"] = _first_nonempty_from_columns(out, [
+        "MC_Loser", "Loser", "Perdedor", "Player2", "Player 2", "LName",
+        "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"
+    ])
+    out["MC_Surface"] = _first_nonempty_from_columns(out, [
+        "MC_Surface", "Surface", "surface", "Superficie", "Court Surface", "Court", "surface_name"
+    ])
+    # Mantiene columnas originales para detectar nivel, pero añade alias unificados útiles para debug.
+    out["MC_Level"] = _first_nonempty_from_columns(out, [
+        "MC_Level", "tourney_level", "Tourney Level", "Series", "Level", "Tour", "Category", "Circuit", "Event Type"
+    ])
+    out["MC_Tournament"] = _first_nonempty_from_columns(out, [
+        "MC_Tournament", "tourney_name", "Tournament", "Event", "Location"
+    ])
+    out["MC_Round"] = _first_nonempty_from_columns(out, [
+        "MC_Round", "round", "Round", "ronda"
+    ])
+    return out
+
 def cargar_historicos(circuito):
     """
-    v22.11 Historical Loader.
+    v22.12 Historical Loader.
 
     Lee históricos Tour y, además, CSV Challenger/Qualy si los colocas en cualquiera de estas carpetas:
       datos/atp/historicos
@@ -2321,7 +2368,9 @@ def cargar_historicos(circuito):
             dfs.append(df)
         except Exception:
             pass
-    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+    if not dfs:
+        return pd.DataFrame()
+    return normalizar_schema_historicos(pd.concat(dfs, ignore_index=True))
 
 def historicos_diagnostics(circuito):
     """Diagnóstico visible para saber si el Match Count está leyendo archivos/columnas."""
@@ -2350,10 +2399,10 @@ def historicos_diagnostics(circuito):
             "sample_players": [], "sample_files": [os.path.basename(x) for x in files[:6]],
         }
 
-    col_winner = buscar_columna(hist, ["Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"] )
-    col_loser = buscar_columna(hist, ["Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"] )
-    col_surface = buscar_columna(hist, ["Surface", "Superficie", "Court Surface", "Court", "surface_name"] )
-    level_cols_found = [c for c in ["Series", "Level", "Tour", "Category", "Circuit", "Event Type", "Tournament", "Event", "Round", "Comment", "SourceFile", "tourney_level", "tourney_name", "round", "winner_entry", "loser_entry"] if c in hist.columns]
+    col_winner = buscar_columna(hist, ["MC_Winner", "Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"] )
+    col_loser = buscar_columna(hist, ["MC_Loser", "Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"] )
+    col_surface = buscar_columna(hist, ["MC_Surface", "Surface", "surface", "Superficie", "Court Surface", "Court", "surface_name"] )
+    level_cols_found = [c for c in ["MC_Level", "MC_Tournament", "MC_Round", "Series", "Level", "Tour", "Category", "Circuit", "Event Type", "Tournament", "Event", "Round", "Comment", "SourceFile", "tourney_level", "tourney_name", "round", "winner_entry", "loser_entry"] if c in hist.columns]
     level_samples = {}
     for c in level_cols_found[:8]:
         try:
@@ -3135,7 +3184,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.11")
+    st.header("🎾 Tennis IA v22.12")
     st.caption("Match Count Loader Fix + Name Radar Pro + Cache Breaker")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3425,7 +3474,7 @@ if modo == "Predictor":
             )
             if qm1.get("sample_names"):
                 st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-            st.caption("Tour Quality v22.11: integra CSV qual/challenger tipo tennis-data; tourney_level=C cuenta como Challenger y rondas Q como Qualy.")
+            st.caption("Tour Quality v22.12: unifica columnas Winner/Loser con winner_name/loser_name; tourney_level=C cuenta como Challenger y rondas Q como Qualy.")
         else:
             st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
         if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -3525,7 +3574,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.11 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.12 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
