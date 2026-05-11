@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.5", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.6", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -346,12 +346,44 @@ def detectar_superficie_quality(row, col_surface=None):
         return "Grass"
     return "Hard"
 
+def apellido_inicial_key(nombre):
+    """Clave canónica tipo tennis-data: Matteo Arnaldi <-> Arnaldi M.
+    Devuelve ARNALDI_M. Evita que el Match Count dependa del orden exacto.
+    """
+    toks = tokens(nombre)
+    if len(toks) < 2:
+        return ""
+
+    # Si viene como "Bublik A." o "Arnaldi M.": apellido + inicial.
+    if len(toks[-1]) == 1:
+        surname = toks[0]
+        initial = toks[-1][0]
+    else:
+        # Si viene como "Matteo Arnaldi": último token = apellido, primero = inicial.
+        surname = toks[-1]
+        initial = toks[0][0]
+
+    surname = limpiar(surname)
+    initial = limpiar(initial)
+    return f"{surname}_{initial}" if surname and initial else ""
+
+
+def surname_key(nombre):
+    toks = tokens(nombre)
+    if not toks:
+        return ""
+    if len(toks) >= 2 and len(toks[-1]) == 1:
+        return limpiar(toks[0])
+    return limpiar(toks[-1])
+
+
 def variantes_nombre_quality(nombre):
     """
     Genera claves de búsqueda robustas para históricos:
     - Matteo Arnaldi
     - Arnaldi Matteo
     - Arnaldi M / M Arnaldi
+    - clave canónica ARNALDI_M
     - MATTEOARNALDI limpio
     """
     raw = normalizar_texto(nombre)
@@ -360,13 +392,33 @@ def variantes_nombre_quality(nombre):
     clean = limpiar(raw)
     if clean:
         out.add(clean)
+
+    ai = apellido_inicial_key(raw)
+    if ai:
+        out.add(ai)
+        out.add(limpiar(ai))
+
+    sk = surname_key(raw)
+    if sk:
+        out.add(sk)
+
     if len(toks) >= 2:
+        # Formato normal completo
         first, last = toks[0], toks[-1]
         out.add(limpiar(f"{last} {first}"))
         out.add(limpiar(f"{last} {first[0]}"))
         out.add(limpiar(f"{first[0]} {last}"))
         out.add(limpiar(f"{last}{first[0]}"))
         out.add(limpiar(f"{first[0]}{last}"))
+
+        # Si el histórico viene abreviado tipo "Arnaldi M.", toks[0]=apellido, toks[1]=inicial.
+        if len(toks[-1]) == 1:
+            surname, initial = toks[0], toks[-1][0]
+            out.add(limpiar(f"{surname} {initial}"))
+            out.add(limpiar(f"{initial} {surname}"))
+            out.add(limpiar(f"{surname}{initial}"))
+            out.add(limpiar(f"{initial}{surname}"))
+
     return {x for x in out if x}
 
 
@@ -482,6 +534,10 @@ def crear_quality_map(circuito):
             bucket["_rows"].append({"surface": surface, "level": level})
             bucket["raw_names"].add(player)
             bucket["aliases"].update(variantes_nombre_quality(player))
+            ai = apellido_inicial_key(player)
+            if ai:
+                bucket["aliases"].add(ai)
+                bucket["aliases"].add(limpiar(ai))
             if source:
                 bucket["source_files"].add(source)
 
@@ -490,49 +546,81 @@ def crear_quality_map(circuito):
         q = fusionar_quality_rows([data])
         if q:
             quality[pid] = q
+            # Índice espejo por clave apellido_inicial.
+            # Esto permite casar Matteo Arnaldi con Arnaldi M. sin depender de fuzzy matching.
+            for alias in data.get("aliases", []):
+                if "_" in str(alias):
+                    quality.setdefault(alias, q)
 
     return quality
 
 
 
-def closest_quality_candidates(nombre, quality_map, limit=6):
+def closest_quality_candidates(nombre, quality_map, limit=8):
     """
-    v22.5 Name Radar.
-    Devuelve los candidatos históricos más parecidos aunque no pasen el umbral.
-    Sirve para detectar si el histórico usa otro formato de nombre o si el jugador no existe.
+    v22.6 Name Radar Pro.
+    Devuelve candidatos aunque el jugador no exista, y da prioridad a:
+    - clave apellido_inicial exacta: ARNALDI_M
+    - mismo apellido
+    - fuzzy score normal
     """
     candidates = []
+    user_ai = apellido_inicial_key(nombre)
+    user_surname = surname_key(nombre)
+
+    seen_objs = set()
     for qid, data in quality_map.items():
         if str(qid).startswith("__"):
             continue
+        # Evita duplicados por índices espejo.
+        obj_id = id(data)
+        if obj_id in seen_objs:
+            continue
+        seen_objs.add(obj_id)
+
         labels = [qid] + list(data.get("raw_names", [])) + list(data.get("aliases", []))
         best_score = 0.0
         best_label = qid
+        reason = "fuzzy"
+
         for cand in labels:
+            cand_ai = apellido_inicial_key(cand)
+            cand_surname = surname_key(cand)
             sc = similitud_nombre(nombre, cand)
+
+            if user_ai and cand_ai and user_ai == cand_ai:
+                sc = max(sc, 0.995)
+                reason = "apellido+inicial"
+            elif user_surname and cand_surname and user_surname == cand_surname:
+                sc = max(sc, 0.86)
+                reason = "apellido"
+
             t_user = tokens(nombre)
             t_cand = tokens(cand)
             if len(t_user) >= 2 and len(t_cand) >= 1:
                 user_first = t_user[0]
                 user_last = t_user[-1]
-                # Apellido + inicial en cualquier orden: Matteo Arnaldi vs Arnaldi M / M Arnaldi
                 if user_last in t_cand and any(x.startswith(user_first[0]) for x in t_cand if x != user_last):
                     sc = max(sc, 0.94)
-                # Formato invertido completo: Arnaldi Matteo
+                    reason = "apellido+inicial"
                 if user_last in t_cand and user_first in t_cand:
                     sc = max(sc, 0.98)
+                    reason = "nombre completo"
+
             if sc > best_score:
                 best_score = sc
                 best_label = cand
-        if best_score > 0:
+
+        if best_score >= 0.18 or (user_surname and user_surname in " ".join(map(str, labels))):
             candidates.append({
                 "name": best_label,
                 "score": float(best_score),
+                "reason": reason,
                 "matches_total": int(data.get("matches_total", 0)),
                 "surface": data.get("matches_surface", {}),
                 "source_files": data.get("source_files", [])[:3],
             })
-    candidates.sort(key=lambda x: x["score"], reverse=True)
+    candidates.sort(key=lambda x: (x["score"], x["matches_total"]), reverse=True)
     return candidates[:limit]
 
 def buscar_quality(nombre, quality_map):
@@ -541,13 +629,16 @@ def buscar_quality(nombre, quality_map):
     """
     nid = limpiar(nombre)
     variants = variantes_nombre_quality(nombre)
+    ai_key = apellido_inicial_key(nombre)
 
-    # Exacto o alias fuerte.
-    if nid in quality_map:
-        out = quality_map[nid].copy()
-        out["matched_name"] = nombre
-        out["match_score"] = 1.0
-        return out
+    # Exacto o clave canónica apellido_inicial.
+    for key in [nid, ai_key, limpiar(ai_key)]:
+        if key and key in quality_map:
+            out = quality_map[key].copy()
+            raw = out.get("raw_names", [])
+            out["matched_name"] = raw[0] if raw else key
+            out["match_score"] = 1.0
+            return out
 
     alias_hits = []
     for qid, data in quality_map.items():
@@ -582,7 +673,7 @@ def buscar_quality(nombre, quality_map):
                 mejor = data
                 best_label = cand
 
-    if mejor is not None and best >= 0.78:
+    if mejor is not None and best >= 0.72:
         out = mejor.copy()
         out["matched_name"] = best_label
         out["match_score"] = float(best)
@@ -1466,6 +1557,9 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         confidence = float(data_conf)
         flags = []
 
+        if matches_total == 0 and q.get("match_score", 0.0) == 0.0:
+            flags.append("jugador no encontrado en históricos cargados")
+
         if matches_surface < 5:
             confidence -= 0.16
             flags.append("muy pocos partidos superficie")
@@ -1966,11 +2060,20 @@ def historicos_diagnostics(circuito):
     if col_loser is not None:
         samples += [normalizar_texto(x) for x in hist[col_loser].dropna().astype(str).head(5).tolist()]
 
+    col_date = buscar_columna(hist, ["Date", "Fecha", "date", "match_date"])
+    date_min = date_max = "N/A"
+    if col_date is not None:
+        dt = pd.to_datetime(hist[col_date], dayfirst=True, errors="coerce")
+        if dt.notna().any():
+            date_min = str(dt.min().date())
+            date_max = str(dt.max().date())
+
     return {
         "folder": folder, "folder_exists": os.path.exists(folder),
         "files_count": len(files), "rows": int(len(hist)),
         "columns": list(hist.columns)[:20],
         "winner_col": col_winner, "loser_col": col_loser, "surface_col": col_surface,
+        "date_min": date_min, "date_max": date_max,
         "sample_players": samples[:8],
         "sample_files": [os.path.basename(x) for x in files[:6]],
     }
@@ -2699,8 +2802,8 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.5")
-    st.caption("Match Count Loader Fix + Name Radar")
+    st.header("🎾 Tennis IA v22.6")
+    st.caption("Match Count Loader Fix + Name Radar Pro")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -2968,7 +3071,8 @@ if modo == "Predictor":
         hist_diag = historicos_diagnostics(circuito)
         st.caption(
             f"Históricos: files={hist_diag.get('files_count',0)} · rows={hist_diag.get('rows',0)} · "
-            f"Winner={hist_diag.get('winner_col')} · Loser={hist_diag.get('loser_col')} · Surface={hist_diag.get('surface_col')}"
+            f"Winner={hist_diag.get('winner_col')} · Loser={hist_diag.get('loser_col')} · Surface={hist_diag.get('surface_col')} · "
+            f"Dates={hist_diag.get('date_min','N/A')}→{hist_diag.get('date_max','N/A')}"
         )
         if hist_diag.get("sample_players"):
             st.caption("Ejemplos histórico: " + ", ".join(hist_diag.get("sample_players", [])[:8]))
@@ -3004,7 +3108,7 @@ if modo == "Predictor":
                 radar = []
                 for c in dbg1.get('candidate_matches', [])[:4]:
                     sf = c.get('surface', {}) if isinstance(c.get('surface', {}), dict) else {}
-                    radar.append(f"{c.get('name','?')} {c.get('score',0):.0%} ({c.get('matches_total',0)} · C{sf.get('Clay',0)})")
+                    radar.append(f"{c.get('name','?')} {c.get('score',0):.0%} {c.get('reason','')} ({c.get('matches_total',0)} · C{sf.get('Clay',0)})")
                 st.caption("Radar nombres: " + " | ".join(radar))
         with dc2:
             st.caption(
@@ -3022,7 +3126,7 @@ if modo == "Predictor":
                 radar = []
                 for c in dbg2.get('candidate_matches', [])[:4]:
                     sf = c.get('surface', {}) if isinstance(c.get('surface', {}), dict) else {}
-                    radar.append(f"{c.get('name','?')} {c.get('score',0):.0%} ({c.get('matches_total',0)} · C{sf.get('Clay',0)})")
+                    radar.append(f"{c.get('name','?')} {c.get('score',0):.0%} {c.get('reason','')} ({c.get('matches_total',0)} · C{sf.get('Clay',0)})")
                 st.caption("Radar nombres: " + " | ".join(radar))
 
         st.divider()
@@ -3071,7 +3175,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.5 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.6 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
