@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.8", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.9", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.8"
-QUALITY_ENGINE_VERSION = "v22.8-direct-matchcount-2026-05-11"
+APP_VERSION = "v22.9"
+QUALITY_ENGINE_VERSION = "v22.9-tour-quality-fix-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -280,40 +280,79 @@ def buscar_stats(nombre, stats_map):
 
 def detectar_nivel_torneo(row):
     """
-    v22.3: clasifica la calidad del histórico aunque las columnas vengan
-    como Series/Tournament/Level/Event/SourceFile o con nombres raros.
-    """
-    txt = " ".join(str(row.get(c, "")) for c in [
-        "Series", "Tournament", "Event", "Level", "Round", "SourceFile", "Comment", "Location"
-    ]).lower()
-    txt_clean = " " + re.sub(r"[^a-z0-9]+", " ", txt) + " "
+    v22.9 Tour Quality Fix.
+    Clasificación conservadora del nivel del partido.
 
-    # Qualy primero: una qualy ATP/WTA no debe contar como main tour completo.
-    if any(x in txt_clean for x in [" qual ", " qualifying ", " qualification ", " q1 ", " q2 ", " q3 "]):
+    Regla principal:
+    - Solo cuenta como Tour si hay evidencia explícita en Series/Tournament/Event/Level.
+    - SourceFile tipo 2026.xlsx NO convierte automáticamente a Tour.
+    - Qualy se detecta antes que Tour.
+    - Si no hay evidencia clara, Unknown. Esto evita inflar jugadores con históricos opacos.
+    """
+    def _txt(cols):
+        return " ".join(str(row.get(c, "")) for c in cols if c in row.index or hasattr(row, 'get'))
+
+    level_txt = _txt(["Series", "Level", "Tour", "Category", "Circuit", "Event Type"])
+    event_txt = _txt(["Tournament", "Event", "Location", "Round", "Comment"])
+    source_txt = _txt(["SourceFile", "source_file"])
+
+    all_txt = f" {level_txt} {event_txt} {source_txt} ".lower()
+    all_clean = " " + re.sub(r"[^a-z0-9]+", " ", all_txt) + " "
+    level_clean = " " + re.sub(r"[^a-z0-9]+", " ", level_txt.lower()) + " "
+    event_clean = " " + re.sub(r"[^a-z0-9]+", " ", event_txt.lower()) + " "
+
+    # Qualy primero: qualifying no es main-draw tour.
+    qualy_tokens = [
+        " qual ", " qualifying ", " qualification ", " qualies ",
+        " q1 ", " q2 ", " q3 ", " qr1 ", " qr2 ", " qr3 ",
+        " qualifying draw "
+    ]
+    if any(x in all_clean for x in qualy_tokens):
         return "qualy"
 
-    if any(x in txt_clean for x in [
-        " grand slam ", " masters ", " masters 1000 ", " atp1000 ", " wta1000 ",
-        " atp 1000 ", " wta 1000 ", " atp500 ", " wta500 ", " atp 500 ", " wta 500 ",
-        " atp250 ", " wta250 ", " atp 250 ", " wta 250 ", " main tour ",
-        " davis cup ", " united cup ", " olympics "
-    ]):
-        return "tour"
-
-    if any(x in txt_clean for x in [
-        " challenger ", " ch ", " ch125 ", " ch 125 ", " ch100 ", " ch 100 ",
-        " ch75 ", " ch 75 ", " ch50 ", " ch 50 ", " ch175 ", " ch 175 "
-    ]):
+    # Challenger: detección amplia, pero evitando que una simple letra C de superficie cuente.
+    challenger_tokens = [
+        " challenger ", " atp challenger ", " wta 125 ", " wta125 ",
+        " ch50 ", " ch 50 ", " ch75 ", " ch 75 ", " ch100 ", " ch 100 ",
+        " ch125 ", " ch 125 ", " ch175 ", " ch 175 "
+    ]
+    if any(x in all_clean for x in challenger_tokens):
         return "challenger"
 
-    if any(x in txt_clean for x in [
-        " itf ", " futures ", " m15 ", " m25 ", " m35 ", " w15 ", " w25 ",
-        " w35 ", " w50 ", " w75 ", " w100 "
-    ]):
+    # ITF/Futures.
+    itf_tokens = [
+        " itf ", " futures ", " future ", " m15 ", " m25 ", " m35 ",
+        " w15 ", " w25 ", " w35 ", " w50 ", " w75 ", " w100 "
+    ]
+    if any(x in all_clean for x in itf_tokens):
         return "itf"
 
-    return "unknown"
+    # Tour solo si hay evidencia explícita. Preferimos Series/Level si existe.
+    tour_tokens = [
+        " grand slam ", " grandslam ", " gs ",
+        " masters 1000 ", " atp masters ", " wta 1000 ", " wta1000 ", " atp1000 ", " atp 1000 ",
+        " atp 500 ", " atp500 ", " wta 500 ", " wta500 ",
+        " atp 250 ", " atp250 ", " wta 250 ", " wta250 ",
+        " atp finals ", " wta finals ", " main tour ", " tour level ",
+        " olympics ", " united cup ", " davis cup ", " billie jean king cup "
+    ]
+    if any(x in level_clean for x in tour_tokens):
+        return "tour"
 
+    # Algunos datasets tennis-data ponen Series = ATP250 / ATP500 / Masters 1000 / Grand Slam.
+    # Si no hay Series/Level, permitimos torneos inequívocamente main tour por nombre.
+    major_tour_events = [
+        " australian open ", " roland garros ", " french open ", " wimbledon ", " us open ",
+        " monte carlo ", " indian wells ", " miami ", " madrid ", " rome ", " roma ",
+        " canada masters ", " cincinnati ", " shanghai ", " paris masters ",
+        " queens ", " halle ", " basel ", " vienna ", " barcelona ", " doha ",
+        " dubai ", " acapulco ", " rotterdam ", " beijing ", " tokyo "
+    ]
+    if any(x in event_clean for x in major_tour_events):
+        return "tour"
+
+    # SourceFile por año o carpeta ATP/WTA no basta para confirmar Tour.
+    return "unknown"
 
 def normalizar_superficie_hist(v, default="Hard"):
     """Normaliza superficies históricas: C/Clay/Red Clay, H/Hard, G/Grass."""
@@ -449,7 +488,7 @@ def fusionar_quality_rows(items):
         level_counts["challenger"] * 0.62 +
         level_counts["qualy"] * 0.50 +
         level_counts["itf"] * 0.32 +
-        level_counts["unknown"] * 0.55
+        level_counts["unknown"] * 0.42
     ) / total
 
     out = {
@@ -483,6 +522,8 @@ def fusionar_quality_rows(items):
             conf -= 0.07
         if level_counts["itf"] >= max(3, total * 0.45):
             conf -= 0.10
+        if level_counts["unknown"] >= max(4, total * 0.50):
+            conf -= 0.08
 
         stability[sf] = float(np.clip(stab, 0.05, 1.00))
         confidence[sf] = float(np.clip(conf, 0.28, 1.00))
@@ -673,7 +714,7 @@ def nombre_score_quality_direct(objetivo, candidato):
 
 def buscar_quality_directo_historicos(nombre, circuito):
     """
-    v22.8 Direct Match Count.
+    v22.9 Direct Match Count + Tour Quality Fix.
     No depende del quality_map guardado en cargar_datos/cache.
     Lee históricos cargados y cuenta el jugador en Winner/Loser al vuelo.
     """
@@ -1732,7 +1773,7 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         elo_clay = d.get("Clay", 1500)
         elo_grass = d.get("Grass", 1500)
         q = d.get("Quality", {}) or {}
-        # v22.8: si el QualityMap viene vacío/cacheado o no encontró al jugador,
+        # v22.9: si el QualityMap viene vacío/cacheado o no encontró al jugador,
         # recalculamos el Match Count directamente desde históricos en este partido.
         q_direct = buscar_quality_directo_historicos(d.get("Player", ""), circuito)
         if (not q.get("quality_meta")) or int(q.get("matches_total", 0) or 0) == 0 or q.get("matched_name") in [None, "", "NO ENCONTRADO"]:
@@ -2995,7 +3036,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.8")
+    st.header("🎾 Tennis IA v22.9")
     st.caption("Match Count Loader Fix + Name Radar Pro + Cache Breaker")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3277,6 +3318,7 @@ if modo == "Predictor":
             )
             if qm1.get("sample_names"):
                 st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
+            st.caption("Tour Quality v22.9: Tour solo con evidencia explícita; si el histórico no trae Series/Level claro, cuenta como Unknown.")
         else:
             st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
         if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -3376,7 +3418,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.8 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.9 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
