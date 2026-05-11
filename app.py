@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.29 Crash Hotfix", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.30 Low Over Split", page_icon="🎾", layout="wide")
 
 APP_VERSION = "v22.27"
-QUALITY_ENGINE_VERSION = "v22.29-crash-hotfix-2026-05-11"
+QUALITY_ENGINE_VERSION = "v22.30-low-over-split-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -1721,6 +1721,89 @@ def upset_risk_guard_engine(circuito, surface, p1_cal, p1_raw, fav20, dogset, lo
     return float(np.clip(p1_cal, 0.05, 0.95)), float(np.clip(fav20, 0.0, 0.95)), float(np.clip(dogset, 0.05, 0.95)), float(np.clip(longm, 0.05, 0.95)), out
 
 
+
+def low_over_long_match_split_guard(circuito, surface, p1_cal, e1, e2, hold1, hold2, raw_tb, rating_sanity, fav20, dogset, longm, upset_risk_guard=None):
+    """
+    v22.30 Low Over vs Long Match Split.
+    Separa una señal fuerte de Over 18.5 de la lectura de partido largo/dog set.
+    Caso objetivo: favorito clay fiable 56-64%, mucha muestra, Elo clay elite,
+    TB bajo/medio. No toca ML ni overs; solo mercados derivados de sets.
+    """
+    out = {
+        "active": False,
+        "profile": "neutral",
+        "fav20_boost": 0.0,
+        "dogset_cut": 0.0,
+        "long_cut": 0.0,
+        "notes": []
+    }
+
+    if circuito != "ATP" or surface != "Clay":
+        return fav20, dogset, longm, out
+
+    if upset_risk_guard and upset_risk_guard.get("active", False):
+        return fav20, dogset, longm, out
+
+    rs = rating_sanity or {}
+    p1 = rs.get("p1", {}) or {}
+    p2 = rs.get("p2", {}) or {}
+    min_conf = min(p1.get("confidence", 1.0), p2.get("confidence", 1.0))
+    min_surface = min(p1.get("matches_surface", 99), p2.get("matches_surface", 99))
+    min_quality = min(p1.get("tour_quality", 1.0), p2.get("tour_quality", 1.0))
+
+    fav_prob = max(float(p1_cal), 1.0 - float(p1_cal))
+    fav_is_p1 = p1_cal >= 0.50
+    fav_elo = e1 if fav_is_p1 else e2
+    dog_elo = e2 if fav_is_p1 else e1
+    fav_hold = hold1 if fav_is_p1 else hold2
+    dog_hold = hold2 if fav_is_p1 else hold1
+
+    elo_gap = fav_elo - dog_elo
+    hold_gap = fav_hold - dog_hold
+
+    # Solo favoritos clay realmente fiables, no favoritos de hard ni favoritos vulnerables.
+    trigger = (
+        0.555 <= fav_prob <= 0.645
+        and fav_elo >= 1900
+        and elo_gap >= 65
+        and min_conf >= 0.80
+        and min_surface >= 80
+        and min_quality >= 0.74
+        and raw_tb <= 0.32
+        and hold_gap >= 0.025
+    )
+
+    if not trigger:
+        return fav20, dogset, longm, out
+
+    boost = 0.055
+    dog_cut = 0.055
+    long_cut = 0.035
+
+    if fav_prob >= 0.59:
+        boost += 0.015
+        dog_cut += 0.010
+
+    if fav_elo >= 1930 and elo_gap >= 80:
+        boost += 0.015
+        dog_cut += 0.010
+        long_cut += 0.010
+
+    # No convertirlo en "spot 2-0 fuerte"; solo corregir el sesgo de dog set/long.
+    fav20 = float(np.clip(fav20 + boost, 0.0, 0.58))
+    dogset = float(np.clip(dogset - dog_cut, 0.34, 0.95))
+    longm = float(np.clip(longm - long_cut, 0.34, 0.95))
+
+    out["active"] = True
+    out["profile"] = "low_over_not_long_match"
+    out["fav20_boost"] = float(boost)
+    out["dogset_cut"] = float(dog_cut)
+    out["long_cut"] = float(long_cut)
+    out["notes"].append("over bajo fuerte no implica dog set/partido largo")
+    out["notes"].append("favorito clay fiable con muestra alta")
+
+    return fav20, dogset, longm, out
+
 def wta_match_script_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, circuito):
     """
     v19.2 Rating Sanity Engine
@@ -2619,6 +2702,12 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         circuito, surface, p1_cal, p1_raw, fav20, dogset, longm, rating_sanity
     )
 
+    low_over_split_guard = {"active": False, "profile": "neutral"}
+    fav20, dogset, longm, low_over_split_guard = low_over_long_match_split_guard(
+        circuito, surface, p1_cal, e1, e2, hold1, hold2, raw_tb,
+        rating_sanity, fav20, dogset, longm, upset_risk_guard
+    )
+
     return {
         "p1": p1_raw,
         "p2": 1 - p1_raw,
@@ -2667,6 +2756,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "straight_sets_guard": straight_sets_guard,
         "fav20_sanity_guard": fav20_sanity_guard,
         "upset_risk_guard": upset_risk_guard,
+        "low_over_split_guard": low_over_split_guard,
         "wta_separation": wta_sep,
         "wta_script": wta_script
     }
@@ -3661,7 +3751,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.29 Crash Hotfix")
+    st.header("🎾 Tennis IA v22.30 Low Over Split")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -4099,6 +4189,8 @@ if modo == "Predictor":
             else:
                 tags.append("⚖️ Favorito 2-0 moderado")
         if upset_active: tags.append("⚠️ Riesgo upset")
+        if (sim.get("low_over_split_guard", {}) or {}).get("active", False):
+            tags.append("🎚️ Over bajo ≠ partido largo")
         tc = sim.get("tournament_ctx", {})
         if "Indoor" in tc.get("court",""): tags.append("🏟️ Indoor boost")
         if "Final" in tc.get("round",""): tags.append("🎯 Final pressure")
@@ -4124,7 +4216,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.29 Crash Hotfix · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.30 Low Over Split · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
