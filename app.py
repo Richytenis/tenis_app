@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.28 Deploy Safe", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.29 Crash Hotfix", page_icon="🎾", layout="wide")
 
 APP_VERSION = "v22.27"
-QUALITY_ENGINE_VERSION = "v22.28-deploy-safe-2026-05-11"
+QUALITY_ENGINE_VERSION = "v22.29-crash-hotfix-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -1060,6 +1060,10 @@ def cargar_datos(circuito, cache_version=QUALITY_ENGINE_VERSION):
             combined[nid]["serve_profile"] = perfil_saque(combined[nid].get("ace", 0.05))
 
         stats_surface_maps[surface] = combined
+
+    # v22.29 safety: ensure fatigue_map exists even after cache/merge issues
+    if 'fatigue_map' not in locals() or fatigue_map is None:
+        fatigue_map = {}
 
     players = {}
 
@@ -2500,6 +2504,9 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
                 pass
 
     p1_raw = res["p1"] / n
+    # v22.29 compatibility aliases: older blocks used p1_win/p2_win names
+    p1_win = p1_raw
+    p2_win = 1 - p1_raw
     p1_cal = calibrar_probabilidad(p1_raw, surface)
 
     raw_tb = res["tb"] / n
@@ -3654,7 +3661,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.28 Deploy Safe")
+    st.header("🎾 Tennis IA v22.29 Crash Hotfix")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -4117,7 +4124,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.28 Deploy Safe · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.29 Crash Hotfix · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
