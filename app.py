@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.3.1", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.4", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -327,6 +327,25 @@ def normalizar_superficie_hist(v, default="Hard"):
     return default
 
 
+
+
+def detectar_superficie_quality(row, col_surface=None):
+    """Detecta superficie desde columna Surface o, si falta, desde Tournament/SourceFile."""
+    primary = row.get(col_surface, "") if col_surface else ""
+    surf = normalizar_superficie_hist(primary, default="")
+    if surf in ["Hard", "Clay", "Grass"]:
+        return surf
+
+    txt = " ".join(str(row.get(c, "")) for c in [
+        "Surface", "Superficie", "Court", "Court Surface", "Tournament", "Event", "SourceFile", "Location"
+    ])
+    key = limpiar(txt)
+    if any(x in key for x in ["CLAY", "REDCLAY", "TIERRA", "RG", "ROLANDGARROS", "MONTECARLO", "MADRID", "ROMA", "ROME"]):
+        return "Clay"
+    if any(x in key for x in ["GRASS", "HIERBA", "WIMBLEDON", "HALLE", "QUEENS", "NEWPORT"]):
+        return "Grass"
+    return "Hard"
+
 def variantes_nombre_quality(nombre):
     """
     Genera claves de búsqueda robustas para históricos:
@@ -432,11 +451,14 @@ def crear_quality_map(circuito):
 
     df = hist.copy()
     if "Comment" in df.columns:
-        df = df[df["Comment"].astype(str).str.contains("Completed", na=False)]
+        completed_mask = df["Comment"].astype(str).str.contains("Completed", case=False, na=False)
+        # Si el archivo no usa Comment=Completed, no tiramos todo el histórico.
+        if completed_mask.sum() > 0:
+            df = df[completed_mask]
 
-    col_winner = buscar_columna(df, ["Winner", "Ganador", "Player1", "WName"])
-    col_loser = buscar_columna(df, ["Loser", "Perdedor", "Player2", "LName"])
-    col_surface = buscar_columna(df, ["Surface", "Superficie", "Court Surface", "Court"])
+    col_winner = buscar_columna(df, ["Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"])
+    col_loser = buscar_columna(df, ["Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"])
+    col_surface = buscar_columna(df, ["Surface", "Superficie", "Court Surface", "Court", "surface_name"])
 
     if col_winner is None or col_loser is None:
         return quality
@@ -445,7 +467,7 @@ def crear_quality_map(circuito):
 
     for _, row in df.iterrows():
         level = detectar_nivel_torneo(row)
-        surface = normalizar_superficie_hist(row.get(col_surface, "Hard"), default="Hard") if col_surface else "Hard"
+        surface = detectar_superficie_quality(row, col_surface)
         source = normalizar_texto(row.get("SourceFile", ""))
 
         for player in [normalizar_texto(row.get(col_winner, "")), normalizar_texto(row.get(col_loser, ""))]:
@@ -1489,7 +1511,7 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         "p2": s2,
         "vol_mult": vol_mult,
         "active": bool(s1["flags"] or s2["flags"]),
-        "version": "v22.3.1"
+        "version": "v22.4"
     }
 
 
@@ -1838,17 +1860,74 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     }
 
 def cargar_historicos(circuito):
+    """
+    v22.4 Historical Loader Fix.
+    Antes solo leía .xlsx. Ahora lee .xlsx/.xls/.csv y no falla si los históricos
+    vienen de tennis-data, Ultimate Tennis Stats exportado o ficheros propios.
+    """
     folder = rutas(circuito)["historicos"]
-    files = sorted(glob.glob(os.path.join(folder, "*.xlsx")))
+    patterns = ["*.xlsx", "*.xls", "*.csv"]
+    files = []
+    for pat in patterns:
+        files.extend(glob.glob(os.path.join(folder, pat)))
+    files = sorted(set(files))
+
     dfs = []
     for f in files:
         try:
-            df = pd.read_excel(f)
+            ext = os.path.splitext(f)[1].lower()
+            if ext in [".xlsx", ".xls"]:
+                df = pd.read_excel(f)
+            elif ext == ".csv":
+                try:
+                    df = pd.read_csv(f)
+                except Exception:
+                    df = pd.read_csv(f, sep=";")
+            else:
+                continue
             df["SourceFile"] = os.path.basename(f)
             dfs.append(df)
         except Exception:
             pass
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
+def historicos_diagnostics(circuito):
+    """Diagnóstico visible para saber si el Match Count está leyendo archivos/columnas."""
+    folder = rutas(circuito)["historicos"]
+    patterns = ["*.xlsx", "*.xls", "*.csv"]
+    files = []
+    for pat in patterns:
+        files.extend(glob.glob(os.path.join(folder, pat)))
+    files = sorted(set(files))
+    hist = cargar_historicos(circuito)
+
+    if hist.empty:
+        return {
+            "folder": folder, "folder_exists": os.path.exists(folder),
+            "files_count": len(files), "rows": 0, "columns": [],
+            "winner_col": None, "loser_col": None, "surface_col": None,
+            "sample_players": [], "sample_files": [os.path.basename(x) for x in files[:6]],
+        }
+
+    col_winner = buscar_columna(hist, ["Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"] )
+    col_loser = buscar_columna(hist, ["Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"] )
+    col_surface = buscar_columna(hist, ["Surface", "Superficie", "Court Surface", "Court", "surface_name"] )
+
+    samples = []
+    if col_winner is not None:
+        samples += [normalizar_texto(x) for x in hist[col_winner].dropna().astype(str).head(5).tolist()]
+    if col_loser is not None:
+        samples += [normalizar_texto(x) for x in hist[col_loser].dropna().astype(str).head(5).tolist()]
+
+    return {
+        "folder": folder, "folder_exists": os.path.exists(folder),
+        "files_count": len(files), "rows": int(len(hist)),
+        "columns": list(hist.columns)[:20],
+        "winner_col": col_winner, "loser_col": col_loser, "surface_col": col_surface,
+        "sample_players": samples[:8],
+        "sample_files": [os.path.basename(x) for x in files[:6]],
+    }
 
 
 @st.cache_data
@@ -1871,7 +1950,10 @@ def crear_fatigue_map(circuito):
         return fatigue
 
     df = hist.copy()
-    df = df[df["Comment"].astype(str).str.contains("Completed", na=False)]
+    if "Comment" in df.columns:
+        completed_mask = df["Comment"].astype(str).str.contains("Completed", case=False, na=False)
+        if completed_mask.sum() > 0:
+            df = df[completed_mask]
     df["DateParsed"] = pd.to_datetime(df["Date"], dayfirst=True, errors="coerce")
     df = df.dropna(subset=["DateParsed", "Winner", "Loser"])
     if df.empty:
@@ -2571,8 +2653,8 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.3.1")
-    st.caption("Match Count Fix + Tour Quality Engine")
+    st.header("🎾 Tennis IA v22.4")
+    st.caption("Match Count Loader Fix + Tour Quality Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -2837,6 +2919,20 @@ if modo == "Predictor":
             st.caption(f"Engine {rs.get('version','v22')}")
 
         st.caption("🔎 Match Count Debug")
+        hist_diag = historicos_diagnostics(circuito)
+        if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
+            st.warning(
+                "Históricos no detectados bien: "
+                f"folder={hist_diag.get('folder')} · existe={hist_diag.get('folder_exists')} · "
+                f"files={hist_diag.get('files_count')} · rows={hist_diag.get('rows')} · "
+                f"Winner={hist_diag.get('winner_col')} · Loser={hist_diag.get('loser_col')} · Surface={hist_diag.get('surface_col')}"
+            )
+            if hist_diag.get("sample_files"):
+                st.caption("Files detectados: " + ", ".join(hist_diag.get("sample_files", [])))
+            if hist_diag.get("columns"):
+                st.caption("Columnas detectadas: " + ", ".join([str(x) for x in hist_diag.get("columns", [])[:12]]))
+            if hist_diag.get("sample_players"):
+                st.caption("Jugadores ejemplo: " + ", ".join(hist_diag.get("sample_players", [])[:6]))
         dbg1 = rs.get("p1", {})
         dbg2 = rs.get("p2", {})
         dc1, dc2 = st.columns(2)
@@ -2911,7 +3007,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.3.1 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.4 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
