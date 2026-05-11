@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.7", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.8", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.7"
-QUALITY_ENGINE_VERSION = "v22.7-cache-2026-05-11"
+APP_VERSION = "v22.8"
+QUALITY_ENGINE_VERSION = "v22.8-direct-matchcount-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -642,6 +642,172 @@ def closest_quality_candidates(nombre, quality_map, limit=8):
             })
     candidates.sort(key=lambda x: (x["score"], x["matches_total"]), reverse=True)
     return candidates[:limit]
+
+
+
+def nombre_score_quality_direct(objetivo, candidato):
+    """v22.8: score robusto entre nombre completo y formato tennis-data Apellido I."""
+    if not objetivo or not candidato:
+        return 0.0, "empty"
+    n1, n2 = limpiar(objetivo), limpiar(candidato)
+    if n1 and n1 == n2:
+        return 1.0, "exacto"
+
+    ai1, ai2 = apellido_inicial_key(objetivo), apellido_inicial_key(candidato)
+    if ai1 and ai2 and ai1 == ai2:
+        return 0.995, "apellido+inicial"
+
+    s1, s2 = surname_key(objetivo), surname_key(candidato)
+    t1, t2 = tokens(objetivo), tokens(candidato)
+    if s1 and s2 and s1 == s2:
+        # Si uno está abreviado, comprobamos inicial compatible.
+        initials1 = {x[0] for x in t1 if x and x != s1}
+        initials2 = {x[0] for x in t2 if x and x != s2}
+        if initials1 and initials2 and initials1 & initials2:
+            return 0.96, "apellido+inicial"
+        return 0.84, "apellido"
+
+    sc = similitud_nombre(objetivo, candidato)
+    return float(sc), "fuzzy"
+
+
+def buscar_quality_directo_historicos(nombre, circuito):
+    """
+    v22.8 Direct Match Count.
+    No depende del quality_map guardado en cargar_datos/cache.
+    Lee históricos cargados y cuenta el jugador en Winner/Loser al vuelo.
+    """
+    hist = cargar_historicos(circuito)
+    meta = {
+        "version": QUALITY_ENGINE_VERSION,
+        "mode": "direct_historicos",
+        "hist_rows": int(len(hist)) if hist is not None else 0,
+        "raw_player_count": 0,
+        "quality_keys": 0,
+        "sample_names": [],
+    }
+
+    fallback = {
+        "matches_total": 0,
+        "matches_surface": {"Hard": 0, "Clay": 0, "Grass": 0},
+        "level_counts": {"tour": 0, "challenger": 0, "itf": 0, "qualy": 0, "unknown": 0},
+        "tour_quality": 0.45,
+        "stability": {"Hard": 0.05, "Clay": 0.05, "Grass": 0.05},
+        "confidence": {"Hard": 0.32, "Clay": 0.32, "Grass": 0.32},
+        "raw_names": [],
+        "aliases": [],
+        "source_files": [],
+        "matched_name": "NO ENCONTRADO",
+        "match_score": 0.0,
+        "quality_map_size": 0,
+        "quality_meta": meta,
+        "candidate_matches": [],
+        "direct_engine": True,
+    }
+
+    if hist is None or hist.empty:
+        return fallback
+
+    df = hist.copy()
+    if "Comment" in df.columns:
+        completed_mask = df["Comment"].astype(str).str.contains("Completed", case=False, na=False)
+        if completed_mask.sum() > 0:
+            df = df[completed_mask]
+
+    col_winner = buscar_columna(df, ["Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"])
+    col_loser = buscar_columna(df, ["Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"])
+    col_surface = buscar_columna(df, ["Surface", "Superficie", "Court Surface", "Court", "surface_name"])
+
+    if col_winner is None or col_loser is None:
+        return fallback
+
+    rows = []
+    raw_names = set()
+    aliases = set()
+    source_files = set()
+    candidate_best = {}
+    unique_players = set()
+    best_score = 0.0
+    best_name = "NO ENCONTRADO"
+
+    # Umbral algo flexible: apellido+inicial entra seguro; fuzzy puro exige más.
+    ACCEPT_SCORE = 0.92
+
+    for _, row in df.iterrows():
+        for col in [col_winner, col_loser]:
+            cand = normalizar_texto(row.get(col, ""))
+            if not cand:
+                continue
+            unique_players.add(cand)
+            sc, reason = nombre_score_quality_direct(nombre, cand)
+
+            # Guardamos radar de candidatos por nombre histórico.
+            old = candidate_best.get(cand)
+            if old is None or sc > old["score"]:
+                candidate_best[cand] = {
+                    "name": cand,
+                    "score": float(sc),
+                    "reason": reason,
+                    "matches_total": 0,
+                    "surface": {"Hard": 0, "Clay": 0, "Grass": 0},
+                    "source_files": [],
+                }
+
+            if sc > best_score:
+                best_score = float(sc)
+                best_name = cand
+
+            if sc >= ACCEPT_SCORE:
+                surface = detectar_superficie_quality(row, col_surface)
+                level = detectar_nivel_torneo(row)
+                rows.append({"surface": surface, "level": level})
+                raw_names.add(cand)
+                aliases.update(variantes_nombre_quality(cand))
+                ai = apellido_inicial_key(cand)
+                if ai:
+                    aliases.add(ai)
+                    aliases.add(limpiar(ai))
+                src = normalizar_texto(row.get("SourceFile", ""))
+                if src:
+                    source_files.add(src)
+
+                cb = candidate_best[cand]
+                cb["matches_total"] += 1
+                cb["surface"][surface] = cb["surface"].get(surface, 0) + 1
+                if src and src not in cb["source_files"]:
+                    cb["source_files"].append(src)
+
+    meta["raw_player_count"] = int(len(unique_players))
+    meta["quality_keys"] = int(len(unique_players))
+    meta["sample_names"] = sorted(list(unique_players))[:8]
+    fallback["quality_meta"] = meta
+    fallback["quality_map_size"] = int(len(unique_players))
+
+    radar = sorted(candidate_best.values(), key=lambda x: (x["score"], x["matches_total"]), reverse=True)[:8]
+    fallback["candidate_matches"] = radar
+    if best_score > 0:
+        fallback["matched_name"] = best_name
+        fallback["match_score"] = float(best_score)
+
+    if not rows:
+        return fallback
+
+    q = fusionar_quality_rows([{
+        "_rows": rows,
+        "raw_names": raw_names,
+        "aliases": aliases,
+        "source_files": source_files,
+    }])
+    if not q:
+        return fallback
+
+    q["matched_name"] = sorted(raw_names)[0] if raw_names else best_name
+    q["match_score"] = float(best_score)
+    q["quality_map_size"] = int(len(unique_players))
+    q["quality_meta"] = meta
+    q["candidate_matches"] = radar
+    q["direct_engine"] = True
+    return q
 
 def buscar_quality(nombre, quality_map):
     """
@@ -1566,6 +1732,11 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         elo_clay = d.get("Clay", 1500)
         elo_grass = d.get("Grass", 1500)
         q = d.get("Quality", {}) or {}
+        # v22.8: si el QualityMap viene vacío/cacheado o no encontró al jugador,
+        # recalculamos el Match Count directamente desde históricos en este partido.
+        q_direct = buscar_quality_directo_historicos(d.get("Player", ""), circuito)
+        if (not q.get("quality_meta")) or int(q.get("matches_total", 0) or 0) == 0 or q.get("matched_name") in [None, "", "NO ENCONTRADO"]:
+            q = q_direct
 
         matches_total = q.get("matches_total", 0)
         surface_counts = q.get("matches_surface", {}) if isinstance(q.get("matches_surface", {}), dict) else {}
@@ -1673,7 +1844,7 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         "p2": s2,
         "vol_mult": vol_mult,
         "active": bool(s1["flags"] or s2["flags"]),
-        "version": "v22.7"
+        "version": "v22.8"
     }
 
 
@@ -2023,7 +2194,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
 
 def cargar_historicos(circuito):
     """
-    v22.7 Historical Loader + Name Radar + Cache Breaker.
+    v22.8 Historical Loader + Name Radar + Cache Breaker.
     Antes solo leía .xlsx. Ahora lee .xlsx/.xls/.csv y no falla si los históricos
     vienen de tennis-data, Ultimate Tennis Stats exportado o ficheros propios.
     """
@@ -2824,7 +2995,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.7")
+    st.header("🎾 Tennis IA v22.8")
     st.caption("Match Count Loader Fix + Name Radar Pro + Cache Breaker")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3205,7 +3376,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.7 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.8 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
