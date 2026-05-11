@@ -2,13 +2,13 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import random, re, os, glob, unicodedata
+import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.16", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.18", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.16"
-QUALITY_ENGINE_VERSION = "v22.16-fast-challenger-loader-2026-05-11"
+APP_VERSION = "v22.17"
+QUALITY_ENGINE_VERSION = "v22.18-force-direct-challenger-count-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -280,7 +280,7 @@ def buscar_stats(nombre, stats_map):
 
 def detectar_nivel_torneo(row):
     """
-    v22.16 Tour Quality + Challenger CSV Fix.
+    v22.17 Tour Quality + Challenger CSV Fix.
 
     Soporta dos familias de históricos:
     1) Excel tipo tennis-data ATP Tour con columnas Series/Tournament/Round.
@@ -586,7 +586,7 @@ def crear_quality_map(circuito, cache_version=QUALITY_ENGINE_VERSION):
 
     df = hist.copy()
     if "Comment" in df.columns:
-        # v22.16: filtro por Comment sin borrar filas CSV Challenger/Qualy.
+        # v22.17: filtro por Comment sin borrar filas CSV Challenger/Qualy.
         # Al concatenar Excel Tour + CSV qual_chall, las filas CSV suelen tener Comment vacío/NaN.
         # Antes, como los Excel sí tenían Comment=Completed, se aplicaba df[completed_mask]
         # y se eliminaban TODOS los CSV. Ahora solo filtramos filas que realmente traen Comment.
@@ -756,13 +756,14 @@ def nombre_score_quality_direct(objetivo, candidato):
     return float(sc), "fuzzy"
 
 
-def buscar_quality_directo_historicos(nombre, circuito):
+@st.cache_data(show_spinner=False)
+def buscar_quality_directo_historicos(nombre, circuito, cache_version=QUALITY_ENGINE_VERSION):
     """
     v22.9 Direct Match Count + Tour Quality Fix.
     No depende del quality_map guardado en cargar_datos/cache.
     Lee históricos cargados y cuenta el jugador en Winner/Loser al vuelo.
     """
-    hist = cargar_historicos(circuito, cache_version=QUALITY_ENGINE_VERSION)
+    hist = cargar_historicos(circuito, cache_version=cache_version)
     meta = {
         "version": QUALITY_ENGINE_VERSION,
         "mode": "direct_historicos_cached",
@@ -795,9 +796,12 @@ def buscar_quality_directo_historicos(nombre, circuito):
 
     df = hist.copy()
     if "Comment" in df.columns:
-        completed_mask = df["Comment"].astype(str).str.contains("Completed", case=False, na=False)
-        if completed_mask.sum() > 0:
-            df = df[completed_mask]
+        # v22.18: conservar CSV Challenger/Qualy aunque no traigan Comment.
+        comment_txt = df["Comment"].apply(normalizar_texto).replace({"nan": "", "NaN": "", "None": ""})
+        has_comment = comment_txt.str.strip().ne("")
+        completed_mask = comment_txt.str.contains("Completed", case=False, na=False)
+        if has_comment.any() and completed_mask.sum() > 0:
+            df = df[(~has_comment) | completed_mask]
 
     col_winner = buscar_columna(df, ["MC_Winner", "Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"])
     col_loser = buscar_columna(df, ["MC_Loser", "Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"])
@@ -1817,11 +1821,19 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         elo_clay = d.get("Clay", 1500)
         elo_grass = d.get("Grass", 1500)
         q = d.get("Quality", {}) or {}
-        # v22.16 Fast Guard: NO recalcular histórico directo si el QualityMap ya encontró al jugador.
-        # En v22.15 esto se ejecutaba siempre y podía dejar la app colgada con muchos CSV.
-        needs_direct = (not q.get("quality_meta")) or int(q.get("matches_total", 0) or 0) == 0 or q.get("matched_name") in [None, "", "NO ENCONTRADO"]
-        if needs_direct:
-            q = buscar_quality_directo_historicos(d.get("Player", ""), circuito)
+        # v22.18: fuerza un conteo directo cacheado y lo usa si aporta más partidos.
+        # Esto corrige el caso en el que el QualityMap global queda indexado solo con ATP Tour
+        # aunque los CSV Challenger estén cargados. Al estar cacheado, no bloquea la simulación.
+        q_direct = buscar_quality_directo_historicos(d.get("Player", ""), circuito)
+        try:
+            q_total = int(q.get("matches_total", 0) or 0)
+            d_total = int(q_direct.get("matches_total", 0) or 0)
+            q_ch = int((q.get("level_counts", {}) or {}).get("challenger", 0) or 0) + int((q.get("level_counts", {}) or {}).get("qualy", 0) or 0)
+            d_ch = int((q_direct.get("level_counts", {}) or {}).get("challenger", 0) or 0) + int((q_direct.get("level_counts", {}) or {}).get("qualy", 0) or 0)
+        except Exception:
+            q_total, d_total, q_ch, d_ch = 0, 0, 0, 0
+        if (d_total > q_total) or (d_ch > q_ch) or (not q.get("quality_meta")) or q.get("matched_name") in [None, "", "NO ENCONTRADO"]:
+            q = q_direct
 
         matches_total = q.get("matches_total", 0)
         surface_counts = q.get("matches_surface", {}) if isinstance(q.get("matches_surface", {}), dict) else {}
@@ -1936,7 +1948,7 @@ def rating_sanity_engine(d1, d2, surface, circuito):
     }
 
 
-def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
+def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, progress_callback=None):
     e1, e2 = d1[surface], d2[surface]
 
     # v22.1 Match Count + Tour Quality Engine
@@ -2077,7 +2089,9 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         "fav_2_0": 0, "dog_wins_set": 0, "long_match": 0
     }
 
-    for _ in range(n):
+    progress_step = max(1, n // 100)
+
+    for sim_i in range(n):
         sets1 = sets2 = games = 0
         tb_seen = False
         first_done = False
@@ -2144,6 +2158,12 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
             res["long_match"] += 1
 
         res["games"].append(games)
+
+        if progress_callback is not None and ((sim_i + 1) % progress_step == 0 or (sim_i + 1) == n):
+            try:
+                progress_callback(sim_i + 1, n)
+            except Exception:
+                pass
 
     p1_raw = res["p1"] / n
     p1_cal = calibrar_probabilidad(p1_raw, surface)
@@ -2282,7 +2302,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
 
 
 def _first_nonempty_from_columns(df, candidates):
-    """v22.16: crea una serie unificada usando la primera columna no vacía por fila."""
+    """v22.17: crea una serie unificada usando la primera columna no vacía por fila."""
     existing = [c for c in candidates if c in df.columns]
     if not existing:
         return pd.Series([""] * len(df), index=df.index)
@@ -2295,7 +2315,7 @@ def _first_nonempty_from_columns(df, candidates):
 
 def normalizar_schema_historicos(df):
     """
-    v22.16 Unified Historical Schema.
+    v22.17 Unified Historical Schema.
     Al concatenar Excel ATP Tour con CSV qual_chall, pandas deja columnas separadas:
     Winner/Loser para Excel y winner_name/loser_name para CSV. Antes buscar_columna elegía Winner
     y las filas CSV quedaban vacías. Esta función crea columnas MC_* para que todos los loaders
@@ -2346,7 +2366,7 @@ def _is_supported_history_file(path):
 @st.cache_data(show_spinner=False)
 def descubrir_archivos_historicos(circuito, cache_version=QUALITY_ENGINE_VERSION):
     """
-    v22.16 Deep File Scanner.
+    v22.17 Deep File Scanner.
     - Escanea carpetas esperadas.
     - Además escanea TODO datos/atp de forma recursiva por si los CSV están en otra subcarpeta.
     - Detecta extensiones en mayúsculas: .CSV, .XLSX, .XLS.
@@ -2365,7 +2385,7 @@ def descubrir_archivos_historicos(circuito, cache_version=QUALITY_ENGINE_VERSION
                 if _is_supported_history_file(fp):
                     files.append(fp)
 
-    # 2) v22.16 Fast mode: NO escanea todo datos/atp en cada ejecución.
+    # 2) v22.17 Fast mode: NO escanea todo datos/atp en cada ejecución.
     # Si los CSV están en datos/atp/challenger o qual_chall, ya entran arriba de forma recursiva.
     # Esto evita cuelgues al pulsar Simular con repos grandes.
     files = sorted(set(files))
@@ -2401,7 +2421,7 @@ def descubrir_archivos_historicos(circuito, cache_version=QUALITY_ENGINE_VERSION
 @st.cache_data(show_spinner=False)
 def cargar_historicos(circuito, cache_version=QUALITY_ENGINE_VERSION):
     """
-    v22.16 Historical Loader.
+    v22.17 Historical Loader.
 
     Lee históricos Tour y CSV Challenger/Qualy desde carpetas conocidas y también mediante
     escaneo profundo de datos/atp. Soporta .xlsx, .xls, .csv, también con extensión mayúscula.
@@ -3243,15 +3263,33 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.16")
-    st.caption("Match Count Loader Fix + Name Radar Pro + Cache Breaker")
+    st.header("🎾 Tennis IA v22.18")
+    st.caption("UX Progress Engine + Fast Challenger Loader")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
     circuito = st.radio("Circuito", ["ATP", "WTA"])
     modo = st.radio("Modo", ["Predictor", "Validador histórico", "Analyzer"])
 
-db = cargar_datos(circuito)
+# =========================================================
+# UX Progress Engine: carga visible de datos
+# =========================================================
+
+load_status = st.status("🔄 Cargando datos del modelo...", expanded=False)
+with load_status:
+    load_bar = st.progress(0, text="Preparando lectura de ficheros...")
+    load_bar.progress(15, text="Leyendo Elo, stats y fatiga...")
+    db = cargar_datos(circuito)
+    load_bar.progress(70, text="Construyendo Match Count / QualityMap...")
+    try:
+        qm_preview = crear_quality_map(circuito)
+        q_players = qm_preview.get("_meta", {}).get("raw_player_count", "?") if isinstance(qm_preview, dict) else "?"
+    except Exception:
+        q_players = "?"
+    load_bar.progress(100, text=f"Datos listos · jugadores={len(db)} · quality players={q_players}")
+
+load_status.update(label=f"✅ Datos listos · {len(db)} jugadores cargados", state="complete", expanded=False)
+
 if not db:
     st.error("No se encontraron jugadores. Revisa carpetas y archivos.")
     st.stop()
@@ -3270,8 +3308,29 @@ if modo == "Predictor":
     if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
         d1, d2 = db[p1_name], db[p2_name]
         best_of = 5 if "5" in formato else 3
-        with st.spinner(f"Simulando {sims:,} partidos..."):
-            sim = sim_match(d1,d2,surface,circuito,best_of,sims,context_row={})
+        sim_status = st.status(f"🎲 Simulando {sims:,} partidos Monte Carlo...", expanded=True)
+        with sim_status:
+            sim_bar = st.progress(0, text=f"Simulaciones: 0 / {sims:,}")
+            sim_start = time.time()
+
+            def update_sim_progress(done, total):
+                pct = min(1.0, max(0.0, done / total)) if total else 1.0
+                elapsed = max(0.001, time.time() - sim_start)
+                rate = done / elapsed if done else 0
+                eta = (total - done) / rate if rate > 0 else 0
+                sim_bar.progress(
+                    pct,
+                    text=f"Simulando {done:,} / {total:,} ({pct:.0%}) · transcurrido {elapsed:.1f}s · ETA {eta:.1f}s"
+                )
+
+            sim = sim_match(
+                d1, d2, surface, circuito, best_of, sims,
+                context_row={},
+                progress_callback=update_sim_progress
+            )
+            sim_bar.progress(1.0, text=f"Simulación completada · {sims:,} partidos")
+
+        sim_status.update(label=f"✅ Simulación completada · {sims:,} partidos", state="complete", expanded=False)
 
         st.caption(
             f"📁 Stats usadas: {stats_filename_label(circuito, 'serve', surface)} · "
@@ -3541,7 +3600,7 @@ if modo == "Predictor":
             )
             if qm1.get("sample_names"):
                 st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-            st.caption("Tour Quality v22.16: loader rápido cacheado; escanea recursivo solo carpetas históricas/challenger para evitar cuelgues.")
+            st.caption("Tour Quality v22.18: conteo directo cacheado por jugador; integra Challenger/Qualy aunque el QualityMap global quede corto.")
         else:
             st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
         if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -3641,7 +3700,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.16 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.18 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
