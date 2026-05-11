@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v20", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v21", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -704,7 +704,7 @@ def smart_set_dynamics(p1_win, p2_win, hold1, hold2, tb_rate, vol, surface, circ
 
 def wta_match_script_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, circuito):
     """
-    v19.2 Betting Filters Engine
+    v19.2 ATP Clay Specialist Engine
     Detecta perfiles reales WTA:
     - dominadora top
     - clay grinder
@@ -784,7 +784,7 @@ def wta_match_script_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, c
 
 def elite_wta_separation(d1, d2, hold1, hold2, ret1, ret2, surface, circuito):
     """
-    v19.1 Betting Filters Engine.
+    v19.1 ATP Clay Specialist Engine.
     La WTA no solo es caos: las top consolidan ventajas y castigan más.
     Ajusta solo WTA y protege ATP.
     """
@@ -859,6 +859,133 @@ def elite_wta_separation(d1, d2, hold1, hold2, ret1, ret2, surface, circuito):
     return hold1, hold2, ret1, ret2, info
 
 
+
+def clay_return_weight_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, circuito):
+    out = {
+        "active": False, "profile": "neutral", "vol_mult": 1.0,
+        "hold_adj1": 0.0, "hold_adj2": 0.0,
+        "ret_adj1": 0.0, "ret_adj2": 0.0,
+        "notes": []
+    }
+    if circuito != "ATP" or surface != "Clay":
+        return hold1, hold2, ret1, ret2, out
+
+    e1, e2 = d1.get("Clay",1500), d2.get("Clay",1500)
+    r1, r2 = d1.get("Rank",999), d2.get("Rank",999)
+    gap = abs(e1 - e2)
+    ace1, ace2 = s1.get("ace",0.05), s2.get("ace",0.05)
+
+    if ret1 >= 0.335 and hold1 <= 0.705:
+        out["active"] = True
+        out["profile"] = "clay_grinder_p1"
+        out["ret_adj1"] += 0.018
+        out["hold_adj1"] -= 0.006
+        out["vol_mult"] *= 0.94
+        out["notes"].append("P1 grinder")
+
+    if ret2 >= 0.335 and hold2 <= 0.705:
+        out["active"] = True
+        out["profile"] = "clay_grinder_p2"
+        out["ret_adj2"] += 0.018
+        out["hold_adj2"] -= 0.006
+        out["vol_mult"] *= 0.94
+        out["notes"].append("P2 grinder")
+
+    if gap >= 115:
+        out["active"] = True
+        if e1 > e2:
+            out["profile"] = "clay_specialist_p1"
+            out["ret_adj1"] += 0.018
+            out["hold_adj1"] += 0.008
+            out["hold_adj2"] -= 0.006
+            out["vol_mult"] *= 0.89
+            out["notes"].append("P1 clay edge")
+        else:
+            out["profile"] = "clay_specialist_p2"
+            out["ret_adj2"] += 0.018
+            out["hold_adj2"] += 0.008
+            out["hold_adj1"] -= 0.006
+            out["vol_mult"] *= 0.89
+            out["notes"].append("P2 clay edge")
+
+    if e1 > e2 + 80 and r1 + 35 <= r2:
+        out["active"] = True
+        out["profile"] = "clay_favorite_p1"
+        out["ret_adj1"] += 0.012
+        out["hold_adj1"] += 0.006
+        out["vol_mult"] *= 0.92
+        out["notes"].append("P1 rank+clay edge")
+
+    if e2 > e1 + 80 and r2 + 35 <= r1:
+        out["active"] = True
+        out["profile"] = "clay_favorite_p2"
+        out["ret_adj2"] += 0.012
+        out["hold_adj2"] += 0.006
+        out["vol_mult"] *= 0.92
+        out["notes"].append("P2 rank+clay edge")
+
+    if ace1 >= 0.105 and ret1 <= 0.275:
+        out["active"] = True
+        out["hold_adj1"] -= 0.014
+        out["vol_mult"] *= 1.04
+        out["notes"].append("P1 big server clay nerf")
+        if out["profile"] == "neutral":
+            out["profile"] = "big_server_nerf_p1"
+
+    if ace2 >= 0.105 and ret2 <= 0.275:
+        out["active"] = True
+        out["hold_adj2"] -= 0.014
+        out["vol_mult"] *= 1.04
+        out["notes"].append("P2 big server clay nerf")
+        if out["profile"] == "neutral":
+            out["profile"] = "big_server_nerf_p2"
+
+    out["hold_adj1"] = float(np.clip(out["hold_adj1"], -0.025, 0.030))
+    out["hold_adj2"] = float(np.clip(out["hold_adj2"], -0.025, 0.030))
+    out["ret_adj1"] = float(np.clip(out["ret_adj1"], -0.005, 0.035))
+    out["ret_adj2"] = float(np.clip(out["ret_adj2"], -0.005, 0.035))
+    out["vol_mult"] = float(np.clip(out["vol_mult"], 0.82, 1.10))
+
+    hold1 = np.clip(hold1 + out["hold_adj1"], 0.42, 0.84)
+    hold2 = np.clip(hold2 + out["hold_adj2"], 0.42, 0.84)
+    ret1 = np.clip(ret1 + out["ret_adj1"], 0.10, 0.42)
+    ret2 = np.clip(ret2 + out["ret_adj2"], 0.10, 0.42)
+
+    return hold1, hold2, ret1, ret2, out
+
+
+def clay_market_adjustments(circuito, surface, clay_engine, fav20, dogset, longm, p1_cal):
+    if circuito != "ATP" or surface != "Clay" or not clay_engine.get("active", False):
+        return fav20, dogset, longm
+
+    profile = clay_engine.get("profile", "")
+    fav_prob = max(p1_cal, 1 - p1_cal)
+
+    if "grinder" in profile:
+        longm *= 1.06
+        dogset *= 1.03
+
+    if "specialist" in profile or "favorite" in profile:
+        if fav_prob >= 0.62:
+            fav20 *= 1.08
+            dogset *= 0.94
+            longm *= 0.96
+        if fav_prob >= 0.70:
+            fav20 *= 1.10
+            dogset *= 0.88
+            longm *= 0.92
+
+    if "big_server_nerf" in profile:
+        dogset *= 1.06
+        longm *= 1.04
+
+    return (
+        float(np.clip(fav20, 0.0, 0.95)),
+        float(np.clip(dogset, 0.05, 0.95)),
+        float(np.clip(longm, 0.05, 0.95))
+    )
+
+
 def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     e1, e2 = d1[surface], d2[surface]
     elo_diff = e1 - e2
@@ -892,6 +1019,11 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         ret2 = np.clip(ret2, 0.10, 0.38)
 
     hold1, hold2 = aplicar_return_pressure(raw1, raw2, ret1, ret2, surface)
+
+    # v21 ATP Clay Specialist Engine
+    hold1, hold2, ret1, ret2, clay_engine = clay_return_weight_engine(
+        d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, circuito
+    )
 
     # v17 Fatigue Engine
     fatigue1 = d1.get("Fatigue", {})
@@ -945,6 +1077,10 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         vol += 0.006
     vol += fatigue_vol_extra
     vol += ctx.get("vol_adj", 0)
+
+    if circuito == "ATP" and surface == "Clay":
+        vol *= clay_engine.get("vol_mult", 1.0)
+        vol = float(np.clip(vol, 0.020, 0.075))
 
     # v19 WTA Controlled Chaos:
     # WTA sigue siendo variable, pero protegemos top players y gaps grandes.
@@ -1049,7 +1185,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     raw_dogset = res["dog_wins_set"] / n
     raw_long = res["long_match"] / n
 
-    # v18.1 Betting Filters Engine: se aplica después de simular, no antes.
+    # v18.1 ATP Clay Specialist Engine: se aplica después de simular, no antes.
     set_dyn = smart_set_dynamics(
         p1_raw, 1 - p1_raw,
         hold1, hold2,
@@ -1106,6 +1242,11 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         fav20 = float(np.clip(fav20, 0.0, 0.92))
         longm = float(np.clip(longm, 0.05, 0.92))
 
+    # v21 ATP Clay market logic
+    fav20, dogset, longm = clay_market_adjustments(
+        circuito, surface, clay_engine, fav20, dogset, longm, p1_cal
+    )
+
     return {
         "p1": p1_raw,
         "p2": 1 - p1_raw,
@@ -1142,6 +1283,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         "tournament_ctx": ctx,
         "set_dynamics": set_dyn,
         "wta_engine_active": circuito == "WTA",
+        "clay_engine": clay_engine,
         "wta_separation": wta_sep,
         "wta_script": wta_script
     }
@@ -1301,7 +1443,7 @@ def buscar_fatigue(nombre, fatigue_map):
 
 def tournament_context_adjustments(context_row, p1_name="", p2_name=""):
     """
-    v18 Betting Filters Engine
+    v18 ATP Clay Specialist Engine
     """
     import numpy as np
 
@@ -1685,8 +1827,8 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
 
     elif circuito == "ATP" and surface == "Clay":
         add_signal("Over 18.5", over18, 0.72, "over", "ATP Clay: over bajo muy fuerte", 2)
-        add_signal("Over 19.5", over19, 0.65, "over", "ATP Clay: buena señal si no hay favorito arrasador", 1)
-        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.72, "ml", "ATP Clay exige más margen ML", 0)
+        add_signal("Over 19.5", over19, 0.64, "over", "ATP Clay: buena señal si clay engine acompaña", 1)
+        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.70, "ml", "ATP Clay con especialista/favorito claro", 0)
 
     elif circuito == "WTA":
         add_signal(f"ML favorito: {fav_name}", fav_prob, 0.68, "ml", "WTA: exigir probabilidad alta", 1)
@@ -1730,7 +1872,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
 
 def render_betting_filters(filters):
     st.divider()
-    st.subheader("💎 Betting Filters Engine")
+    st.subheader("💎 ATP Clay Specialist Engine")
 
     main = filters.get("main")
     status = filters.get("status", "⚠️ NO BET")
@@ -1767,8 +1909,8 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v20")
-    st.caption("Betting Filters Engine")
+    st.header("🎾 Tennis IA v21")
+    st.caption("ATP Clay Specialist Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -1861,6 +2003,26 @@ if modo == "Predictor":
             st.metric(d2["Player"], f"{sim['hold2']:.1%}", f"Raw hold {sim['raw_hold2']:.1%}")
             st.caption(f"{perfil_legible(sim['p2_profile'])} · Return strength {sim['ret2']:.1%}")
 
+
+        if circuito == "ATP" and surface == "Clay":
+            st.divider()
+            st.subheader("🧱 ATP Clay Specialist Engine")
+
+            ce = sim.get("clay_engine", {})
+            c1,c2,c3 = st.columns(3)
+
+            with c1:
+                st.metric("Activo", "Sí" if ce.get("active", False) else "No")
+
+            with c2:
+                st.metric("Perfil", ce.get("profile", "neutral"))
+
+            with c3:
+                st.metric("Vol mult", f"{ce.get('vol_mult',1.0):.2f}")
+
+            if ce.get("notes"):
+                st.caption(" · ".join(ce.get("notes", [])))
+
         st.divider()
         st.subheader("🎯 Tie-break Intelligence")
 
@@ -1903,7 +2065,7 @@ if modo == "Predictor":
 
 
         st.divider()
-        st.subheader("🎾 Betting Filters Engine")
+        st.subheader("🎾 ATP Clay Specialist Engine")
 
         sd = sim.get("set_dynamics", {})
 
@@ -1972,6 +2134,8 @@ if modo == "Predictor":
         if sim.get("fatigue1", {}).get("fatigue_score", 0) >= 0.030: tags.append(f"🔋 Fatiga {d1['Player']}")
         if sim.get("fatigue2", {}).get("fatigue_score", 0) >= 0.030: tags.append(f"🔋 Fatiga {d2['Player']}")
         if sim.get("long_match", 0) >= 0.65: tags.append("📈 Partido largo probable")
+        if circuito == "ATP" and surface == "Clay" and sim.get("clay_engine", {}).get("active", False):
+            tags.append(f"🧱 Clay engine: {sim.get('clay_engine', {}).get('profile','neutral')}")
         if sim.get("fav_2_0", 0) >= 0.55: tags.append("🔥 Spot favorito 2-0")
         tc = sim.get("tournament_ctx", {})
         if "Indoor" in tc.get("court",""): tags.append("🏟️ Indoor boost")
@@ -1998,7 +2162,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v20 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v21 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -2038,7 +2202,7 @@ elif modo == "Validador histórico":
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v20.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v21.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
@@ -2088,4 +2252,4 @@ else:
         st.divider()
         st.subheader("🧾 Detalle base")
         st.dataframe(val, use_container_width=True)
-        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v20.csv", mime="text/csv")
+        st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v21.csv", mime="text/csv")
