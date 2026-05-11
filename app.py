@@ -271,10 +271,150 @@ def buscar_stats(nombre, stats_map):
         return out
     return None
 
+# =========================================================
+# v22.1 MATCH COUNT + TOUR QUALITY ENGINE
+# =========================================================
+
+def detectar_nivel_torneo(row):
+    """
+    Clasifica la calidad de procedencia del partido histórico.
+    Funciona aunque el Excel use Series/Tournament/Level/SourceFile.
+    """
+    txt = " ".join(str(row.get(c, "")) for c in ["Series", "Tournament", "Level", "SourceFile", "Comment"]).lower()
+
+    if any(x in txt for x in ["grand slam", "masters", "atp 1000", "wta 1000", "atp 500", "wta 500", "atp 250", "wta 250", "tour"]):
+        return "tour"
+    if "challenger" in txt or "ch " in txt or " ch" in txt:
+        return "challenger"
+    if any(x in txt for x in ["itf", "futures", "m15", "m25", "w15", "w25", "w35", "w50", "w75", "w100"]):
+        return "itf"
+    if "qual" in txt or "q-" in txt:
+        return "qualy"
+    return "unknown"
+
+
+def crear_quality_map(circuito):
+    """
+    v22.1 Match Count + Tour Quality Engine.
+    Calcula para cada jugador:
+    - partidos totales y por superficie
+    - reparto Tour / Challenger / ITF / Qualy
+    - score de calidad del Elo
+    - estabilidad por superficie
+    - confianza real del rating
+    """
+    hist = cargar_historicos(circuito)
+    quality = {}
+
+    if hist.empty:
+        return quality
+
+    df = hist.copy()
+    if "Comment" in df.columns:
+        df = df[df["Comment"].astype(str).str.contains("Completed", na=False)]
+
+    if "Winner" not in df.columns or "Loser" not in df.columns:
+        return quality
+
+    if "Surface" not in df.columns:
+        df["Surface"] = "Hard"
+
+    player_rows = {}
+
+    for _, row in df.iterrows():
+        level = detectar_nivel_torneo(row)
+        surface = str(row.get("Surface", "Hard")).strip().title()
+        if surface not in ["Hard", "Clay", "Grass"]:
+            surface = "Hard"
+
+        for player in [normalizar_texto(row.get("Winner", "")), normalizar_texto(row.get("Loser", ""))]:
+            pid = limpiar(player)
+            if not pid:
+                continue
+            player_rows.setdefault(pid, []).append({"surface": surface, "level": level})
+
+    for pid, rows in player_rows.items():
+        total = len(rows)
+        surface_counts = {sf: sum(1 for r in rows if r["surface"] == sf) for sf in ["Hard", "Clay", "Grass"]}
+        level_counts = {lv: sum(1 for r in rows if r["level"] == lv) for lv in ["tour", "challenger", "itf", "qualy", "unknown"]}
+
+        if total <= 0:
+            continue
+
+        tour_weighted = (
+            level_counts["tour"] * 1.00 +
+            level_counts["challenger"] * 0.62 +
+            level_counts["qualy"] * 0.50 +
+            level_counts["itf"] * 0.32 +
+            level_counts["unknown"] * 0.55
+        ) / total
+
+        quality[pid] = {
+            "matches_total": total,
+            "matches_surface": surface_counts,
+            "level_counts": level_counts,
+            "tour_quality": float(np.clip(tour_weighted, 0.30, 1.00)),
+        }
+
+        # Stability por superficie: sube rápido hasta 20-25 partidos, pero penaliza muestras pequeñas.
+        stability = {}
+        confidence = {}
+        for sf in ["Hard", "Clay", "Grass"]:
+            n_sf = surface_counts.get(sf, 0)
+            sample_score = np.sqrt(n_sf / (n_sf + 14)) if n_sf > 0 else 0.0
+            total_score = np.sqrt(total / (total + 28))
+            stab = (sample_score * 0.72) + (total_score * 0.28)
+            conf = 0.38 + 0.62 * stab * quality[pid]["tour_quality"]
+
+            if n_sf < 5:
+                conf -= 0.18
+            elif n_sf < 10:
+                conf -= 0.09
+            elif n_sf < 18:
+                conf -= 0.04
+
+            if level_counts["tour"] == 0 and level_counts["challenger"] >= 1:
+                conf -= 0.07
+            if level_counts["itf"] >= max(3, total * 0.45):
+                conf -= 0.10
+
+            stability[sf] = float(np.clip(stab, 0.05, 1.00))
+            confidence[sf] = float(np.clip(conf, 0.28, 1.00))
+
+        quality[pid]["stability"] = stability
+        quality[pid]["confidence"] = confidence
+
+    return quality
+
+
+def buscar_quality(nombre, quality_map):
+    nid = limpiar(nombre)
+    if nid in quality_map:
+        return quality_map[nid]
+
+    mejor, best = None, 0
+    for qid, data in quality_map.items():
+        score = similitud_nombre(nombre, qid)
+        if score > best:
+            best, mejor = score, data
+
+    if mejor is not None and best >= 0.72:
+        return mejor
+
+    return {
+        "matches_total": 0,
+        "matches_surface": {"Hard": 0, "Clay": 0, "Grass": 0},
+        "level_counts": {"tour": 0, "challenger": 0, "itf": 0, "qualy": 0, "unknown": 0},
+        "tour_quality": 0.45,
+        "stability": {"Hard": 0.05, "Clay": 0.05, "Grass": 0.05},
+        "confidence": {"Hard": 0.32, "Clay": 0.32, "Grass": 0.32},
+    }
+
 @st.cache_data
 def cargar_datos(circuito):
     r = rutas(circuito)
     fatigue_map = crear_fatigue_map(circuito)
+    quality_map = crear_quality_map(circuito)
 
     # =========================
     # Mapas generales
@@ -387,7 +527,8 @@ def cargar_datos(circuito):
             "Grass": grass,
             "Stats": stats_general,
             "StatsBySurface": stats_by_surface,
-            "Fatigue": buscar_fatigue(nombre, fatigue_map)
+            "Fatigue": buscar_fatigue(nombre, fatigue_map),
+            "Quality": buscar_quality(nombre, quality_map)
         }
 
     return players
@@ -1103,10 +1244,13 @@ def clay_dominance_preservation(d1, d2, hold1, hold2, ret1, ret2, surface, circu
 
 def rating_sanity_engine(d1, d2, surface, circuito):
     """
-    v22 Rating Sanity Engine.
-    Detecta ratings potencialmente inflados o incoherentes.
-    De momento no destruye el core: ajusta ligeramente volatilidad
-    y sirve como diagnóstico visible.
+    v22.1 Match Count + Tour Quality Engine.
+    Combina el sanity v22 con evidencia real de históricos:
+    - nº partidos por superficie
+    - calidad Tour / Challenger / ITF
+    - stability score
+    - confidence real del Elo
+    - penalización de ratings pequeños o inflados
     """
     def player_sanity(d):
         rank = d.get("Rank", 999)
@@ -1114,63 +1258,114 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         elo_hard = d.get("Hard", 1500)
         elo_clay = d.get("Clay", 1500)
         elo_grass = d.get("Grass", 1500)
+        q = d.get("Quality", {}) or {}
 
-        confidence = 1.0
+        matches_total = q.get("matches_total", 0)
+        matches_surface = q.get("matches_surface", {}).get(surface, 0)
+        level_counts = q.get("level_counts", {})
+        tour_quality = q.get("tour_quality", 0.45)
+        stability = q.get("stability", {}).get(surface, 0.05)
+        data_conf = q.get("confidence", {}).get(surface, 0.32)
+
+        confidence = float(data_conf)
         flags = []
+
+        if matches_surface < 5:
+            confidence -= 0.16
+            flags.append("muy pocos partidos superficie")
+        elif matches_surface < 10:
+            confidence -= 0.08
+            flags.append("muestra superficie baja")
+        elif matches_surface < 18:
+            confidence -= 0.04
+            flags.append("muestra superficie media")
+
+        if matches_total < 20:
+            confidence -= 0.06
+            flags.append("pocos partidos totales")
+
+        if tour_quality < 0.52:
+            confidence -= 0.10
+            flags.append("calidad ITF/unknown alta")
+        elif tour_quality < 0.68:
+            confidence -= 0.05
+            flags.append("calidad challenger/qualy")
 
         # Elo muy alto con ranking no equivalente
         if elo_surface >= 1900 and rank > 50:
-            confidence -= 0.25
+            confidence -= 0.18
             flags.append("elo_surface_inflado")
 
         if elo_surface >= 1850 and rank > 80:
-            confidence -= 0.30
+            confidence -= 0.22
             flags.append("elo/rank incoherente")
 
         # Delta clay-hard sospechoso
         if surface == "Clay" and (elo_clay - elo_hard) >= 180:
-            confidence -= 0.18
+            confidence -= 0.13
             flags.append("delta clay-hard alto")
 
         # Jugador fuera top100 con Elo top
         if rank > 100 and elo_surface >= 1800:
-            confidence -= 0.25
-            flags.append("muestra posible challenger/junior")
+            confidence -= 0.18
+            flags.append("posible challenger/junior inflation")
 
-        confidence = float(np.clip(confidence, 0.40, 1.00))
+        confidence = float(np.clip(confidence, 0.25, 1.00))
+
+        # Elo efectivo: si la confianza es baja, reduce ventaja extrema hacia su Elo general medio.
+        baseline = np.mean([elo_hard, elo_clay, elo_grass])
+        shrink = (1.0 - confidence) * 0.52
+        elo_effective = elo_surface - (elo_surface - baseline) * shrink
+
+        # Penalización adicional para Elo alto con muestra débil.
+        elo_penalty = 0.0
+        if elo_surface >= 1800 and confidence < 0.62:
+            elo_penalty = min(70, (0.62 - confidence) * 150)
+            elo_effective -= elo_penalty
+
         return {
             "confidence": confidence,
             "flags": flags,
             "rank": rank,
-            "elo_surface": elo_surface
+            "elo_surface": elo_surface,
+            "elo_effective": float(elo_effective),
+            "elo_penalty": float(elo_surface - elo_effective),
+            "matches_total": int(matches_total),
+            "matches_surface": int(matches_surface),
+            "tour_quality": float(tour_quality),
+            "stability": float(stability),
+            "level_counts": level_counts
         }
 
     s1 = player_sanity(d1)
     s2 = player_sanity(d2)
 
-    # Ajuste suave de volatilidad si hay baja confianza
     min_conf = min(s1["confidence"], s2["confidence"])
     vol_mult = 1.0
-    if min_conf < 0.70:
-        vol_mult = 1.10
-    elif min_conf < 0.85:
-        vol_mult = 1.05
+    if min_conf < 0.45:
+        vol_mult = 1.16
+    elif min_conf < 0.60:
+        vol_mult = 1.11
+    elif min_conf < 0.75:
+        vol_mult = 1.06
 
     return {
         "p1": s1,
         "p2": s2,
         "vol_mult": vol_mult,
-        "active": bool(s1["flags"] or s2["flags"])
+        "active": bool(s1["flags"] or s2["flags"]),
+        "version": "v22.1"
     }
-
 
 
 def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     e1, e2 = d1[surface], d2[surface]
-    elo_diff = e1 - e2
 
-    # v22 Rating Sanity Engine
+    # v22.1 Match Count + Tour Quality Engine
     rating_sanity = rating_sanity_engine(d1, d2, surface, circuito)
+    e1_eff = rating_sanity.get("p1", {}).get("elo_effective", e1)
+    e2_eff = rating_sanity.get("p2", {}).get("elo_effective", e2)
+    elo_diff = e1_eff - e2_eff
 
     # v15: usa stats específicas de superficie si existen
     s1 = get_stats_surface(d1, surface)
@@ -1262,7 +1457,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
     pressure_skill1, pressure_skill2 = pressure_collapse_params(s1, s2, surface)
 
     sets_to_win = 3 if best_of == 5 else 2
-    fav_est = max(elo_prob(e1, e2), 1 - elo_prob(e1, e2))
+    fav_est = max(elo_prob(e1_eff, e2_eff), 1 - elo_prob(e1_eff, e2_eff))
 
     vol = calcular_match_volatility(e1, e2, surface, fav_est)
     vol *= rating_sanity.get("vol_mult", 1.0)
@@ -1486,6 +1681,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
         "p2_profile": p2_profile,
         "vol": vol,
         "fav_raw_est": fav_est,
+        "elo_effective1": e1_eff,
+        "elo_effective2": e2_eff,
         "tb_intel_boost": tb_intel_boost,
         "pressure_skill1": pressure_skill1,
         "pressure_skill2": pressure_skill2,
@@ -2126,8 +2323,8 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22")
-    st.caption("Rating Sanity Engine")
+    st.header("🎾 Tennis IA v22.1")
+    st.caption("Match Count + Tour Quality Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -2360,18 +2557,21 @@ if modo == "Predictor":
 
         with r1c:
             p = rs.get("p1", {})
-            st.metric(d1["Player"], f"{p.get('confidence',1):.0%}")
+            st.metric(d1["Player"], f"{p.get('confidence',1):.0%}", delta=f"{p.get('matches_surface',0)} partidos {surface}")
+            st.caption(f"Quality {p.get('tour_quality',0):.0%} · Stability {p.get('stability',0):.0%} · Elo eff {p.get('elo_effective', d1[surface]):.0f}")
             if p.get("flags"):
                 st.caption(" · ".join(p.get("flags", [])))
 
         with r2c:
             p = rs.get("p2", {})
-            st.metric(d2["Player"], f"{p.get('confidence',1):.0%}")
+            st.metric(d2["Player"], f"{p.get('confidence',1):.0%}", delta=f"{p.get('matches_surface',0)} partidos {surface}")
+            st.caption(f"Quality {p.get('tour_quality',0):.0%} · Stability {p.get('stability',0):.0%} · Elo eff {p.get('elo_effective', d2[surface]):.0f}")
             if p.get("flags"):
                 st.caption(" · ".join(p.get("flags", [])))
 
         with r3c:
             st.metric("Vol mult", f"{rs.get('vol_mult',1.0):.2f}")
+            st.caption(f"Engine {rs.get('version','v22')}")
 
         st.divider()
         st.subheader("🧠 Perfil del Partido")
