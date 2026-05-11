@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.24", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.25", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.24"
-QUALITY_ENGINE_VERSION = "v22.24-clean-ui-debug-toggle-2026-05-11"
+APP_VERSION = "v22.25"
+QUALITY_ENGINE_VERSION = "v22.25-upset-risk-guard-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -1518,7 +1518,7 @@ def straight_sets_guard_engine(circuito, surface, fav_prob, hold1, hold2, tb_rat
 
 def favorite_2_0_sanity_guard(circuito, surface, fav_prob, fav20, dogset, longm, rating_sanity):
     """
-    v22.24 Favorite 2-0 Sanity Guard.
+    v22.25 Favorite 2-0 Sanity Guard.
     Evita probabilidades absurdamente altas de 2-0 cuando la confianza
     real o la calidad del histórico no justifican tanta seguridad.
     No toca ML ni overs; solo mercados derivados de sets.
@@ -1596,6 +1596,109 @@ def favorite_2_0_sanity_guard(circuito, surface, fav_prob, fav20, dogset, longm,
         longm = float(long_floor)
 
     return float(np.clip(fav20, 0.0, 0.95)), float(np.clip(dogset, 0.05, 0.95)), float(np.clip(longm, 0.05, 0.95)), out
+
+
+def upset_risk_guard_engine(circuito, surface, p1_cal, p1_raw, fav20, dogset, longm, rating_sanity):
+    """
+    v22.25 Upset Risk Guard.
+    Evita que favoritos ATP Clay aparentemente claros se vendan como spots limpios
+    cuando el propio sanity marca inflación/confianza limitada/calidad Challenger.
+    No cambia el ganador bruto ni los overs; solo calibra ML final y mercados de sets.
+    """
+    out = {
+        "active": False,
+        "profile": "neutral",
+        "ml_cap": None,
+        "fav20_cap": None,
+        "dogset_floor": None,
+        "long_floor": None,
+        "notes": []
+    }
+
+    if circuito != "ATP" or surface != "Clay":
+        return p1_cal, fav20, dogset, longm, out
+
+    rs = rating_sanity or {}
+    p1 = rs.get("p1", {}) or {}
+    p2 = rs.get("p2", {}) or {}
+
+    min_conf = min(p1.get("confidence", 1.0), p2.get("confidence", 1.0))
+    min_quality = min(p1.get("tour_quality", 1.0), p2.get("tour_quality", 1.0))
+    min_surface = min(p1.get("matches_surface", 99), p2.get("matches_surface", 99))
+    min_stability = min(p1.get("stability", 1.0), p2.get("stability", 1.0))
+
+    flags = []
+    flags += list(p1.get("flags", []) or [])
+    flags += list(p2.get("flags", []) or [])
+    flag_text = " | ".join(str(x).lower() for x in flags)
+
+    fav_prob = max(p1_cal, 1 - p1_cal)
+    raw_cal_gap = abs(float(p1_raw) - float(p1_cal))
+
+    challenger_pressure = (min_quality < 0.72) or ("challenger" in flag_text) or ("qualy" in flag_text)
+    rating_inflation = (raw_cal_gap >= 0.050) or ("inflado" in flag_text) or ("incoherente" in flag_text)
+    data_limited = (min_conf < 0.65) or (min_stability < 0.82)
+    dog_has_clay_data = min_surface >= 25
+
+    # Caso típico: favorito 75-82%, pero con señales internas de fragilidad.
+    trigger = (
+        fav_prob >= 0.75
+        and dog_has_clay_data
+        and (data_limited or challenger_pressure)
+        and (rating_inflation or min_quality < 0.70 or min_conf < 0.62)
+    )
+
+    if not trigger:
+        return p1_cal, fav20, dogset, longm, out
+
+    ml_cap = 0.765
+    if min_conf < 0.60:
+        ml_cap = 0.745
+    if min_quality < 0.66:
+        ml_cap -= 0.010
+    if raw_cal_gap >= 0.070:
+        ml_cap -= 0.010
+    ml_cap = float(np.clip(ml_cap, 0.70, 0.77))
+
+    fav20_cap = 0.62
+    if min_conf < 0.60 or min_quality < 0.66:
+        fav20_cap = 0.58
+    if raw_cal_gap >= 0.070:
+        fav20_cap -= 0.02
+    fav20_cap = float(np.clip(fav20_cap, 0.52, 0.64))
+
+    dog_floor = 0.34
+    if min_surface >= 80:
+        dog_floor = 0.36
+    if min_conf < 0.58:
+        dog_floor += 0.02
+    dog_floor = float(np.clip(dog_floor, 0.30, 0.40))
+
+    long_floor = 0.30
+    if min_surface >= 80:
+        long_floor = 0.32
+
+    fav_is_p1 = p1_cal >= 0.50
+    if fav_prob > ml_cap:
+        p1_cal = ml_cap if fav_is_p1 else 1 - ml_cap
+
+    fav20 = min(float(fav20), fav20_cap)
+    dogset = max(float(dogset), dog_floor)
+    longm = max(float(longm), long_floor)
+
+    out["active"] = True
+    out["profile"] = "inflated_favorite_upset_risk"
+    out["ml_cap"] = ml_cap
+    out["fav20_cap"] = fav20_cap
+    out["dogset_floor"] = dog_floor
+    out["long_floor"] = long_floor
+    out["notes"].append("riesgo upset por favorito inflado/confianza limitada")
+    if challenger_pressure:
+        out["notes"].append("calidad Challenger/Qualy reduce seguridad")
+    if rating_inflation:
+        out["notes"].append("rating comprimido/inflado")
+
+    return float(np.clip(p1_cal, 0.05, 0.95)), float(np.clip(fav20, 0.0, 0.95)), float(np.clip(dogset, 0.05, 0.95)), float(np.clip(longm, 0.05, 0.95)), out
 
 
 def wta_match_script_engine(d1, d2, s1, s2, hold1, hold2, ret1, ret2, surface, circuito):
@@ -2280,7 +2383,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "p1_fs": 0, "p2_fs": 0,
         "fav_under22": 0, "dog_over20": 0,
         "fav_2_0": 0, "dog_wins_set": 0, "long_match": 0,
-        # v22.24 Favorite Identity Engine:
+        # v22.25 Favorite Identity Engine:
         # count straight sets / set wins by player, then decide favorite by final model probability,
         # not by raw surface Elo. This avoids labels such as "underdog wins set" being tied to Elo
         # when the final model has flipped the favorite.
@@ -2338,7 +2441,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         if tb_seen:
             res["tb"] += 1
 
-        # v22.24: player-specific set outcomes for final-model favorite markets.
+        # v22.25: player-specific set outcomes for final-model favorite markets.
         if sets1 == sets_to_win and sets2 == 0:
             res["p1_2_0"] += 1
         if sets2 == sets_to_win and sets1 == 0:
@@ -2385,7 +2488,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
 
     raw_tb = res["tb"] / n
 
-    # v22.24 Favorite Identity Engine:
+    # v22.25 Favorite Identity Engine:
     # Favorite/underdog derived markets follow the calibrated model favorite, not raw Elo.
     model_fav_is_p1 = p1_cal >= 0.50
     model_fav_name = d1.get("Player", "Jugador 1") if model_fav_is_p1 else d2.get("Player", "Jugador 2")
@@ -2488,6 +2591,11 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         circuito, surface, fav_prob_guard, fav20, dogset, longm, rating_sanity
     )
 
+    upset_risk_guard = {"active": False, "profile": "neutral"}
+    p1_cal, fav20, dogset, longm, upset_risk_guard = upset_risk_guard_engine(
+        circuito, surface, p1_cal, p1_raw, fav20, dogset, longm, rating_sanity
+    )
+
     return {
         "p1": p1_raw,
         "p2": 1 - p1_raw,
@@ -2535,6 +2643,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "dominance_clay": dominance_clay,
         "straight_sets_guard": straight_sets_guard,
         "fav20_sanity_guard": fav20_sanity_guard,
+        "upset_risk_guard": upset_risk_guard,
         "wta_separation": wta_sep,
         "wta_script": wta_script
     }
@@ -3288,8 +3397,11 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     avg_conf = (p1_rs.get("confidence", 1.0) + p2_rs.get("confidence", 1.0)) / 2
     min_surface_matches = min(p1_rs.get("matches_surface", 99), p2_rs.get("matches_surface", 99))
     elo_pure_gap = abs(sim.get("fav_raw_est", 0.5) - fav_prob)
+    upset_guard = sim.get("upset_risk_guard", {}) or {}
 
     risk_notes = []
+    if upset_guard.get("active", False):
+        risk_notes.append("riesgo upset por favorito inflado")
     if min_conf < 0.35:
         risk_notes.append("confianza de datos muy baja")
     elif min_conf < 0.50:
@@ -3376,12 +3488,18 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             grade = "⚠️ C"
             action = "Evitar / observar"
 
-        # v22.24: con confianza <65% no dejamos señales agresivas ML/fav20.
+        # v22.25: con confianza <65% no dejamos señales agresivas ML/fav20.
         # Evita casos tipo favorito 80% + 2-0 95% con calidad Challenger/Qualy.
         if market_type in ["ml", "fav20"] and min_conf < 0.65 and action in ["APTO fuerte", "APTO"]:
             grade = "⚖️ B"
             action = "Solo si acompaña lectura"
             reason = reason + " · degradado por confianza insuficiente para ML/2-0"
+
+        # v22.25: upset risk activo degrada cualquier ML/2-0 agresivo.
+        if upset_guard.get("active", False) and market_type in ["ml", "fav20"] and action in ["APTO fuerte", "APTO"]:
+            grade = "⚖️ B"
+            action = "Solo si acompaña lectura"
+            reason = reason + " · degradado por riesgo upset"
 
         # Trust Gate final: con confianza muy baja, como máximo B.
         if min_conf < 0.35 and action in ["APTO fuerte", "APTO"]:
@@ -3512,7 +3630,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.24")
+    st.header("🎾 Tennis IA v22.25")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3867,7 +3985,7 @@ if modo == "Predictor":
                 )
                 if qm1.get("sample_names"):
                     st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-                st.caption("Tour Quality v22.24: Favorite Identity + 2-0 Sanity Guard; evita 2-0 extremos con confianza/calidad limitada.")
+                st.caption("Tour Quality v22.25: añade Upset Risk Guard para favoritos ATP Clay inflados con confianza/calidad limitada.")
             else:
                 st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
             if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -3942,6 +4060,7 @@ if modo == "Predictor":
         if circuito == "ATP" and surface == "Clay" and sim.get("clay_engine", {}).get("active", False):
             tags.append(f"🧱 Clay engine: {sim.get('clay_engine', {}).get('profile','neutral')}")
         if sim.get("fav_2_0", 0) >= 0.55: tags.append("🔥 Spot favorito 2-0")
+        if (sim.get("upset_risk_guard", {}) or {}).get("active", False): tags.append("⚠️ Riesgo upset")
         tc = sim.get("tournament_ctx", {})
         if "Indoor" in tc.get("court",""): tags.append("🏟️ Indoor boost")
         if "Final" in tc.get("round",""): tags.append("🎯 Final pressure")
@@ -3967,7 +4086,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.24 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.25 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
