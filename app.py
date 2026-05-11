@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.14", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.16", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.14"
-QUALITY_ENGINE_VERSION = "v22.14-recursive-folder-scanner-2026-05-11"
+APP_VERSION = "v22.16"
+QUALITY_ENGINE_VERSION = "v22.16-fast-challenger-loader-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -280,7 +280,7 @@ def buscar_stats(nombre, stats_map):
 
 def detectar_nivel_torneo(row):
     """
-    v22.14 Tour Quality + Challenger CSV Fix.
+    v22.16 Tour Quality + Challenger CSV Fix.
 
     Soporta dos familias de históricos:
     1) Excel tipo tennis-data ATP Tour con columnas Series/Tournament/Round.
@@ -571,13 +571,14 @@ def fusionar_quality_rows(items):
     return out
 
 
-def crear_quality_map(circuito):
+@st.cache_data(show_spinner=False)
+def crear_quality_map(circuito, cache_version=QUALITY_ENGINE_VERSION):
     """
     v22.3 Match Count Fix.
     Cuenta partidos desde históricos aunque los nombres vengan en formatos distintos.
     Devuelve también raw_names/source_files para debug visual.
     """
-    hist = cargar_historicos(circuito)
+    hist = cargar_historicos(circuito, cache_version=cache_version)
     quality = {}
 
     if hist.empty:
@@ -585,7 +586,7 @@ def crear_quality_map(circuito):
 
     df = hist.copy()
     if "Comment" in df.columns:
-        # v22.14: filtro por Comment sin borrar filas CSV Challenger/Qualy.
+        # v22.16: filtro por Comment sin borrar filas CSV Challenger/Qualy.
         # Al concatenar Excel Tour + CSV qual_chall, las filas CSV suelen tener Comment vacío/NaN.
         # Antes, como los Excel sí tenían Comment=Completed, se aplicaba df[completed_mask]
         # y se eliminaban TODOS los CSV. Ahora solo filtramos filas que realmente traen Comment.
@@ -761,10 +762,10 @@ def buscar_quality_directo_historicos(nombre, circuito):
     No depende del quality_map guardado en cargar_datos/cache.
     Lee históricos cargados y cuenta el jugador en Winner/Loser al vuelo.
     """
-    hist = cargar_historicos(circuito)
+    hist = cargar_historicos(circuito, cache_version=QUALITY_ENGINE_VERSION)
     meta = {
         "version": QUALITY_ENGINE_VERSION,
-        "mode": "direct_historicos",
+        "mode": "direct_historicos_cached",
         "hist_rows": int(len(hist)) if hist is not None else 0,
         "raw_player_count": 0,
         "quality_keys": 0,
@@ -1816,11 +1817,11 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         elo_clay = d.get("Clay", 1500)
         elo_grass = d.get("Grass", 1500)
         q = d.get("Quality", {}) or {}
-        # v22.9: si el QualityMap viene vacío/cacheado o no encontró al jugador,
-        # recalculamos el Match Count directamente desde históricos en este partido.
-        q_direct = buscar_quality_directo_historicos(d.get("Player", ""), circuito)
-        if (not q.get("quality_meta")) or int(q.get("matches_total", 0) or 0) == 0 or q.get("matched_name") in [None, "", "NO ENCONTRADO"]:
-            q = q_direct
+        # v22.16 Fast Guard: NO recalcular histórico directo si el QualityMap ya encontró al jugador.
+        # En v22.15 esto se ejecutaba siempre y podía dejar la app colgada con muchos CSV.
+        needs_direct = (not q.get("quality_meta")) or int(q.get("matches_total", 0) or 0) == 0 or q.get("matched_name") in [None, "", "NO ENCONTRADO"]
+        if needs_direct:
+            q = buscar_quality_directo_historicos(d.get("Player", ""), circuito)
 
         matches_total = q.get("matches_total", 0)
         surface_counts = q.get("matches_surface", {}) if isinstance(q.get("matches_surface", {}), dict) else {}
@@ -2281,7 +2282,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
 
 
 def _first_nonempty_from_columns(df, candidates):
-    """v22.14: crea una serie unificada usando la primera columna no vacía por fila."""
+    """v22.16: crea una serie unificada usando la primera columna no vacía por fila."""
     existing = [c for c in candidates if c in df.columns]
     if not existing:
         return pd.Series([""] * len(df), index=df.index)
@@ -2294,7 +2295,7 @@ def _first_nonempty_from_columns(df, candidates):
 
 def normalizar_schema_historicos(df):
     """
-    v22.14 Unified Historical Schema.
+    v22.16 Unified Historical Schema.
     Al concatenar Excel ATP Tour con CSV qual_chall, pandas deja columnas separadas:
     Winner/Loser para Excel y winner_name/loser_name para CSV. Antes buscar_columna elegía Winner
     y las filas CSV quedaban vacías. Esta función crea columnas MC_* para que todos los loaders
@@ -2326,21 +2327,9 @@ def normalizar_schema_historicos(df):
     ])
     return out
 
-def cargar_historicos(circuito):
-    """
-    v22.14 Historical Loader.
-
-    Lee históricos Tour y, además, CSV Challenger/Qualy si los colocas en cualquiera de estas carpetas:
-      datos/atp/historicos
-      datos/atp/challenger
-      datos/atp/qual_chall
-      datos/atp/historicos_challenger
-
-    Formatos soportados: .xlsx, .xls, .csv.
-    CSV tipo Jeff Sackmann: atp_matches_qual_chall_2015.csv ... 2026.csv.
-    """
+def _historical_folders(circuito):
     base = rutas(circuito)["base"]
-    folders = [
+    return [
         rutas(circuito)["historicos"],
         os.path.join(base, "challenger"),
         os.path.join(base, "qual_chall"),
@@ -2348,15 +2337,77 @@ def cargar_historicos(circuito):
         os.path.join(base, "historicos_qual_chall"),
     ]
 
-    patterns = ["*.xlsx", "*.xls", "*.csv"]
+
+def _is_supported_history_file(path):
+    ext = os.path.splitext(str(path))[1].lower()
+    return ext in [".xlsx", ".xls", ".csv"]
+
+
+@st.cache_data(show_spinner=False)
+def descubrir_archivos_historicos(circuito, cache_version=QUALITY_ENGINE_VERSION):
+    """
+    v22.16 Deep File Scanner.
+    - Escanea carpetas esperadas.
+    - Además escanea TODO datos/atp de forma recursiva por si los CSV están en otra subcarpeta.
+    - Detecta extensiones en mayúsculas: .CSV, .XLSX, .XLS.
+    """
+    base = rutas(circuito)["base"]
+    folders = _historical_folders(circuito)
     files = []
+
+    # 1) Carpetas esperadas, recursivo y case-insensitive por extensión.
     for folder in folders:
-        # v22.14: escaneo directo + recursivo. En Streamlit/GitHub a veces los CSV quedan
-        # en subcarpetas dentro de datos/atp/challenger, por ejemplo challenger/2020/file.csv.
-        for pat in patterns:
-            files.extend(glob.glob(os.path.join(folder, pat)))
-            files.extend(glob.glob(os.path.join(folder, "**", pat), recursive=True))
+        if not os.path.exists(folder):
+            continue
+        for root, _, names in os.walk(folder):
+            for name in names:
+                fp = os.path.join(root, name)
+                if _is_supported_history_file(fp):
+                    files.append(fp)
+
+    # 2) v22.16 Fast mode: NO escanea todo datos/atp en cada ejecución.
+    # Si los CSV están en datos/atp/challenger o qual_chall, ya entran arriba de forma recursiva.
+    # Esto evita cuelgues al pulsar Simular con repos grandes.
     files = sorted(set(files))
+
+    folder_counts = {}
+    folder_samples = {}
+    for fd in folders:
+        fd_name = os.path.relpath(fd, base) if os.path.exists(base) else fd
+        found = [f for f in files if os.path.commonpath([os.path.abspath(fd), os.path.abspath(f)]) == os.path.abspath(fd)] if os.path.exists(fd) else []
+        folder_counts[fd_name] = len(found)
+        folder_samples[fd_name] = [os.path.relpath(x, fd) for x in found[:8]] if os.path.exists(fd) else []
+
+    deep_extra = []
+    expected_abs = [os.path.abspath(x) for x in folders if os.path.exists(x)]
+    for f in files:
+        af = os.path.abspath(f)
+        in_expected = False
+        for fd in expected_abs:
+            try:
+                if os.path.commonpath([fd, af]) == fd:
+                    in_expected = True
+                    break
+            except Exception:
+                pass
+        if not in_expected:
+            deep_extra.append(f)
+    folder_counts["deep_extra"] = len(deep_extra)
+    folder_samples["deep_extra"] = [os.path.relpath(x, base) if os.path.exists(base) else os.path.basename(x) for x in deep_extra[:8]]
+
+    return files, folder_counts, folder_samples
+
+
+@st.cache_data(show_spinner=False)
+def cargar_historicos(circuito, cache_version=QUALITY_ENGINE_VERSION):
+    """
+    v22.16 Historical Loader.
+
+    Lee históricos Tour y CSV Challenger/Qualy desde carpetas conocidas y también mediante
+    escaneo profundo de datos/atp. Soporta .xlsx, .xls, .csv, también con extensión mayúscula.
+    """
+    base = rutas(circuito)["base"]
+    files, _, _ = descubrir_archivos_historicos(circuito, cache_version=cache_version)
 
     dfs = []
     for f in files:
@@ -2371,8 +2422,11 @@ def cargar_historicos(circuito):
                     df = pd.read_csv(f, sep=";")
             else:
                 continue
-            rel_folder = os.path.basename(os.path.dirname(f))
-            df["SourceFile"] = f"{rel_folder}/{os.path.basename(f)}"
+            try:
+                rel = os.path.relpath(f, base)
+            except Exception:
+                rel = os.path.basename(f)
+            df["SourceFile"] = rel.replace("\\", "/")
             dfs.append(df)
         except Exception:
             pass
@@ -2380,42 +2434,21 @@ def cargar_historicos(circuito):
         return pd.DataFrame()
     return normalizar_schema_historicos(pd.concat(dfs, ignore_index=True))
 
-def historicos_diagnostics(circuito):
+
+@st.cache_data(show_spinner=False)
+def historicos_diagnostics(circuito, cache_version=QUALITY_ENGINE_VERSION):
     """Diagnóstico visible para saber si el Match Count está leyendo archivos/columnas."""
     base = rutas(circuito)["base"]
     folder = rutas(circuito)["historicos"]
-    folders = [
-        rutas(circuito)["historicos"],
-        os.path.join(base, "challenger"),
-        os.path.join(base, "qual_chall"),
-        os.path.join(base, "historicos_challenger"),
-        os.path.join(base, "historicos_qual_chall"),
-    ]
-    patterns = ["*.xlsx", "*.xls", "*.csv"]
-    files = []
-    for fd in folders:
-        for pat in patterns:
-            files.extend(glob.glob(os.path.join(fd, pat)))
-    files = sorted(set(files))
-    folder_counts = {}
-    folder_samples = {}
-    for fd in folders:
-        fd_name = os.path.relpath(fd, base) if os.path.exists(base) else fd
-        found = []
-        for pat in patterns:
-            found.extend(glob.glob(os.path.join(fd, pat)))
-            found.extend(glob.glob(os.path.join(fd, "**", pat), recursive=True))
-        found = sorted(set(found))
-        folder_counts[fd_name] = len(found)
-        folder_samples[fd_name] = [os.path.relpath(x, fd) for x in found[:5]]
-    hist = cargar_historicos(circuito)
+    files, folder_counts, folder_samples = descubrir_archivos_historicos(circuito, cache_version=cache_version)
+    hist = cargar_historicos(circuito, cache_version=cache_version)
 
     if hist.empty:
         return {
             "folder": folder, "folder_exists": os.path.exists(folder),
             "files_count": len(files), "rows": 0, "columns": [],
             "winner_col": None, "loser_col": None, "surface_col": None,
-            "sample_players": [], "sample_files": [os.path.basename(x) for x in files[:12]],
+            "sample_players": [], "sample_files": [os.path.relpath(x, base) if os.path.exists(base) else os.path.basename(x) for x in files[:12]],
             "folder_counts": folder_counts, "folder_samples": folder_samples,
         }
 
@@ -2440,7 +2473,12 @@ def historicos_diagnostics(circuito):
     col_date = buscar_columna(hist, ["Date", "Fecha", "date", "match_date", "tourney_date", "Tourney Date"])
     date_min = date_max = "N/A"
     if col_date is not None:
-        dt = pd.to_datetime(hist[col_date], dayfirst=True, errors="coerce")
+        raw = hist[col_date]
+        # Jeff Sackmann usa YYYYMMDD; pandas con dayfirst puede interpretarlo mal.
+        if raw.astype(str).str.fullmatch(r"\d{8}").any():
+            dt = pd.to_datetime(raw.astype(str), format="%Y%m%d", errors="coerce")
+        else:
+            dt = pd.to_datetime(raw, dayfirst=True, errors="coerce")
         if dt.notna().any():
             date_min = str(dt.min().date())
             date_max = str(dt.max().date())
@@ -2452,7 +2490,7 @@ def historicos_diagnostics(circuito):
         "winner_col": col_winner, "loser_col": col_loser, "surface_col": col_surface,
         "date_min": date_min, "date_max": date_max,
         "sample_players": samples[:8],
-        "sample_files": [os.path.basename(x) for x in files[:12]],
+        "sample_files": [os.path.relpath(x, base) if os.path.exists(base) else os.path.basename(x) for x in files[:12]],
         "folder_counts": folder_counts, "folder_samples": folder_samples,
         "level_cols": level_cols_found,
         "level_samples": level_samples,
@@ -3205,7 +3243,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.14")
+    st.header("🎾 Tennis IA v22.16")
     st.caption("Match Count Loader Fix + Name Radar Pro + Cache Breaker")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3503,7 +3541,7 @@ if modo == "Predictor":
             )
             if qm1.get("sample_names"):
                 st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-            st.caption("Tour Quality v22.14: scanner recursivo de carpetas Challenger + cache breaker; muestra archivos por carpeta.")
+            st.caption("Tour Quality v22.16: loader rápido cacheado; escanea recursivo solo carpetas históricas/challenger para evitar cuelgues.")
         else:
             st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
         if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -3603,7 +3641,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.14 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.16 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
