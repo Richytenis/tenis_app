@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.32 Label Calibration", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.33 Elite Blowout", page_icon="🎾", layout="wide")
 
 APP_VERSION = "v22.27"
-QUALITY_ENGINE_VERSION = "v22.32-label-calibration-2026-05-11"
+QUALITY_ENGINE_VERSION = "v22.33-elite-blowout-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -3542,6 +3542,53 @@ def aplicar_market_sanity_caps(sim, circuito, surface, over18, over19, over20, o
             o18 = 0.72
             notes.append("Over 18.5 limitado por favorito débil")
 
+        # v22.33 Elite Blowout Guard:
+        # cuando el partido ya está en modo dominio claro del favorito, el over bajo
+        # no debe seguir apareciendo automáticamente como señal principal.
+        fav20 = sim.get("fav_2_0", 0.0)
+        dogset = sim.get("dog_wins_set", 1.0)
+        e1_eff = sim.get("elo_effective1", 1500)
+        e2_eff = sim.get("elo_effective2", 1500)
+        fav_is_p1 = sim.get("p1_cal", 0.5) >= sim.get("p2_cal", 0.5)
+        fav_elo = e1_eff if fav_is_p1 else e2_eff
+        dog_elo = e2_eff if fav_is_p1 else e1_eff
+        elo_gap_eff = fav_elo - dog_elo
+
+        elite_blowout = (
+            fav_prob >= 0.80
+            and fav20 >= 0.78
+            and dogset <= 0.22
+            and elo_gap_eff >= 250
+            and min_conf >= 0.75
+            and min_surface_matches >= 60
+        )
+
+        if elite_blowout:
+            cap18 = 0.56
+            cap19 = 0.48
+            cap20 = 0.42
+            cap22 = 0.30
+
+            # Si el 2-0 es casi total y el dog-set está hundido, cap más fuerte.
+            if fav20 >= 0.90 and dogset <= 0.10 and elo_gap_eff >= 350:
+                cap18 = 0.54
+                cap19 = 0.46
+                cap20 = 0.40
+                cap22 = 0.28
+
+            if o18 > cap18:
+                o18 = cap18
+                notes.append(f"Over 18.5 capado a {cap18:.0%} por dominio élite/blowout")
+            if o19 > cap19:
+                o19 = cap19
+                notes.append(f"Over 19.5 capado a {cap19:.0%} por dominio élite/blowout")
+            if o20 > cap20:
+                o20 = cap20
+                notes.append(f"Over 20.5 capado a {cap20:.0%} por dominio élite/blowout")
+            if o22 > cap22:
+                o22 = cap22
+                notes.append(f"Over 22.5 capado a {cap22:.0%} por dominio élite/blowout")
+
     return {
         "over18": float(np.clip(o18, 0.0, 0.95)),
         "over19": float(np.clip(o19, 0.0, 0.95)),
@@ -3833,7 +3880,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.32 Label Calibration")
+    st.header("🎾 Tennis IA v22.33 Elite Blowout")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -4308,7 +4355,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.32 Label Calibration · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.33 Elite Blowout · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
