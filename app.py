@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.27", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.28 Deploy Safe", page_icon="🎾", layout="wide")
 
 APP_VERSION = "v22.27"
-QUALITY_ENGINE_VERSION = "v22.27-upset-label-cleanup-2026-05-11"
+QUALITY_ENGINE_VERSION = "v22.28-deploy-safe-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -3646,7 +3646,7 @@ def render_betting_filters(filters):
 
     if rows:
         with st.expander("📋 Ver todas las señales del filtro", expanded=False):
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
 
 # =========================================================
@@ -3654,7 +3654,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.27")
+    st.header("🎾 Tennis IA v22.28 Deploy Safe")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3697,7 +3697,7 @@ if modo == "Predictor":
     with c1: p1_name = st.selectbox("Jugador 1", players)
     with c2: p2_name = st.selectbox("Jugador 2", players, index=min(1, len(players)-1))
 
-    if st.button("🚀 ANALIZAR PARTIDO", use_container_width=True):
+    if st.button("🚀 ANALIZAR PARTIDO", width='stretch'):
         d1, d2 = db[p1_name], db[p2_name]
         best_of = 5 if "5" in formato else 3
         sim_status = st.status(f"🎲 Simulando {sims:,} partidos Monte Carlo...", expanded=True)
@@ -4117,7 +4117,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.27 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.28 Deploy Safe · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
@@ -4130,7 +4130,7 @@ elif modo == "Validador histórico":
         max_matches = st.number_input("Máx partidos a validar", 10, 5000, 500, 50)
         sims_bt = st.select_slider("Simulaciones por partido", [300,500,1000,2000], value=500)
     st.info(f"Históricos cargados: {len(hist_df):,} partidos.")
-    if st.button("🚀 EJECUTAR VALIDACIÓN", use_container_width=True):
+    if st.button("🚀 EJECUTAR VALIDACIÓN", width='stretch'):
         with st.spinner("Validando partidos históricos..."):
             val = validar_historico(db,hist_df,circuito,surface_filter,int(max_matches),int(sims_bt))
         if val.empty:
@@ -4156,7 +4156,7 @@ elif modo == "Validador histórico":
         with d2: st.metric("Over 19.5 accuracy", f"{over19_acc:.1%}")
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
         st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
-        st.dataframe(val, use_container_width=True)
+        st.dataframe(val, width='stretch')
         st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v22.csv", mime="text/csv")
 
 else:
@@ -4171,7 +4171,7 @@ else:
         sims_bt = st.select_slider("Simulaciones por partido", [300,500,1000], value=500)
         min_casos = st.number_input("Mínimo casos por segmento", 5, 200, 25, 5)
     st.info("Este modo busca patrones históricos por mercado, superficie, ranking gap y perfiles.")
-    if st.button("🚀 EJECUTAR ANALYZER", use_container_width=True):
+    if st.button("🚀 EJECUTAR ANALYZER", width='stretch'):
         with st.spinner("Generando validación base para Analyzer..."):
             val = validar_historico(db,hist_df,circuito,surface_filter,int(max_matches),int(sims_bt))
         if val.empty:
@@ -4189,22 +4189,22 @@ else:
         st.subheader("📈 Mercados por umbral")
         mt = tables.get("Mercados por umbral", pd.DataFrame())
         if not mt.empty:
-            st.dataframe(mt.sort_values(["Acierto real","Casos"], ascending=[False,False]), use_container_width=True)
+            st.dataframe(mt.sort_values(["Acierto real","Casos"], ascending=[False,False]), width='stretch')
         else:
             st.warning("No hay suficientes casos para mercados por umbral.")
         st.divider()
         st.subheader("🎯 ML por tramos")
-        st.dataframe(tables.get("ML por tramos", pd.DataFrame()), use_container_width=True)
+        st.dataframe(tables.get("ML por tramos", pd.DataFrame()), width='stretch')
         st.divider()
         st.subheader("🌍 Por superficie")
-        st.dataframe(tables.get("Por superficie", pd.DataFrame()), use_container_width=True)
+        st.dataframe(tables.get("Por superficie", pd.DataFrame()), width='stretch')
         st.divider()
         st.subheader("🚀 Big server")
-        st.dataframe(tables.get("Big server", pd.DataFrame()), use_container_width=True)
+        st.dataframe(tables.get("Big server", pd.DataFrame()), width='stretch')
         st.divider()
         st.subheader("📊 Ranking gap")
-        st.dataframe(tables.get("Ranking gap", pd.DataFrame()), use_container_width=True)
+        st.dataframe(tables.get("Ranking gap", pd.DataFrame()), width='stretch')
         st.divider()
         st.subheader("🧾 Detalle base")
-        st.dataframe(val, use_container_width=True)
+        st.dataframe(val, width='stretch')
         st.download_button("⬇️ Descargar Analyzer CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="analyzer_tennis_ia_v22.csv", mime="text/csv")
