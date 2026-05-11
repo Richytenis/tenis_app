@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.31 Elite Clay Opponent", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.32 Label Calibration", page_icon="🎾", layout="wide")
 
 APP_VERSION = "v22.27"
-QUALITY_ENGINE_VERSION = "v22.31-elite-clay-opponent-2026-05-11"
+QUALITY_ENGINE_VERSION = "v22.32-label-calibration-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -3833,7 +3833,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.31 Elite Clay Opponent")
+    st.header("🎾 Tennis IA v22.32 Label Calibration")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -4263,11 +4263,21 @@ if modo == "Predictor":
         if circuito == "ATP" and surface == "Clay" and sim.get("clay_engine", {}).get("active", False):
             tags.append(f"🧱 Clay engine: {sim.get('clay_engine', {}).get('profile','neutral')}")
         upset_active = (sim.get("upset_risk_guard", {}) or {}).get("active", False)
-        if sim.get("fav_2_0", 0) >= 0.55:
+        fav20_tag_value = sim.get("fav_2_0", 0)
+        elite_opp_active = (sim.get("elite_clay_opponent_guard", {}) or {}).get("active", False)
+        high_gap_label = abs(max(p1c, p2c) - sim.get("fav_raw_est", max(p1c, p2c))) >= 0.10
+        if fav20_tag_value >= 0.55:
             if upset_active:
                 tags.append("⚠️ Favorito vulnerable")
-            elif sim.get("fav_2_0", 0) >= 0.70:
+            elif elite_opp_active or high_gap_label:
+                if fav20_tag_value >= 0.65:
+                    tags.append("✅ Favorito 2-0 viable")
+                else:
+                    tags.append("⚖️ Favorito 2-0 moderado")
+            elif fav20_tag_value >= 0.78:
                 tags.append("🔥 Spot favorito 2-0")
+            elif fav20_tag_value >= 0.65:
+                tags.append("✅ Favorito 2-0 viable")
             else:
                 tags.append("⚖️ Favorito 2-0 moderado")
         if upset_active: tags.append("⚠️ Riesgo upset")
@@ -4298,7 +4308,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.31 Elite Clay Opponent · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.32 Label Calibration · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
