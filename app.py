@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.3", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.3.1", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -1390,7 +1390,8 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         q = d.get("Quality", {}) or {}
 
         matches_total = q.get("matches_total", 0)
-        matches_surface = q.get("matches_surface", {}).get(surface, 0)
+        surface_counts = q.get("matches_surface", {}) if isinstance(q.get("matches_surface", {}), dict) else {}
+        matches_surface = surface_counts.get(surface, 0)
         level_counts = q.get("level_counts", {})
         tour_quality = q.get("tour_quality", 0.45)
         stability = q.get("stability", {}).get(surface, 0.05)
@@ -1461,9 +1462,14 @@ def rating_sanity_engine(d1, d2, surface, circuito):
             "elo_penalty": float(elo_surface - elo_effective),
             "matches_total": int(matches_total),
             "matches_surface": int(matches_surface),
+            "matches_by_surface": {"Hard": int(surface_counts.get("Hard", 0)), "Clay": int(surface_counts.get("Clay", 0)), "Grass": int(surface_counts.get("Grass", 0))},
             "tour_quality": float(tour_quality),
             "stability": float(stability),
-            "level_counts": level_counts
+            "level_counts": level_counts,
+            "matched_name": q.get("matched_name", "N/A"),
+            "match_score": float(q.get("match_score", 0.0)),
+            "raw_names": q.get("raw_names", []),
+            "source_files": q.get("source_files", [])
         }
 
     s1 = player_sanity(d1)
@@ -1483,7 +1489,7 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         "p2": s2,
         "vol_mult": vol_mult,
         "active": bool(s1["flags"] or s2["flags"]),
-        "version": "v22.3"
+        "version": "v22.3.1"
     }
 
 
@@ -2565,7 +2571,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.3")
+    st.header("🎾 Tennis IA v22.3.1")
     st.caption("Match Count Fix + Tour Quality Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -2838,9 +2844,9 @@ if modo == "Predictor":
             st.caption(
                 f"{d1['Player']} → match: {dbg1.get('matched_name','N/A')} "
                 f"({dbg1.get('match_score',0):.0%}) · total {dbg1.get('matches_total',0)} · "
-                f"H/C/G {dbg1.get('matches_surface',{}).get('Hard',0)}/"
-                f"{dbg1.get('matches_surface',{}).get('Clay',0)}/"
-                f"{dbg1.get('matches_surface',{}).get('Grass',0)}"
+                f"H/C/G {dbg1.get('matches_by_surface',{}).get('Hard',0)}/"
+                f"{dbg1.get('matches_by_surface',{}).get('Clay',0)}/"
+                f"{dbg1.get('matches_by_surface',{}).get('Grass',0)}"
             )
             lc = dbg1.get('level_counts', {})
             st.caption(f"Tour/Ch/ITF/Q/Unk {lc.get('tour',0)}/{lc.get('challenger',0)}/{lc.get('itf',0)}/{lc.get('qualy',0)}/{lc.get('unknown',0)}")
@@ -2850,9 +2856,9 @@ if modo == "Predictor":
             st.caption(
                 f"{d2['Player']} → match: {dbg2.get('matched_name','N/A')} "
                 f"({dbg2.get('match_score',0):.0%}) · total {dbg2.get('matches_total',0)} · "
-                f"H/C/G {dbg2.get('matches_surface',{}).get('Hard',0)}/"
-                f"{dbg2.get('matches_surface',{}).get('Clay',0)}/"
-                f"{dbg2.get('matches_surface',{}).get('Grass',0)}"
+                f"H/C/G {dbg2.get('matches_by_surface',{}).get('Hard',0)}/"
+                f"{dbg2.get('matches_by_surface',{}).get('Clay',0)}/"
+                f"{dbg2.get('matches_by_surface',{}).get('Grass',0)}"
             )
             lc = dbg2.get('level_counts', {})
             st.caption(f"Tour/Ch/ITF/Q/Unk {lc.get('tour',0)}/{lc.get('challenger',0)}/{lc.get('itf',0)}/{lc.get('qualy',0)}/{lc.get('unknown',0)}")
@@ -2905,7 +2911,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.3 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.3.1 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
