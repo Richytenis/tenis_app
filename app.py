@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.0", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.1", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.0"
-QUALITY_ENGINE_VERSION = "v23.0-historical-validator-pro-2026-05-11"
+APP_VERSION = "v23.1"
+QUALITY_ENGINE_VERSION = "v23.1-safe-validator-hotfix-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -1638,13 +1638,13 @@ def upset_risk_guard_engine(circuito, surface, p1_cal, p1_raw, fav20, dogset, lo
     challenger_pressure = (min_quality < 0.72) or ("challenger" in flag_text) or ("qualy" in flag_text)
     rating_inflation = (raw_cal_gap >= 0.050) or ("inflado" in flag_text) or ("incoherente" in flag_text)
     data_limited = (min_conf < 0.65) or (min_stability < 0.82)
-    # v22.27: en clay, un dog con 10-24 partidos de superficie NO es "sin datos";
+    # v23.1: en clay, un dog con 10-24 partidos de superficie NO es "sin datos";
     # es una muestra corta pero suficiente para exigir prudencia si el favorito sale demasiado limpio.
     dog_has_clay_data = min_surface >= 10
     short_surface_sample = 10 <= min_surface < 25
 
     # Caso típico: favorito 75-82%, pero con señales internas de fragilidad.
-    # v22.27 relaja el trigger para capturar spots tipo big-server / favorito frágil en clay,
+    # v23.1 relaja el trigger para capturar spots tipo big-server / favorito frágil en clay,
     # donde el Elo favorece mucho pero el underdog tiene muestra clay corta y potencial de swing.
     trigger = (
         fav_prob >= 0.75
@@ -1663,7 +1663,7 @@ def upset_risk_guard_engine(circuito, surface, p1_cal, p1_raw, fav20, dogset, lo
         ml_cap -= 0.010
     if raw_cal_gap >= 0.070:
         ml_cap -= 0.010
-    # v22.27: muestra clay corta del underdog = no permitir lectura de favorito 80%+ limpia.
+    # v23.1: muestra clay corta del underdog = no permitir lectura de favorito 80%+ limpia.
     if short_surface_sample and fav_prob >= 0.78:
         ml_cap = min(ml_cap, 0.745)
     ml_cap = float(np.clip(ml_cap, 0.70, 0.77))
@@ -3158,415 +3158,136 @@ def encontrar_jugador(nombre_hist, db):
             best, mejor = score, nombre
     return mejor if mejor is not None and best >= 0.70 else None
 
-
-def _score_details_from_row(row):
-    """
-    v23.0 Historical Validator PRO.
-    Devuelve games, sets y tie-break para filas Excel tennis-data o CSV Jeff Sackmann.
-    La fila siempre está orientada como Winner/Loser, por tanto W/L son desde el ganador real.
-    """
-    games = 0
-    wsets = 0
-    lsets = 0
-    tb = False
-    found = False
-
-    # Excel tennis-data: W1/L1 ... W5/L5
-    for i in range(1, 6):
-        w = row.get(f"W{i}", np.nan)
-        l = row.get(f"L{i}", np.nan)
-        if not pd.isna(w) and not pd.isna(l):
-            try:
-                wi, li = int(float(w)), int(float(l))
-                games += wi + li
-                found = True
-                if wi > li:
-                    wsets += 1
-                elif li > wi:
-                    lsets += 1
-                if (wi, li) in [(7, 6), (6, 7)]:
-                    tb = True
-            except Exception:
-                pass
-
-    if found:
-        return {"games": games, "wsets": wsets, "lsets": lsets, "tb": tb, "valid_score": games > 0}
-
-    # CSV Jeff Sackmann: score = "6-4 3-6 7-5", con posibles paréntesis de TB.
-    score = ""
-    for c in ["score", "Score", "result", "Result"]:
-        if c in getattr(row, 'index', []):
-            score = normalizar_texto(row.get(c, ""))
-            if score and score.lower() != "nan":
-                break
-
-    score_up = score.upper()
-    if not score or any(x in score_up for x in ["RET", "W/O", "WALKOVER", "DEF", "ABD"]):
-        return {"games": 0, "wsets": 0, "lsets": 0, "tb": False, "valid_score": False}
-
-    # Captura 7-6(5), 6-7(4), 10-8, etc. Ignora el número entre paréntesis.
-    for a, b in re.findall(r"(\d{1,2})\s*-\s*(\d{1,2})", score):
-        try:
-            wi, li = int(a), int(b)
-            # Evita contar el tie-break entre paréntesis como set separado.
-            if wi == 0 and li == 0:
-                continue
-            games += wi + li
-            found = True
-            if wi > li:
-                wsets += 1
-            elif li > wi:
-                lsets += 1
-            if (wi, li) in [(7, 6), (6, 7)]:
-                tb = True
-        except Exception:
-            pass
-
-    return {"games": games, "wsets": wsets, "lsets": lsets, "tb": tb, "valid_score": found and games > 0}
-
-
 def total_games_row(row):
-    return _score_details_from_row(row).get("games", 0)
-
+    total = 0
+    for i in range(1,6):
+        w, l = row.get(f"W{i}", np.nan), row.get(f"L{i}", np.nan)
+        if not pd.isna(w) and not pd.isna(l): total += int(w) + int(l)
+    return total
 
 def hay_tiebreak_row(row):
-    return bool(_score_details_from_row(row).get("tb", False))
+    for i in range(1,6):
+        w, l = row.get(f"W{i}", np.nan), row.get(f"L{i}", np.nan)
+        if not pd.isna(w) and not pd.isna(l):
+            if (int(w), int(l)) in [(7,6), (6,7)]: return True
+    return False
 
-
-def _is_completed_history_row(row):
-    """Mantiene Completed en Excel y permite CSV Challenger sin Comment; excluye retired/walkover."""
-    comment = normalizar_texto(row.get("Comment", "")) if "Comment" in getattr(row, 'index', []) else ""
-    score = normalizar_texto(row.get("score", row.get("Score", "")))
-    txt = f"{comment} {score}".upper()
-    if any(x in txt for x in ["RET", "WALKOVER", "W/O", "DISQUAL", "DEF", "ABD"]):
-        return False
-    if comment:
-        return "COMPLETED" in txt or comment.lower() in ["nan", "none"]
-    return True
-
-
-def _validation_signal_hit(main_market, row_dict):
-    m = str(main_market or "").lower()
-    if "ml favorito" in m:
-        return bool(row_dict.get("CalFavWasWinner", False))
-    if "over 18.5" in m:
-        return bool(row_dict.get("RealOver18", False))
-    if "over 19.5" in m:
-        return bool(row_dict.get("RealOver19", False))
-    if "over 20.5" in m:
-        return bool(row_dict.get("RealOver20", False))
-    if "over 22.5" in m:
-        return bool(row_dict.get("RealOver22", False))
-    if "under 22.5" in m:
-        return bool(row_dict.get("RealUnder22", False))
-    if "favorito 2-0" in m:
-        return bool(row_dict.get("RealFav2_0", False))
-    if "underdog gana set" in m:
-        return bool(row_dict.get("RealDogWinsSet", False))
-    if "partido largo" in m:
-        return bool(row_dict.get("RealLongMatch", False))
-    if "3 sets" in m:
-        return bool(row_dict.get("Real3Sets", False))
-    return np.nan
-
-
-def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_bt, level_filter="Todos"):
-    """
-    v23.0 Validador Histórico PRO.
-    Valida con el mismo pipeline operativo del predictor: market sanity caps + betting filter.
-    Añade ML calibration, mercados derivados reales, señales y niveles Tour/Challenger/Qualy.
-    """
+def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_bt):
     rows = []
-    df = normalizar_schema_historicos(hist_df.copy())
-
-    if df.empty:
-        return pd.DataFrame()
-
-    df["VAL_Surface"] = df["MC_Surface"].apply(lambda x: normalizar_superficie_hist(x, default="Hard"))
-    df["VAL_Level"] = df.apply(detectar_nivel_torneo, axis=1)
-    df["VAL_Completed"] = df.apply(_is_completed_history_row, axis=1)
-    df["VAL_ScoreOK"] = df.apply(lambda r: _score_details_from_row(r).get("valid_score", False), axis=1)
-
+    df = hist_df.copy()
     if surface_filter != "Todas":
-        df = df[df["VAL_Surface"] == surface_filter]
-    if level_filter != "Todos":
-        lf = str(level_filter).lower()
-        df = df[df["VAL_Level"] == lf]
-
-    df = df[df["VAL_Completed"] & df["VAL_ScoreOK"]]
-
-    # Más reciente al final si hay fecha; validamos los últimos N.
-    date_col = buscar_columna(df, ["Date", "Fecha", "date", "match_date", "tourney_date", "Tourney Date"])
-    if date_col is not None:
-        raw = df[date_col]
-        if raw.astype(str).str.fullmatch(r"\d{8}").any():
-            df["VAL_DateParsed"] = pd.to_datetime(raw.astype(str), format="%Y%m%d", errors="coerce")
-        else:
-            df["VAL_DateParsed"] = pd.to_datetime(raw, dayfirst=True, errors="coerce")
-        df = df.sort_values("VAL_DateParsed")
-
+        df = df[df["Surface"].astype(str) == surface_filter]
+    df = df[df["Comment"].astype(str).str.contains("Completed", na=False)]
     if max_matches:
         df = df.tail(max_matches)
 
-    progress = st.progress(0.01)
-    status = st.empty()
+    progress = st.progress(0)
     total = len(df)
-    processed = 0
 
     for idx, (_, row) in enumerate(df.iterrows()):
-        winner_hist = normalizar_texto(row.get("MC_Winner", ""))
-        loser_hist = normalizar_texto(row.get("MC_Loser", ""))
-        surface = str(row.get("VAL_Surface", "Hard"))
-        level = str(row.get("VAL_Level", "unknown"))
-        best_of = int(leer_float(row.get("Best of", row.get("best_of", 3)), 3))
-        score_info = _score_details_from_row(row)
-        games_real = score_info["games"]
-        wsets = score_info["wsets"]
-        lsets = score_info["lsets"]
-
-        if not winner_hist or not loser_hist or games_real <= 0:
-            continue
+        winner_hist = normalizar_texto(row.get("Winner", ""))
+        loser_hist = normalizar_texto(row.get("Loser", ""))
+        surface = str(row.get("Surface", "Hard"))
+        best_of = int(leer_float(row.get("Best of", 3), 3))
 
         p_win = encontrar_jugador(winner_hist, db)
         p_los = encontrar_jugador(loser_hist, db)
-        if p_win is None or p_los is None:
-            continue
+        if p_win is None or p_los is None: continue
 
         d_win, d_los = db[p_win], db[p_los]
         sim = sim_match(d_win, d_los, surface, circuito, best_of, sims_bt, context_row=row)
 
-        games_model = sim.get("games", [])
-        if not games_model:
-            continue
+        p_raw, p_cal = sim["p1"], sim["p1_cal"]
+        games_real = total_games_row(row)
+        games_model = sim["games"]
 
-        over18_raw = sum(x > 18.5 for x in games_model) / len(games_model)
-        over19_raw = sum(x > 19.5 for x in games_model) / len(games_model)
-        over20_raw = sum(x > 20.5 for x in games_model) / len(games_model)
-        over22_raw = sum(x > 22.5 for x in games_model) / len(games_model)
-        caps = aplicar_market_sanity_caps(sim, circuito, surface, over18_raw, over19_raw, over20_raw, over22_raw)
-        sim["market_over18"] = caps["over18"]
-        sim["market_over19"] = caps["over19"]
-        sim["market_over20"] = caps["over20"]
-        sim["market_over22"] = caps["over22"]
+        try:
+            set3_real = int(row.get("Wsets", 0)) == 2 and int(row.get("Lsets", 0)) == 1
+        except:
+            set3_real = False
 
-        filt = betting_filter_engine(circuito, surface, sim, p_win, p_los)
-        main = filt.get("main") or {}
+        fav_under22_real = (p_raw >= 0.50 and games_real < 22.5)
+        dog_over20_real = (p_raw < 0.50 and games_real > 20.5)
 
-        p_raw, p_cal = sim["p1"], sim["p1_cal"]  # p1 = ganador histórico real
-        fav_prob = max(p_cal, 1 - p_cal)
-        fav_was_winner = p_cal >= 0.50
-        real_3sets = (wsets + lsets) >= 3 or (best_of == 3 and lsets == 1) or (best_of == 5 and lsets >= 1 and wsets >= 3)
-        real_tb = bool(score_info["tb"])
-        real_fav2 = bool(fav_was_winner and lsets == 0)
-        real_dogset = bool((not fav_was_winner) or lsets >= 1)
-        real_long = bool(games_real > 22.5 or real_tb or real_3sets)
-
-        rs = sim.get("rating_sanity", {}) or {}
-        p1rs = rs.get("p1", {}) or {}
-        p2rs = rs.get("p2", {}) or {}
-        min_conf = min(p1rs.get("confidence", 1.0), p2rs.get("confidence", 1.0))
-        min_sf = min(p1rs.get("matches_surface", 99), p2rs.get("matches_surface", 99))
-        min_quality = min(p1rs.get("quality", 1.0), p2rs.get("quality", 1.0))
-
-        row_out = {
-            "Date": row.get("Date", row.get("tourney_date", "")),
-            "Tournament": row.get("MC_Tournament", row.get("Tournament", row.get("tourney_name", ""))),
-            "Series": row.get("Series", row.get("MC_Level", "")),
-            "Level": level,
-            "Round": row.get("MC_Round", row.get("Round", row.get("round", ""))),
-            "Surface": surface,
-            "WinnerHist": winner_hist,
-            "LoserHist": loser_hist,
-            "WinnerMatched": p_win,
-            "LoserMatched": p_los,
-            "WinnerRank": leer_float(row.get("WRank", row.get("winner_rank", np.nan)), np.nan),
-            "LoserRank": leer_float(row.get("LRank", row.get("loser_rank", np.nan)), np.nan),
-            "RealGames": games_real,
-            "RealWsets": wsets,
-            "RealLsets": lsets,
-            "Real3Sets": real_3sets,
-            "RealTB": real_tb,
-            "RealOver18": games_real > 18.5,
-            "RealOver19": games_real > 19.5,
-            "RealOver20": games_real > 20.5,
-            "RealOver22": games_real > 22.5,
-            "RealUnder22": games_real < 22.5,
-            "RealFav2_0": real_fav2,
-            "RealDogWinsSet": real_dogset,
-            "RealLongMatch": real_long,
-            "ModelWinnerProbRaw": p_raw,
-            "ModelWinnerProbCal": p_cal,
-            "FavProbCal": fav_prob,
-            "RawFavWasWinner": p_raw >= 0.50,
-            "CalFavWasWinner": fav_was_winner,
-            "ModelAvgGames": float(np.mean(games_model)),
-            "Model3Sets": sim["set3"],
-            "ModelTB": sim["tb"],
-            "ModelOver18": caps["over18"],
-            "ModelOver19": caps["over19"],
-            "ModelOver20": caps["over20"],
-            "ModelOver22": caps["over22"],
-            "ModelUnder22": 1 - caps["over22"],
+        rows.append({
+            "Date": row.get("Date", ""), "Tournament": row.get("Tournament", ""),
+            "Series": row.get("Series", ""), "Round": row.get("Round", ""),
+            "Surface": surface, "WinnerHist": winner_hist, "LoserHist": loser_hist,
+            "WinnerMatched": p_win, "LoserMatched": p_los,
+            "WinnerRank": leer_float(row.get("WRank", np.nan), np.nan),
+            "LoserRank": leer_float(row.get("LRank", np.nan), np.nan),
+            "ModelWinnerProbRaw": p_raw, "ModelWinnerProbCal": p_cal,
+            "RawFavWasWinner": p_raw >= 0.50, "CalFavWasWinner": p_cal >= 0.50,
+            "RealGames": games_real, "ModelAvgGames": np.mean(games_model),
+            "Real3Sets": set3_real, "Model3Sets": sim["set3"],
+            "RealTB": hay_tiebreak_row(row), "ModelTB": sim["tb"],
+            "RealOver18": games_real > 18.5, "ModelOver18": sum(x > 18.5 for x in games_model)/sims_bt,
+            "RealOver19": games_real > 19.5, "ModelOver19": sum(x > 19.5 for x in games_model)/sims_bt,
+            "RealOver20": games_real > 20.5, "ModelOver20": sum(x > 20.5 for x in games_model)/sims_bt,
+            "RealOver22": games_real > 22.5, "ModelOver22": sum(x > 22.5 for x in games_model)/sims_bt,
+            "RealFavUnder22": fav_under22_real, "ModelFavUnder22": sim["fav_under22"],
+            "RealDogOver20": dog_over20_real, "ModelDogOver20": sim["dog_over20"],
             "ModelFav2_0": sim.get("fav_2_0", 0),
             "ModelDogWinsSet": sim.get("dog_wins_set", 0),
             "ModelLongMatch": sim.get("long_match", 0),
-            "SignalStatus": filt.get("status", ""),
-            "SignalMarket": main.get("Mercado", ""),
-            "SignalProb": main.get("Probabilidad", np.nan),
-            "SignalGrade": main.get("Grade", ""),
-            "SignalAction": main.get("Acción", ""),
-            "SignalRiskNotes": " · ".join(filt.get("risk_notes", [])),
-            "MinConfidence": min_conf,
-            "MinSurfaceMatches": min_sf,
-            "MinQuality": min_quality,
-            "EloPureGap": filt.get("elo_pure_gap", np.nan),
-            "UpsetRisk": bool((sim.get("upset_risk_guard") or {}).get("active", False)),
-            "WinnerHold": sim["hold1"],
-            "LoserHold": sim["hold2"],
-            "WinnerReturn": sim["ret1"],
-            "LoserReturn": sim["ret2"],
-            "WinnerServeProfile": sim["p1_profile"],
-            "LoserServeProfile": sim["p2_profile"],
+            "WinnerFatigueScore": sim.get("fatigue1", {}).get("fatigue_score", 0),
+            "LoserFatigueScore": sim.get("fatigue2", {}).get("fatigue_score", 0),
+            "WinnerStats": get_stats_surface(d_win, surface).get("match_type", "N/A"), "LoserStats": get_stats_surface(d_los, surface).get("match_type", "N/A"),
+            "WinnerHold": sim["hold1"], "LoserHold": sim["hold2"],
+            "WinnerReturn": sim["ret1"], "LoserReturn": sim["ret2"],
+            "WinnerServeProfile": sim["p1_profile"], "LoserServeProfile": sim["p2_profile"],
             "FavRawEst": sim["fav_raw_est"],
-        }
-        row_out["SignalHit"] = _validation_signal_hit(row_out["SignalMarket"], row_out)
-        rows.append(row_out)
-        processed += 1
+            "TBIntelBoost": sim.get("tb_intel_boost", 0),
+            "WinnerPressureSkill": sim.get("pressure_skill1", 0),
+            "LoserPressureSkill": sim.get("pressure_skill2", 0)
+        })
 
         if total:
-            if idx == 0 or (idx + 1) % 10 == 0 or idx + 1 == total:
-                progress.progress(min((idx + 1) / total, 1.0))
-                status.caption(f"Validando histórico: {idx + 1:,}/{total:,} filas · emparejados {processed:,}")
-
+            progress.progress(min((idx+1)/total, 1.0))
     progress.empty()
-    status.empty()
     return pd.DataFrame(rows)
-
 
 def market_hit_rate(df, model_col, real_col, threshold):
     sub = df[df[model_col] >= threshold].copy()
     if len(sub) == 0: return None
     return {"Casos": len(sub), "Prob media modelo": sub[model_col].mean(), "Acierto real": sub[real_col].mean()}
 
-def _safe_logloss(y_true, p):
-    p = np.clip(np.array(p, dtype=float), 1e-6, 1 - 1e-6)
-    y = np.array(y_true, dtype=float)
-    return float(-(y * np.log(p) + (1 - y) * np.log(1 - p)).mean()) if len(y) else np.nan
-
-
-def _brier(y_true, p):
-    p = np.array(p, dtype=float)
-    y = np.array(y_true, dtype=float)
-    return float(np.mean((p - y) ** 2)) if len(y) else np.nan
-
-
-def _calibration_table(df, prob_col, real_col, bins=None, min_casos=20):
-    if bins is None:
-        bins = [0.0, 0.40, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.90, 1.01]
-    labels = []
-    for a, b in zip(bins[:-1], bins[1:]):
-        labels.append(f"{int(a*100)}-{int(min(b,1.0)*100)}")
-    tmp = df[[prob_col, real_col]].dropna().copy()
-    if tmp.empty:
-        return pd.DataFrame()
-    tmp["Tramo"] = pd.cut(tmp[prob_col], bins=bins, labels=labels, include_lowest=True, right=False)
-    out = tmp.groupby("Tramo", observed=True).agg(
-        Casos=(prob_col, "count"),
-        ProbMedia=(prob_col, "mean"),
-        AciertoReal=(real_col, "mean")
-    ).reset_index()
-    out["EdgeCalibracion"] = out["AciertoReal"] - out["ProbMedia"]
-    return out[out["Casos"] >= min_casos]
-
-
 def crear_analyzer_tables(val, min_casos=20):
     val = val.copy()
     tables = {}
-    if val.empty:
-        return tables
-
-    if "FavProbCal" not in val.columns:
-        val["FavProbCal"] = val["ModelWinnerProbCal"].apply(lambda x: max(x, 1-x))
-
-    tables["ML por tramos"] = _calibration_table(val, "FavProbCal", "CalFavWasWinner", min_casos=min_casos)
+    val["FavProbCal"] = val["ModelWinnerProbCal"].apply(lambda x: max(x, 1-x))
+    val["MLBin"] = pd.cut(val["FavProbCal"], bins=[0.50,0.55,0.60,0.65,0.70,0.75,0.80,0.90], labels=["50-55","55-60","60-65","65-70","70-75","75-80","80-90"])
+    ml = val.groupby("MLBin", observed=True).agg(Casos=("FavProbCal","count"), ProbMedia=("FavProbCal","mean"), AciertoReal=("CalFavWasWinner","mean")).reset_index()
+    tables["ML por tramos"] = ml[ml["Casos"] >= min_casos]
 
     rows = []
-    markets = [
-        ("ML favorito", "FavProbCal", "CalFavWasWinner"),
-        ("Over 18.5", "ModelOver18", "RealOver18"),
-        ("Over 19.5", "ModelOver19", "RealOver19"),
-        ("Over 20.5", "ModelOver20", "RealOver20"),
-        ("Over 22.5", "ModelOver22", "RealOver22"),
-        ("Under 22.5", "ModelUnder22", "RealUnder22"),
-        ("3 Sets", "Model3Sets", "Real3Sets"),
-        ("Tie-break", "ModelTB", "RealTB"),
-        ("Favorito 2-0", "ModelFav2_0", "RealFav2_0"),
-        ("Underdog gana set", "ModelDogWinsSet", "RealDogWinsSet"),
-        ("Partido largo", "ModelLongMatch", "RealLongMatch"),
-    ]
-    for name, model, real in markets:
-        if model not in val.columns or real not in val.columns:
-            continue
-        for th in [0.40,0.45,0.50,0.55,0.60,0.65,0.70,0.75]:
+    for name, model, real in [
+        ("Over 18.5","ModelOver18","RealOver18"),
+        ("Over 19.5","ModelOver19","RealOver19"),
+        ("Over 20.5","ModelOver20","RealOver20"),
+        ("Over 22.5","ModelOver22","RealOver22"),
+        ("3 Sets","Model3Sets","Real3Sets"),
+        ("Tie-break","ModelTB","RealTB"),
+        ("Favorito + Under 22.5","ModelFavUnder22","RealFavUnder22"),
+        ("Dog + Over 20.5","ModelDogOver20","RealDogOver20"),
+        ("Favorito 2-0","ModelFav2_0","CalFavWasWinner"),
+        ("Underdog gana set","ModelDogWinsSet","Real3Sets"),
+        ("Partido largo","ModelLongMatch","RealOver22"),
+    ]:
+        for th in [0.40,0.45,0.50,0.55,0.60,0.65,0.70]:
             r = market_hit_rate(val, model, real, th)
             if r and r["Casos"] >= min_casos:
-                edge = r["Acierto real"] - r["Prob media modelo"]
-                rows.append({"Mercado": name, "Umbral modelo": th, **r, "Edge calibración": edge})
+                rows.append({"Mercado": name, "Umbral modelo": th, **r})
     tables["Mercados por umbral"] = pd.DataFrame(rows)
-
-    cal_rows = []
-    for name, model, real in markets:
-        if model in val.columns and real in val.columns:
-            cal = _calibration_table(val, model, real, min_casos=min_casos)
-            if not cal.empty:
-                cal.insert(0, "Mercado", name)
-                cal_rows.append(cal)
-    tables["Calibración mercados"] = pd.concat(cal_rows, ignore_index=True) if cal_rows else pd.DataFrame()
-
-    if "SignalStatus" in val.columns:
-        sig = val.dropna(subset=["SignalHit"]).groupby("SignalStatus").agg(
-            Casos=("SignalHit", "count"),
-            Acierto=("SignalHit", "mean"),
-            ProbMedia=("SignalProb", "mean"),
-            MLAccuracy=("CalFavWasWinner", "mean"),
-            AvgFavProb=("FavProbCal", "mean"),
-            AvgConfidence=("MinConfidence", "mean"),
-            AvgSurfaceMatches=("MinSurfaceMatches", "mean")
-        ).reset_index()
-        sig["EdgeSignal"] = sig["Acierto"] - sig["ProbMedia"]
-        tables["Señales por estado"] = sig[sig["Casos"] >= min_casos]
-
-        sigm = val.dropna(subset=["SignalHit"]).groupby(["SignalStatus", "SignalMarket"]).agg(
-            Casos=("SignalHit", "count"),
-            Acierto=("SignalHit", "mean"),
-            ProbMedia=("SignalProb", "mean"),
-            AvgConfidence=("MinConfidence", "mean")
-        ).reset_index()
-        sigm["EdgeSignal"] = sigm["Acierto"] - sigm["ProbMedia"]
-        tables["Señales por mercado"] = sigm[sigm["Casos"] >= min_casos]
 
     surface = val.groupby("Surface").agg(
         Casos=("Surface","count"), MLAccuracy=("CalFavWasWinner","mean"),
-        AvgFavProb=("FavProbCal","mean"), BrierML=("CalFavWasWinner", lambda y: np.nan),
         Over18Hit=("RealOver18","mean"), Over20Hit=("RealOver20","mean"),
         Over22Hit=("RealOver22","mean"), ThreeSetsReal=("Real3Sets","mean"),
         TBReal=("RealTB","mean"), TBModel=("ModelTB","mean"),
         GamesReal=("RealGames","mean"), GamesModel=("ModelAvgGames","mean")
     ).reset_index()
     tables["Por superficie"] = surface[surface["Casos"] >= min_casos]
-
-    if "Level" in val.columns:
-        lvl = val.groupby("Level").agg(
-            Casos=("Level", "count"), MLAccuracy=("CalFavWasWinner", "mean"),
-            AvgFavProb=("FavProbCal", "mean"), Over18Real=("RealOver18", "mean"),
-            Over18Model=("ModelOver18", "mean"), Fav20Real=("RealFav2_0", "mean"),
-            Fav20Model=("ModelFav2_0", "mean"), DogSetReal=("RealDogWinsSet", "mean"),
-            DogSetModel=("ModelDogWinsSet", "mean"), GamesReal=("RealGames", "mean"),
-            GamesModel=("ModelAvgGames", "mean")
-        ).reset_index()
-        lvl["Fav20Edge"] = lvl["Fav20Real"] - lvl["Fav20Model"]
-        lvl["DogSetEdge"] = lvl["DogSetReal"] - lvl["DogSetModel"]
-        tables["Por nivel"] = lvl[lvl["Casos"] >= min_casos]
 
     val["AnyBigServer"] = val["WinnerServeProfile"].isin(["big_server","elite_server"]) | val["LoserServeProfile"].isin(["big_server","elite_server"])
     server = val.groupby("AnyBigServer").agg(
@@ -3580,13 +3301,11 @@ def crear_analyzer_tables(val, min_casos=20):
     val["RankGap"] = abs(val["WinnerRank"] - val["LoserRank"])
     val["RankGapBin"] = pd.cut(val["RankGap"], bins=[0,20,50,100,200,500], labels=["0-20","20-50","50-100","100-200","200+"])
     rg = val.groupby("RankGapBin", observed=True).agg(
-        Casos=("RankGap","count"), MLAccuracy=("CalFavWasWinner","mean"), AvgFavProb=("FavProbCal","mean"),
+        Casos=("RankGap","count"), MLAccuracy=("CalFavWasWinner","mean"),
         ThreeSetsReal=("Real3Sets","mean"), ThreeSetsModel=("Model3Sets","mean"),
-        Fav20Real=("RealFav2_0","mean"), Fav20Model=("ModelFav2_0","mean"),
         GamesReal=("RealGames","mean"), GamesModel=("ModelAvgGames","mean")
     ).reset_index()
     tables["Ranking gap"] = rg[rg["Casos"] >= min_casos]
-
     return tables
 
 
@@ -3866,7 +3585,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     else:
         status = "⚠️ NO BET / SOLO OBSERVAR"
 
-    # v22.27 Upset Label Cleanup:
+    # v23.1 Upset Label Cleanup:
     # Si el guardia anti-upset está activo, no mostramos una lectura limpia de ML/2-0.
     # No cambia probabilidades; solo evita una etiqueta contradictoria en la señal final.
     if upset_guard.get("active", False) and main:
@@ -3935,7 +3654,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.0")
+    st.header("🎾 Tennis IA v23.1")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -4290,7 +4009,7 @@ if modo == "Predictor":
                 )
                 if qm1.get("sample_names"):
                     st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-                st.caption("Tour Quality v23.0: predictor v22.27 + Validador Histórico PRO con calibración, Brier/LogLoss y señales.")
+                st.caption("Tour Quality v23.1: amplía Upset Risk Guard para favoritos clay con dog de muestra corta; limpia etiquetas contradictorias.")
             else:
                 st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
             if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -4398,105 +4117,47 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.0 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.1 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
-    st.subheader("📚 Validador histórico PRO")
+    st.subheader("📚 Validador histórico")
     hist_df = cargar_historicos(circuito)
     if hist_df.empty:
         st.error("No se encontraron históricos.")
         st.stop()
     with st.sidebar:
         surface_filter = st.selectbox("Superficie histórica", ["Todas","Hard","Clay","Grass"])
-        level_filter = st.selectbox("Nivel histórico", ["Todos", "tour", "challenger", "qualy", "itf", "unknown"])
         max_matches = st.number_input("Máx partidos a validar", 10, 5000, 500, 50)
-        sims_bt = st.select_slider("Simulaciones por partido", [200,300,500,1000,2000], value=500)
-        min_casos_val = st.number_input("Mínimo casos por tabla", 5, 300, 25, 5)
-    diag = historicos_diagnostics(circuito)
-    st.info(
-        f"Históricos cargados: {len(hist_df):,} filas · files={diag.get('files_count',0)} · "
-        f"rango={diag.get('date_min','N/A')}→{diag.get('date_max','N/A')}"
-    )
-    st.caption("v23.0 valida ML, overs, sets, 2-0, dog set y etiquetas del Signal Trust. Usa caps operativos del predictor.")
-
-    if st.button("🚀 EJECUTAR VALIDACIÓN PRO", use_container_width=True):
-        val = validar_historico(db, hist_df, circuito, surface_filter, int(max_matches), int(sims_bt), level_filter=level_filter)
+        sims_bt = st.select_slider("Simulaciones por partido", [300,500,1000,2000], value=500)
+    st.info(f"Históricos cargados: {len(hist_df):,} partidos.")
+    if st.button("🚀 EJECUTAR VALIDACIÓN", use_container_width=True):
+        with st.spinner("Validando partidos históricos..."):
+            val = validar_historico(db,hist_df,circuito,surface_filter,int(max_matches),int(sims_bt))
         if val.empty:
-            st.error("No se pudieron emparejar partidos o no había scores válidos para esos filtros.")
+            st.error("No se pudieron emparejar partidos.")
             st.stop()
-
-        tables = crear_analyzer_tables(val, int(min_casos_val))
-        fav_prob = val["FavProbCal"].astype(float)
-        fav_hit = val["CalFavWasWinner"].astype(float)
-        ml_acc = fav_hit.mean()
-        brier_ml = _brier(fav_hit, fav_prob)
-        logloss_ml = _safe_logloss(fav_hit, fav_prob)
+        ml_acc = val["CalFavWasWinner"].mean()
+        over18_acc = ((val["ModelOver18"] >= 0.50) == val["RealOver18"]).mean()
+        over19_acc = ((val["ModelOver19"] >= 0.50) == val["RealOver19"]).mean() if "ModelOver19" in val.columns else 0
+        over20_acc = ((val["ModelOver20"] >= 0.50) == val["RealOver20"]).mean()
+        over22_acc = ((val["ModelOver22"] >= 0.50) == val["RealOver22"]).mean()
+        set3_acc = ((val["Model3Sets"] >= 0.50) == val["Real3Sets"]).mean()
+        tb_acc = ((val["ModelTB"] >= 0.50) == val["RealTB"]).mean()
         games_error = np.mean(np.abs(val["ModelAvgGames"] - val["RealGames"]))
-        signal_df = val.dropna(subset=["SignalHit"])
-        signal_acc = signal_df["SignalHit"].mean() if not signal_df.empty else np.nan
-
         st.divider()
-        st.subheader("📊 Resumen PRO")
-        c1,c2,c3,c4,c5 = st.columns(5)
-        with c1: st.metric("Partidos", f"{len(val):,}")
-        with c2: st.metric("ML accuracy", f"{ml_acc:.1%}")
-        with c3: st.metric("Brier ML", f"{brier_ml:.3f}")
-        with c4: st.metric("LogLoss ML", f"{logloss_ml:.3f}")
-        with c5: st.metric("Error games", f"{games_error:.2f}")
-
-        d1,d2,d3,d4 = st.columns(4)
-        with d1: st.metric("Over18 real/modelo", f"{val['RealOver18'].mean():.1%} / {val['ModelOver18'].mean():.1%}")
-        with d2: st.metric("Fav 2-0 real/modelo", f"{val['RealFav2_0'].mean():.1%} / {val['ModelFav2_0'].mean():.1%}")
-        with d3: st.metric("Dog set real/modelo", f"{val['RealDogWinsSet'].mean():.1%} / {val['ModelDogWinsSet'].mean():.1%}")
-        with d4: st.metric("Signal hit", "N/A" if pd.isna(signal_acc) else f"{signal_acc:.1%}")
-
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-            "🎯 Calibración ML", "📈 Mercados", "💎 Señales", "🌍 Segmentos", "⚠️ Inflados", "🧾 Detalle"
-        ])
-        with tab1:
-            st.subheader("🎯 ML por tramos")
-            st.dataframe(tables.get("ML por tramos", pd.DataFrame()), use_container_width=True)
-            st.caption("EdgeCalibracion = acierto real - probabilidad media. Negativo = mercado/modelo inflado.")
-        with tab2:
-            st.subheader("📈 Mercados por umbral")
-            mt = tables.get("Mercados por umbral", pd.DataFrame())
-            if not mt.empty:
-                st.dataframe(mt.sort_values(["Mercado", "Umbral modelo"]), use_container_width=True)
-            st.subheader("📊 Calibración por mercado")
-            st.dataframe(tables.get("Calibración mercados", pd.DataFrame()), use_container_width=True)
-        with tab3:
-            st.subheader("💎 Señales por estado")
-            st.dataframe(tables.get("Señales por estado", pd.DataFrame()), use_container_width=True)
-            st.subheader("💎 Señales por mercado")
-            st.dataframe(tables.get("Señales por mercado", pd.DataFrame()), use_container_width=True)
-        with tab4:
-            st.subheader("🌍 Por superficie")
-            st.dataframe(tables.get("Por superficie", pd.DataFrame()), use_container_width=True)
-            st.subheader("🏷️ Por nivel")
-            st.dataframe(tables.get("Por nivel", pd.DataFrame()), use_container_width=True)
-            st.subheader("🚀 Big server")
-            st.dataframe(tables.get("Big server", pd.DataFrame()), use_container_width=True)
-            st.subheader("📊 Ranking gap")
-            st.dataframe(tables.get("Ranking gap", pd.DataFrame()), use_container_width=True)
-        with tab5:
-            st.subheader("⚠️ Mercados potencialmente inflados")
-            mt = tables.get("Mercados por umbral", pd.DataFrame())
-            if not mt.empty and "Edge calibración" in mt.columns:
-                bad = mt[(mt["Casos"] >= int(min_casos_val)) & (mt["Edge calibración"] <= -0.05)].copy()
-                st.dataframe(bad.sort_values("Edge calibración"), use_container_width=True)
-            sig = tables.get("Señales por estado", pd.DataFrame())
-            if not sig.empty and "EdgeSignal" in sig.columns:
-                st.subheader("⚠️ Señales infladas")
-                st.dataframe(sig[sig["EdgeSignal"] <= -0.05].sort_values("EdgeSignal"), use_container_width=True)
-        with tab6:
-            st.subheader("🧾 Detalle base")
-            st.dataframe(val, use_container_width=True)
-            st.download_button(
-                "⬇️ Descargar CSV validación PRO",
-                data=val.to_csv(index=False).encode("utf-8"),
-                file_name="validacion_tennis_ia_v23_pro.csv",
-                mime="text/csv"
-            )
+        st.subheader("📊 Resumen validación")
+        c1,c2,c3,c4 = st.columns(4)
+        with c1: st.metric("ML accuracy", f"{ml_acc:.1%}")
+        with c2: st.metric("Over 20.5 accuracy", f"{over20_acc:.1%}")
+        with c3: st.metric("3 sets accuracy", f"{set3_acc:.1%}")
+        with c4: st.metric("Error medio games", f"{games_error:.2f}")
+        d1,d2,d3 = st.columns(3)
+        with d1: st.metric("Over 18.5 accuracy", f"{over18_acc:.1%}")
+        with d2: st.metric("Over 19.5 accuracy", f"{over19_acc:.1%}")
+        with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
+        st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
+        st.dataframe(val, use_container_width=True)
+        st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v22.csv", mime="text/csv")
 
 else:
     st.subheader("📊 Analyzer Engine")
