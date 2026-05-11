@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.1", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.2 SAFE", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.1"
-QUALITY_ENGINE_VERSION = "v23.1-safe-validator-hotfix-2026-05-11"
+APP_VERSION = "v23.2-safe"
+QUALITY_ENGINE_VERSION = "v23.2-safe-rollback-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -1638,13 +1638,13 @@ def upset_risk_guard_engine(circuito, surface, p1_cal, p1_raw, fav20, dogset, lo
     challenger_pressure = (min_quality < 0.72) or ("challenger" in flag_text) or ("qualy" in flag_text)
     rating_inflation = (raw_cal_gap >= 0.050) or ("inflado" in flag_text) or ("incoherente" in flag_text)
     data_limited = (min_conf < 0.65) or (min_stability < 0.82)
-    # v23.1: en clay, un dog con 10-24 partidos de superficie NO es "sin datos";
+    # v22.27: en clay, un dog con 10-24 partidos de superficie NO es "sin datos";
     # es una muestra corta pero suficiente para exigir prudencia si el favorito sale demasiado limpio.
     dog_has_clay_data = min_surface >= 10
     short_surface_sample = 10 <= min_surface < 25
 
     # Caso típico: favorito 75-82%, pero con señales internas de fragilidad.
-    # v23.1 relaja el trigger para capturar spots tipo big-server / favorito frágil en clay,
+    # v22.27 relaja el trigger para capturar spots tipo big-server / favorito frágil en clay,
     # donde el Elo favorece mucho pero el underdog tiene muestra clay corta y potencial de swing.
     trigger = (
         fav_prob >= 0.75
@@ -1663,7 +1663,7 @@ def upset_risk_guard_engine(circuito, surface, p1_cal, p1_raw, fav20, dogset, lo
         ml_cap -= 0.010
     if raw_cal_gap >= 0.070:
         ml_cap -= 0.010
-    # v23.1: muestra clay corta del underdog = no permitir lectura de favorito 80%+ limpia.
+    # v22.27: muestra clay corta del underdog = no permitir lectura de favorito 80%+ limpia.
     if short_surface_sample and fav_prob >= 0.78:
         ml_cap = min(ml_cap, 0.745)
     ml_cap = float(np.clip(ml_cap, 0.70, 0.77))
@@ -3585,7 +3585,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     else:
         status = "⚠️ NO BET / SOLO OBSERVAR"
 
-    # v23.1 Upset Label Cleanup:
+    # v22.27 Upset Label Cleanup:
     # Si el guardia anti-upset está activo, no mostramos una lectura limpia de ML/2-0.
     # No cambia probabilidades; solo evita una etiqueta contradictoria en la señal final.
     if upset_guard.get("active", False) and main:
@@ -3654,7 +3654,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.1")
+    st.header("🎾 Tennis IA v23.2 SAFE")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -4009,7 +4009,7 @@ if modo == "Predictor":
                 )
                 if qm1.get("sample_names"):
                     st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-                st.caption("Tour Quality v23.1: amplía Upset Risk Guard para favoritos clay con dog de muestra corta; limpia etiquetas contradictorias.")
+                st.caption("Tour Quality v23.2 SAFE: amplía Upset Risk Guard para favoritos clay con dog de muestra corta; limpia etiquetas contradictorias.")
             else:
                 st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
             if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -4117,7 +4117,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.1 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.2 SAFE · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
