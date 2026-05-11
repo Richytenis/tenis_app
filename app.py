@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.22", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.23", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.22"
-QUALITY_ENGINE_VERSION = "v22.22-clean-ui-debug-toggle-2026-05-11"
+APP_VERSION = "v22.23"
+QUALITY_ENGINE_VERSION = "v22.23-clean-ui-debug-toggle-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -2196,7 +2196,13 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "p1": 0, "p2": 0, "set3": 0, "tb": 0, "games": [],
         "p1_fs": 0, "p2_fs": 0,
         "fav_under22": 0, "dog_over20": 0,
-        "fav_2_0": 0, "dog_wins_set": 0, "long_match": 0
+        "fav_2_0": 0, "dog_wins_set": 0, "long_match": 0,
+        # v22.23 Favorite Identity Engine:
+        # count straight sets / set wins by player, then decide favorite by final model probability,
+        # not by raw surface Elo. This avoids labels such as "underdog wins set" being tied to Elo
+        # when the final model has flipped the favorite.
+        "p1_2_0": 0, "p2_2_0": 0,
+        "p1_wins_set_any": 0, "p2_wins_set_any": 0
     }
 
     progress_step = max(1, min(100, n // 100))
@@ -2249,6 +2255,16 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         if tb_seen:
             res["tb"] += 1
 
+        # v22.23: player-specific set outcomes for final-model favorite markets.
+        if sets1 == sets_to_win and sets2 == 0:
+            res["p1_2_0"] += 1
+        if sets2 == sets_to_win and sets1 == 0:
+            res["p2_2_0"] += 1
+        if sets1 >= 1:
+            res["p1_wins_set_any"] += 1
+        if sets2 >= 1:
+            res["p2_wins_set_any"] += 1
+
         p1_is_fav = e1 >= e2
         fav_wins = p1_wins if p1_is_fav else (not p1_wins)
         dog_wins = not fav_wins
@@ -2285,8 +2301,14 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
     p1_cal = calibrar_probabilidad(p1_raw, surface)
 
     raw_tb = res["tb"] / n
-    raw_fav20 = res["fav_2_0"] / n
-    raw_dogset = res["dog_wins_set"] / n
+
+    # v22.23 Favorite Identity Engine:
+    # Favorite/underdog derived markets follow the calibrated model favorite, not raw Elo.
+    model_fav_is_p1 = p1_cal >= 0.50
+    model_fav_name = d1.get("Player", "Jugador 1") if model_fav_is_p1 else d2.get("Player", "Jugador 2")
+    model_dog_name = d2.get("Player", "Jugador 2") if model_fav_is_p1 else d1.get("Player", "Jugador 1")
+    raw_fav20 = (res["p1_2_0"] if model_fav_is_p1 else res["p2_2_0"]) / n
+    raw_dogset = (res["p2_wins_set_any"] if model_fav_is_p1 else res["p1_wins_set_any"]) / n
     raw_long = res["long_match"] / n
 
     # v18.1 Rating Sanity Engine: se aplica después de simular, no antes.
@@ -2403,6 +2425,9 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "p2_profile": p2_profile,
         "vol": vol,
         "fav_raw_est": fav_est,
+        "model_fav_is_p1": model_fav_is_p1,
+        "model_fav_name": model_fav_name,
+        "model_dog_name": model_dog_name,
         "elo_effective1": e1_eff,
         "elo_effective2": e2_eff,
         "tb_intel_boost": tb_intel_boost,
@@ -3389,8 +3414,8 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.22")
-    st.caption("Clean UI + Debug Toggle")
+    st.header("🎾 Tennis IA v22.23")
+    st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -3744,7 +3769,7 @@ if modo == "Predictor":
                 )
                 if qm1.get("sample_names"):
                     st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-                st.caption("Tour Quality v22.22: Clean UI + Debug Toggle · Name Match Strict + Straight Sets Guard para favoritos claros.")
+                st.caption("Tour Quality v22.23: Favorite Identity Engine · Name Match Strict + Straight Sets Guard para favoritos claros.")
             else:
                 st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
             if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -3844,7 +3869,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.22 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.23 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
