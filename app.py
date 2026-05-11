@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.12", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.13", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.12"
-QUALITY_ENGINE_VERSION = "v22.12-unified-schema-challenger-2026-05-11"
+APP_VERSION = "v22.13"
+QUALITY_ENGINE_VERSION = "v22.13-unified-schema-challenger-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -280,7 +280,7 @@ def buscar_stats(nombre, stats_map):
 
 def detectar_nivel_torneo(row):
     """
-    v22.12 Tour Quality + Challenger CSV Fix.
+    v22.13 Tour Quality + Challenger CSV Fix.
 
     Soporta dos familias de históricos:
     1) Excel tipo tennis-data ATP Tour con columnas Series/Tournament/Round.
@@ -585,10 +585,15 @@ def crear_quality_map(circuito):
 
     df = hist.copy()
     if "Comment" in df.columns:
-        completed_mask = df["Comment"].astype(str).str.contains("Completed", case=False, na=False)
-        # Si el archivo no usa Comment=Completed, no tiramos todo el histórico.
-        if completed_mask.sum() > 0:
-            df = df[completed_mask]
+        # v22.13: filtro por Comment sin borrar filas CSV Challenger/Qualy.
+        # Al concatenar Excel Tour + CSV qual_chall, las filas CSV suelen tener Comment vacío/NaN.
+        # Antes, como los Excel sí tenían Comment=Completed, se aplicaba df[completed_mask]
+        # y se eliminaban TODOS los CSV. Ahora solo filtramos filas que realmente traen Comment.
+        comment_txt = df["Comment"].apply(normalizar_texto).replace({"nan": "", "NaN": "", "None": ""})
+        has_comment = comment_txt.str.strip().ne("")
+        completed_mask = comment_txt.str.contains("Completed", case=False, na=False)
+        if has_comment.any() and completed_mask.sum() > 0:
+            df = df[(~has_comment) | completed_mask]
 
     col_winner = buscar_columna(df, ["MC_Winner", "Winner", "Ganador", "Player1", "Player 1", "WName", "winner_name", "winner_name_clean", "Jugador1", "Home", "P1"])
     col_loser = buscar_columna(df, ["MC_Loser", "Loser", "Perdedor", "Player2", "Player 2", "LName", "loser_name", "loser_name_clean", "Jugador2", "Away", "P2"])
@@ -2276,7 +2281,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None):
 
 
 def _first_nonempty_from_columns(df, candidates):
-    """v22.12: crea una serie unificada usando la primera columna no vacía por fila."""
+    """v22.13: crea una serie unificada usando la primera columna no vacía por fila."""
     existing = [c for c in candidates if c in df.columns]
     if not existing:
         return pd.Series([""] * len(df), index=df.index)
@@ -2289,7 +2294,7 @@ def _first_nonempty_from_columns(df, candidates):
 
 def normalizar_schema_historicos(df):
     """
-    v22.12 Unified Historical Schema.
+    v22.13 Unified Historical Schema.
     Al concatenar Excel ATP Tour con CSV qual_chall, pandas deja columnas separadas:
     Winner/Loser para Excel y winner_name/loser_name para CSV. Antes buscar_columna elegía Winner
     y las filas CSV quedaban vacías. Esta función crea columnas MC_* para que todos los loaders
@@ -2323,7 +2328,7 @@ def normalizar_schema_historicos(df):
 
 def cargar_historicos(circuito):
     """
-    v22.12 Historical Loader.
+    v22.13 Historical Loader.
 
     Lee históricos Tour y, además, CSV Challenger/Qualy si los colocas en cualquiera de estas carpetas:
       datos/atp/historicos
@@ -3184,7 +3189,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.12")
+    st.header("🎾 Tennis IA v22.13")
     st.caption("Match Count Loader Fix + Name Radar Pro + Cache Breaker")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3474,7 +3479,7 @@ if modo == "Predictor":
             )
             if qm1.get("sample_names"):
                 st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-            st.caption("Tour Quality v22.12: unifica columnas Winner/Loser con winner_name/loser_name; tourney_level=C cuenta como Challenger y rondas Q como Qualy.")
+            st.caption("Tour Quality v22.13: unifica Winner/Loser con winner_name/loser_name y mantiene CSV Challenger aunque no traigan Comment.")
         else:
             st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
         if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -3574,7 +3579,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.12 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.13 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
