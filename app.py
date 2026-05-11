@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v21.2.2", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v21.3.3", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -2052,7 +2052,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v21.2.2")
+    st.header("🎾 Tennis IA v21.3.3")
     st.caption("ATP Clay Specialist Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -2322,7 +2322,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v21.2.2 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v21.3.3 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
