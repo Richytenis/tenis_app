@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.18", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.19", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.17"
-QUALITY_ENGINE_VERSION = "v22.18-force-direct-challenger-count-2026-05-11"
+APP_VERSION = "v22.19"
+QUALITY_ENGINE_VERSION = "v22.19-ux-polish-direct-challenger-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -2089,7 +2089,13 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "fav_2_0": 0, "dog_wins_set": 0, "long_match": 0
     }
 
-    progress_step = max(1, n // 100)
+    progress_step = max(1, min(100, n // 100))
+
+    if progress_callback is not None:
+        try:
+            progress_callback(0, n)
+        except Exception:
+            pass
 
     for sim_i in range(n):
         sets1 = sets2 = games = 0
@@ -3263,8 +3269,8 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.18")
-    st.caption("UX Progress Engine + Fast Challenger Loader")
+    st.header("🎾 Tennis IA v22.19")
+    st.caption("UX Polish + Direct Challenger Count")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -3310,25 +3316,31 @@ if modo == "Predictor":
         best_of = 5 if "5" in formato else 3
         sim_status = st.status(f"🎲 Simulando {sims:,} partidos Monte Carlo...", expanded=True)
         with sim_status:
-            sim_bar = st.progress(0, text=f"Simulaciones: 0 / {sims:,}")
+            sim_bar = st.progress(0, text="Preparando motores de simulación...")
+            sim_msg = st.empty()
             sim_start = time.time()
+            sim_bar.progress(0.01, text=f"Preparando simulación · 0 / {sims:,}")
+            sim_msg.caption("Inicializando hold/return, fatiga, rating sanity y mercados...")
 
             def update_sim_progress(done, total):
-                pct = min(1.0, max(0.0, done / total)) if total else 1.0
+                pct = min(1.0, max(0.01, done / total)) if total else 1.0
                 elapsed = max(0.001, time.time() - sim_start)
                 rate = done / elapsed if done else 0
                 eta = (total - done) / rate if rate > 0 else 0
                 sim_bar.progress(
                     pct,
-                    text=f"Simulando {done:,} / {total:,} ({pct:.0%}) · transcurrido {elapsed:.1f}s · ETA {eta:.1f}s"
+                    text=f"Simulando {done:,} / {total:,} ({pct:.0%}) · {elapsed:.1f}s · ETA {eta:.1f}s"
                 )
+                sim_msg.caption(f"Último lote procesado: {done:,} simulaciones")
 
             sim = sim_match(
                 d1, d2, surface, circuito, best_of, sims,
                 context_row={},
                 progress_callback=update_sim_progress
             )
-            sim_bar.progress(1.0, text=f"Simulación completada · {sims:,} partidos")
+            total_elapsed = time.time() - sim_start
+            sim_bar.progress(1.0, text=f"Simulación completada · {sims:,} partidos · {total_elapsed:.1f}s")
+            sim_msg.caption("Resultados listos para pintar en pantalla.")
 
         sim_status.update(label=f"✅ Simulación completada · {sims:,} partidos", state="complete", expanded=False)
 
@@ -3600,7 +3612,7 @@ if modo == "Predictor":
             )
             if qm1.get("sample_names"):
                 st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-            st.caption("Tour Quality v22.18: conteo directo cacheado por jugador; integra Challenger/Qualy aunque el QualityMap global quede corto.")
+            st.caption("Tour Quality v22.19: conteo directo cacheado por jugador + pulido UX de carga/simulación.")
         else:
             st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
         if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
@@ -3700,7 +3712,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.18 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.19 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
