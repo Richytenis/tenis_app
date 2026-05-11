@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.20", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.22", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.20"
-QUALITY_ENGINE_VERSION = "v22.20-straight-sets-guard-2026-05-11"
+APP_VERSION = "v22.22"
+QUALITY_ENGINE_VERSION = "v22.22-clean-ui-debug-toggle-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -699,6 +699,9 @@ def closest_quality_candidates(nombre, quality_map, limit=8):
             elif user_surname and cand_surname and user_surname == cand_surname:
                 sc = max(sc, 0.86)
                 reason = "apellido"
+            elif user_surname and cand_surname and user_surname != cand_surname:
+                # v22.21: radar estricto, no elevar candidatos con otro apellido por compartir nombre común.
+                sc = min(sc, 0.89)
 
             t_user = tokens(nombre)
             t_cand = tokens(cand)
@@ -731,9 +734,21 @@ def closest_quality_candidates(nombre, quality_map, limit=8):
 
 
 def nombre_score_quality_direct(objetivo, candidato):
-    """v22.8: score robusto entre nombre completo y formato tennis-data Apellido I."""
+    """
+    v22.21 Name Match Strict.
+    Evita falsos positivos tipo:
+    - Martin Landaluce -> Alvaro Lopez San Martin
+
+    Reglas:
+    - Exacto limpio: 1.00
+    - Apellido + inicial exactos: 0.995
+    - Mismo apellido + inicial compatible: 0.96
+    - Mismo apellido sin inicial clara: 0.84
+    - Fuzzy sin mismo apellido queda capado a 0.89, aunque SequenceMatcher dé alto.
+    """
     if not objetivo or not candidato:
         return 0.0, "empty"
+
     n1, n2 = limpiar(objetivo), limpiar(candidato)
     if n1 and n1 == n2:
         return 1.0, "exacto"
@@ -744,16 +759,21 @@ def nombre_score_quality_direct(objetivo, candidato):
 
     s1, s2 = surname_key(objetivo), surname_key(candidato)
     t1, t2 = tokens(objetivo), tokens(candidato)
+
     if s1 and s2 and s1 == s2:
-        # Si uno está abreviado, comprobamos inicial compatible.
-        initials1 = {x[0] for x in t1 if x and x != s1}
-        initials2 = {x[0] for x in t2 if x and x != s2}
+        initials1 = {x[0] for x in t1 if x and limpiar(x) != s1}
+        initials2 = {x[0] for x in t2 if x and limpiar(x) != s2}
         if initials1 and initials2 and initials1 & initials2:
             return 0.96, "apellido+inicial"
         return 0.84, "apellido"
 
-    sc = similitud_nombre(objetivo, candidato)
-    return float(sc), "fuzzy"
+    # Si el apellido objetivo no aparece como token del candidato, NO permitimos match fuerte.
+    # Esto bloquea falsos positivos por nombres comunes: Martin, Alejandro, Rafael, etc.
+    sc = float(similitud_nombre(objetivo, candidato))
+    if s1 and s1 not in {limpiar(x) for x in t2}:
+        sc = min(sc, 0.89)
+
+    return sc, "fuzzy"
 
 
 @st.cache_data(show_spinner=False)
@@ -1444,33 +1464,45 @@ def straight_sets_guard_engine(circuito, surface, fav_prob, hold1, hold2, tb_rat
     # Condiciones de activación: favorito real, datos fiables y diferencia clara de hold.
     if fav_prob < 0.615:
         return fav20, dogset, longm, out
-    if fav_prob > 0.735:
-        # Los favoritos muy fuertes ya tienen protecciones previas; evitamos doble conteo.
-        return fav20, dogset, longm, out
-    if min_conf < 0.74 or min_surface < 35 or min_stability < 0.72:
-        return fav20, dogset, longm, out
-    if hold_gap < 0.070:
-        return fav20, dogset, longm, out
-    if tb_rate >= 0.34:
-        # Si hay entorno fuerte de tie-break, no forzamos 2-0.
-        return fav20, dogset, longm, out
+    # v22.21: favoritos muy claros también necesitan guardia si el hold gap es enorme.
+    # Antes se excluían >73.5% y por eso spots tipo 6-4 6-3 podían inflar "dog gana set".
+    clear_fav_mode = fav_prob >= 0.735
+
+    if clear_fav_mode:
+        if min_conf < 0.60 or min_surface < 18 or min_stability < 0.55:
+            return fav20, dogset, longm, out
+        if hold_gap < 0.115:
+            return fav20, dogset, longm, out
+        if tb_rate >= 0.32:
+            return fav20, dogset, longm, out
+    else:
+        if min_conf < 0.74 or min_surface < 35 or min_stability < 0.72:
+            return fav20, dogset, longm, out
+        if hold_gap < 0.070:
+            return fav20, dogset, longm, out
+        if tb_rate >= 0.34:
+            # Si hay entorno fuerte de tie-break, no forzamos 2-0.
+            return fav20, dogset, longm, out
 
     boost = 0.030
     if fav_prob >= 0.64: boost += 0.012
     if fav_prob >= 0.67: boost += 0.010
+    if fav_prob >= 0.735: boost += 0.018
+    if fav_prob >= 0.78: boost += 0.010
     if hold_gap >= 0.085: boost += 0.018
     if hold_gap >= 0.105: boost += 0.012
+    if hold_gap >= 0.140: boost += 0.014
     if min_conf >= 0.82: boost += 0.010
     if min_surface >= 100: boost += 0.008
     if tb_rate <= 0.27: boost += 0.006
     if surface == "Clay": boost *= 0.95
 
-    boost = float(np.clip(boost, 0.0, 0.095))
-    dog_cut = float(np.clip(boost * 1.05, 0.0, 0.105))
-    long_cut = float(np.clip(boost * 0.82, 0.0, 0.085))
+    boost = float(np.clip(boost, 0.0, 0.125))
+    dog_cut = float(np.clip(boost * 1.10, 0.0, 0.135))
+    long_cut = float(np.clip(boost * 0.82, 0.0, 0.105))
 
     out["active"] = True
-    out["profile"] = "controlled_favorite"
+    out["profile"] = "clear_favorite_control" if fav_prob >= 0.735 else "controlled_favorite"
     out["fav20_boost"] = boost
     out["dogset_cut"] = dog_cut
     out["long_cut"] = long_cut
@@ -3348,7 +3380,8 @@ def render_betting_filters(filters):
         })
 
     if rows:
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        with st.expander("📋 Ver todas las señales del filtro", expanded=False):
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 # =========================================================
@@ -3356,13 +3389,14 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.20")
-    st.caption("UX Polish + Direct Challenger Count")
+    st.header("🎾 Tennis IA v22.22")
+    st.caption("Clean UI + Debug Toggle")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
     circuito = st.radio("Circuito", ["ATP", "WTA"])
     modo = st.radio("Modo", ["Predictor", "Validador histórico", "Analyzer"])
+    mostrar_debug = st.toggle("🔧 Mostrar diagnóstico técnico", value=False)
 
 # =========================================================
 # UX Progress Engine: carga visible de datos
@@ -3500,268 +3534,269 @@ if modo == "Predictor":
         if sim.get("market_cap_notes"):
             st.caption("🧯 Market sanity: " + " · ".join(sim.get("market_cap_notes", [])))
 
-        st.divider()
-        st.subheader("🎾 Hold / Return Engine")
-        h1,h2 = st.columns(2)
-        with h1:
-            st.metric(d1["Player"], f"{sim['hold1']:.1%}", f"Raw hold {sim['raw_hold1']:.1%}")
-            st.caption(f"{perfil_legible(sim['p1_profile'])} · Return strength {sim['ret1']:.1%}")
-        with h2:
-            st.metric(d2["Player"], f"{sim['hold2']:.1%}", f"Raw hold {sim['raw_hold2']:.1%}")
-            st.caption(f"{perfil_legible(sim['p2_profile'])} · Return strength {sim['ret2']:.1%}")
-
-
-
-        if circuito == "ATP" and surface == "Clay" and sim.get("elite_clay", {}).get("active", False):
+        with st.expander("🔧 Ver diagnóstico técnico", expanded=mostrar_debug):
             st.divider()
-            st.subheader("👑 Elite ATP Clay Protection")
+            st.subheader("🎾 Hold / Return Engine")
+            h1,h2 = st.columns(2)
+            with h1:
+                st.metric(d1["Player"], f"{sim['hold1']:.1%}", f"Raw hold {sim['raw_hold1']:.1%}")
+                st.caption(f"{perfil_legible(sim['p1_profile'])} · Return strength {sim['ret1']:.1%}")
+            with h2:
+                st.metric(d2["Player"], f"{sim['hold2']:.1%}", f"Raw hold {sim['raw_hold2']:.1%}")
+                st.caption(f"{perfil_legible(sim['p2_profile'])} · Return strength {sim['ret2']:.1%}")
 
-            ec = sim.get("elite_clay", {})
-            e1,e2,e3 = st.columns(3)
 
-            with e1:
-                st.metric("Activo", "Sí")
 
-            with e2:
-                st.metric("Favorito elite", ec.get("fav","").upper())
+            if circuito == "ATP" and surface == "Clay" and sim.get("elite_clay", {}).get("active", False):
+                st.divider()
+                st.subheader("👑 Elite ATP Clay Protection")
 
-            with e3:
-                st.metric("Vol mult", f"{ec.get('vol_mult',1.0):.2f}")
+                ec = sim.get("elite_clay", {})
+                e1,e2,e3 = st.columns(3)
 
-        if circuito == "ATP" and surface == "Clay":
+                with e1:
+                    st.metric("Activo", "Sí")
+
+                with e2:
+                    st.metric("Favorito elite", ec.get("fav","").upper())
+
+                with e3:
+                    st.metric("Vol mult", f"{ec.get('vol_mult',1.0):.2f}")
+
+            if circuito == "ATP" and surface == "Clay":
+                st.divider()
+                st.subheader("🧱 Rating Sanity Engine")
+
+                ce = sim.get("clay_engine", {})
+                c1,c2,c3 = st.columns(3)
+
+                with c1:
+                    st.metric("Activo", "Sí" if ce.get("active", False) else "No")
+
+                with c2:
+                    st.metric("Perfil", ce.get("profile", "neutral"))
+
+                with c3:
+                    st.metric("Vol mult", f"{ce.get('vol_mult',1.0):.2f}")
+
+                if ce.get("notes"):
+                    st.caption(" · ".join(ce.get("notes", [])))
+
             st.divider()
-            st.subheader("🧱 Rating Sanity Engine")
+            st.subheader("🎯 Tie-break Intelligence")
 
-            ce = sim.get("clay_engine", {})
-            c1,c2,c3 = st.columns(3)
-
-            with c1:
-                st.metric("Activo", "Sí" if ce.get("active", False) else "No")
-
-            with c2:
-                st.metric("Perfil", ce.get("profile", "neutral"))
-
-            with c3:
-                st.metric("Vol mult", f"{ce.get('vol_mult',1.0):.2f}")
-
-            if ce.get("notes"):
-                st.caption(" · ".join(ce.get("notes", [])))
-
-        st.divider()
-        st.subheader("🎯 Tie-break Intelligence")
-
-        tb1, tb2, tb3 = st.columns(3)
-        with tb1:
-            st.metric("TB boost", f"{sim.get('tb_intel_boost', 0):+.1%}")
-        with tb2:
-            st.metric(f"Presión {d1['Player']}", f"{sim.get('pressure_skill1', 0):+.1%}")
-        with tb3:
-            st.metric(f"Presión {d2['Player']}", f"{sim.get('pressure_skill2', 0):+.1%}")
+            tb1, tb2, tb3 = st.columns(3)
+            with tb1:
+                st.metric("TB boost", f"{sim.get('tb_intel_boost', 0):+.1%}")
+            with tb2:
+                st.metric(f"Presión {d1['Player']}", f"{sim.get('pressure_skill1', 0):+.1%}")
+            with tb3:
+                st.metric(f"Presión {d2['Player']}", f"{sim.get('pressure_skill2', 0):+.1%}")
 
 
-        st.divider()
-        st.subheader("🏟️ Tournament Engine")
-
-        tc = sim.get("tournament_ctx", {})
-        t1,t2,t3 = st.columns(3)
-
-        with t1:
-            st.metric("Series", tc.get("series","ATP"))
-
-        with t2:
-            st.metric("Court", tc.get("court","Outdoor"))
-
-        with t3:
-            st.metric("Round", tc.get("round","Main"))
-
-        st.divider()
-        st.subheader("🔋 Fatigue Engine")
-
-        fcol1, fcol2 = st.columns(2)
-        with fcol1:
-            f = sim.get("fatigue1", {})
-            st.metric(d1["Player"], f"{f.get('fatigue_score',0):.1%}", f"Ajuste {sim.get('fatigue_adj1',0):+.1%}")
-            st.caption(f"7 días: {f.get('matches7',0)} partidos · {f.get('games7',0)} games · descanso {f.get('rest_days',7)} días")
-        with fcol2:
-            f = sim.get("fatigue2", {})
-            st.metric(d2["Player"], f"{f.get('fatigue_score',0):.1%}", f"Ajuste {sim.get('fatigue_adj2',0):+.1%}")
-            st.caption(f"7 días: {f.get('matches7',0)} partidos · {f.get('games7',0)} games · descanso {f.get('rest_days',7)} días")
-
-
-        st.divider()
-        st.subheader("🎾 Rating Sanity Engine")
-
-        sd = sim.get("set_dynamics", {})
-
-        s1,s2,s3 = st.columns(3)
-
-        with s1:
-            st.metric("2-0 boost", f"{sd.get('fav20_boost',0):+.1%}")
-
-        with s2:
-            st.metric("Dog suppression", f"{sd.get('dog_set_suppress',0):+.1%}")
-
-        with s3:
-            st.metric("Long match adj", f"{sd.get('long_match_adj',0):+.1%}")
-
-        ssg = sim.get("straight_sets_guard", {}) or {}
-        if ssg.get("active", False):
-            st.info(
-                f"🧭 Straight Sets Guard activo · 2-0 {ssg.get('fav20_boost',0):+.1%} · "
-                f"Dog set {ssg.get('dogset_cut',0):-.1%} · Largo {ssg.get('long_cut',0):-.1%}"
-            )
-            notes = ssg.get("notes", [])
-            if notes:
-                st.caption(" · ".join(notes))
-
-
-
-        if sim.get("wta_engine_active", False):
             st.divider()
-            st.subheader("🎭 WTA Match Script")
+            st.subheader("🏟️ Tournament Engine")
 
-            ws2 = sim.get("wta_script", {})
-            m1,m2,m3,m4 = st.columns(4)
+            tc = sim.get("tournament_ctx", {})
+            t1,t2,t3 = st.columns(3)
 
-            with m1:
-                st.metric("Activo", "Sí" if ws2.get("active", False) else "No")
+            with t1:
+                st.metric("Series", tc.get("series","ATP"))
 
-            with m2:
-                st.metric("Script", ws2.get("script","neutral"))
+            with t2:
+                st.metric("Court", tc.get("court","Outdoor"))
 
-            with m3:
-                st.metric("Fav2-0", f"{ws2.get('fav20_mult',1.0):.2f}x")
+            with t3:
+                st.metric("Round", tc.get("round","Main"))
 
-            with m4:
-                st.metric("Long", f"{ws2.get('long_mult',1.0):.2f}x")
-
-        if sim.get("wta_engine_active", False):
             st.divider()
-            st.subheader("🎾 Elite WTA Separation")
+            st.subheader("🔋 Fatigue Engine")
 
-            ws = sim.get("wta_separation", {})
-            w1,w2,w3 = st.columns(3)
-
-            with w1:
-                st.metric("Activo", "Sí" if ws.get("active", False) else "No")
-
-            with w2:
-                st.metric("Perfil", ws.get("edge_label", "normal"))
-
-            with w3:
-                st.metric("Vol mult", f"{ws.get('vol_mult',1.0):.2f}")
+            fcol1, fcol2 = st.columns(2)
+            with fcol1:
+                f = sim.get("fatigue1", {})
+                st.metric(d1["Player"], f"{f.get('fatigue_score',0):.1%}", f"Ajuste {sim.get('fatigue_adj1',0):+.1%}")
+                st.caption(f"7 días: {f.get('matches7',0)} partidos · {f.get('games7',0)} games · descanso {f.get('rest_days',7)} días")
+            with fcol2:
+                f = sim.get("fatigue2", {})
+                st.metric(d2["Player"], f"{f.get('fatigue_score',0):.1%}", f"Ajuste {sim.get('fatigue_adj2',0):+.1%}")
+                st.caption(f"7 días: {f.get('matches7',0)} partidos · {f.get('games7',0)} games · descanso {f.get('rest_days',7)} días")
 
 
-        st.divider()
-        st.subheader("🧠 Rating Sanity Engine")
+            st.divider()
+            st.subheader("🎾 Rating Sanity Engine")
 
-        rs = sim.get("rating_sanity", {})
-        r1c, r2c, r3c = st.columns(3)
+            sd = sim.get("set_dynamics", {})
 
-        with r1c:
-            p = rs.get("p1", {})
-            st.metric(d1["Player"], f"{p.get('confidence',1):.0%}", delta=f"{p.get('matches_surface',0)} partidos {surface}")
-            st.caption(f"Quality {p.get('tour_quality',0):.0%} · Stability {p.get('stability',0):.0%} · Elo eff {p.get('elo_effective', d1[surface]):.0f}")
-            if p.get("flags"):
-                st.caption(" · ".join(p.get("flags", [])))
+            s1,s2,s3 = st.columns(3)
 
-        with r2c:
-            p = rs.get("p2", {})
-            st.metric(d2["Player"], f"{p.get('confidence',1):.0%}", delta=f"{p.get('matches_surface',0)} partidos {surface}")
-            st.caption(f"Quality {p.get('tour_quality',0):.0%} · Stability {p.get('stability',0):.0%} · Elo eff {p.get('elo_effective', d2[surface]):.0f}")
-            if p.get("flags"):
-                st.caption(" · ".join(p.get("flags", [])))
+            with s1:
+                st.metric("2-0 boost", f"{sd.get('fav20_boost',0):+.1%}")
 
-        with r3c:
-            st.metric("Vol mult", f"{rs.get('vol_mult',1.0):.2f}")
-            st.caption(f"Engine {rs.get('version','v22')}")
+            with s2:
+                st.metric("Dog suppression", f"{sd.get('dog_set_suppress',0):+.1%}")
 
-        st.caption("🔎 Match Count Debug")
-        hist_diag = historicos_diagnostics(circuito)
-        st.caption(
-            f"Históricos: files={hist_diag.get('files_count',0)} · rows={hist_diag.get('rows',0)} · "
-            f"Winner={hist_diag.get('winner_col')} · Loser={hist_diag.get('loser_col')} · Surface={hist_diag.get('surface_col')} · "
-            f"Dates={hist_diag.get('date_min','N/A')}→{hist_diag.get('date_max','N/A')}"
-        )
-        if hist_diag.get("folder_counts"):
-            parts = []
-            for fd, cnt in (hist_diag.get("folder_counts", {}) or {}).items():
-                parts.append(f"{fd}={cnt}")
-            st.caption("Archivos por carpeta: " + " · ".join(parts))
-            for fd, samples in (hist_diag.get("folder_samples", {}) or {}).items():
-                if samples:
-                    st.caption(f"Muestras {fd}: " + ", ".join([str(x) for x in samples[:5]]))
-        if hist_diag.get("sample_players"):
-            st.caption("Ejemplos histórico: " + ", ".join(hist_diag.get("sample_players", [])[:8]))
-        if hist_diag.get("level_cols"):
-            st.caption("Columnas nivel: " + ", ".join([str(x) for x in hist_diag.get("level_cols", [])[:8]]))
-            sample_bits = []
-            for col, vals in (hist_diag.get("level_samples", {}) or {}).items():
-                if vals:
-                    sample_bits.append(f"{col}={', '.join([str(v) for v in vals[:4]])}")
-            if sample_bits:
-                st.caption("Ejemplos nivel: " + " · ".join(sample_bits[:4]))
-        # Debug interno del Quality Map/cache. Si esto sale a 0, Streamlit está usando un mapa vacío o cache viejo.
-        qm1 = rs.get("p1", {}).get("quality_meta", {}) or rs.get("p2", {}).get("quality_meta", {}) or {}
-        if qm1:
+            with s3:
+                st.metric("Long match adj", f"{sd.get('long_match_adj',0):+.1%}")
+
+            ssg = sim.get("straight_sets_guard", {}) or {}
+            if ssg.get("active", False):
+                st.info(
+                    f"🧭 Straight Sets Guard activo · 2-0 {ssg.get('fav20_boost',0):+.1%} · "
+                    f"Dog set {ssg.get('dogset_cut',0):-.1%} · Largo {ssg.get('long_cut',0):-.1%}"
+                )
+                notes = ssg.get("notes", [])
+                if notes:
+                    st.caption(" · ".join(notes))
+
+
+
+            if sim.get("wta_engine_active", False):
+                st.divider()
+                st.subheader("🎭 WTA Match Script")
+
+                ws2 = sim.get("wta_script", {})
+                m1,m2,m3,m4 = st.columns(4)
+
+                with m1:
+                    st.metric("Activo", "Sí" if ws2.get("active", False) else "No")
+
+                with m2:
+                    st.metric("Script", ws2.get("script","neutral"))
+
+                with m3:
+                    st.metric("Fav2-0", f"{ws2.get('fav20_mult',1.0):.2f}x")
+
+                with m4:
+                    st.metric("Long", f"{ws2.get('long_mult',1.0):.2f}x")
+
+            if sim.get("wta_engine_active", False):
+                st.divider()
+                st.subheader("🎾 Elite WTA Separation")
+
+                ws = sim.get("wta_separation", {})
+                w1,w2,w3 = st.columns(3)
+
+                with w1:
+                    st.metric("Activo", "Sí" if ws.get("active", False) else "No")
+
+                with w2:
+                    st.metric("Perfil", ws.get("edge_label", "normal"))
+
+                with w3:
+                    st.metric("Vol mult", f"{ws.get('vol_mult',1.0):.2f}")
+
+
+            st.divider()
+            st.subheader("🧠 Rating Sanity Engine")
+
+            rs = sim.get("rating_sanity", {})
+            r1c, r2c, r3c = st.columns(3)
+
+            with r1c:
+                p = rs.get("p1", {})
+                st.metric(d1["Player"], f"{p.get('confidence',1):.0%}", delta=f"{p.get('matches_surface',0)} partidos {surface}")
+                st.caption(f"Quality {p.get('tour_quality',0):.0%} · Stability {p.get('stability',0):.0%} · Elo eff {p.get('elo_effective', d1[surface]):.0f}")
+                if p.get("flags"):
+                    st.caption(" · ".join(p.get("flags", [])))
+
+            with r2c:
+                p = rs.get("p2", {})
+                st.metric(d2["Player"], f"{p.get('confidence',1):.0%}", delta=f"{p.get('matches_surface',0)} partidos {surface}")
+                st.caption(f"Quality {p.get('tour_quality',0):.0%} · Stability {p.get('stability',0):.0%} · Elo eff {p.get('elo_effective', d2[surface]):.0f}")
+                if p.get("flags"):
+                    st.caption(" · ".join(p.get("flags", [])))
+
+            with r3c:
+                st.metric("Vol mult", f"{rs.get('vol_mult',1.0):.2f}")
+                st.caption(f"Engine {rs.get('version','v22')}")
+
+            st.caption("🔎 Match Count Debug")
+            hist_diag = historicos_diagnostics(circuito)
             st.caption(
-                f"QualityMap: version={qm1.get('version','N/A')} · players={qm1.get('raw_player_count','?')} · keys={qm1.get('quality_keys','?')}"
+                f"Históricos: files={hist_diag.get('files_count',0)} · rows={hist_diag.get('rows',0)} · "
+                f"Winner={hist_diag.get('winner_col')} · Loser={hist_diag.get('loser_col')} · Surface={hist_diag.get('surface_col')} · "
+                f"Dates={hist_diag.get('date_min','N/A')}→{hist_diag.get('date_max','N/A')}"
             )
-            if qm1.get("sample_names"):
-                st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
-            st.caption("Tour Quality v22.20: añade Straight Sets Guard para separar over bajo fuerte de partido largo/dog set.")
-        else:
-            st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
-        if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
-            st.warning(
-                "Históricos no detectados bien: "
-                f"folder={hist_diag.get('folder')} · existe={hist_diag.get('folder_exists')} · "
-                f"files={hist_diag.get('files_count')} · rows={hist_diag.get('rows')} · "
-                f"Winner={hist_diag.get('winner_col')} · Loser={hist_diag.get('loser_col')} · Surface={hist_diag.get('surface_col')}"
-            )
-            if hist_diag.get("sample_files"):
-                st.caption("Files detectados: " + ", ".join(hist_diag.get("sample_files", [])))
-            if hist_diag.get("columns"):
-                st.caption("Columnas detectadas: " + ", ".join([str(x) for x in hist_diag.get("columns", [])[:12]]))
+            if hist_diag.get("folder_counts"):
+                parts = []
+                for fd, cnt in (hist_diag.get("folder_counts", {}) or {}).items():
+                    parts.append(f"{fd}={cnt}")
+                st.caption("Archivos por carpeta: " + " · ".join(parts))
+                for fd, samples in (hist_diag.get("folder_samples", {}) or {}).items():
+                    if samples:
+                        st.caption(f"Muestras {fd}: " + ", ".join([str(x) for x in samples[:5]]))
             if hist_diag.get("sample_players"):
-                st.caption("Jugadores ejemplo: " + ", ".join(hist_diag.get("sample_players", [])[:6]))
-        dbg1 = rs.get("p1", {})
-        dbg2 = rs.get("p2", {})
-        dc1, dc2 = st.columns(2)
-        with dc1:
-            st.caption(
-                f"{d1['Player']} → match: {dbg1.get('matched_name','N/A')} "
-                f"({dbg1.get('match_score',0):.0%}) · total {dbg1.get('matches_total',0)} · "
-                f"H/C/G {dbg1.get('matches_by_surface',{}).get('Hard',0)}/"
-                f"{dbg1.get('matches_by_surface',{}).get('Clay',0)}/"
-                f"{dbg1.get('matches_by_surface',{}).get('Grass',0)}"
-            )
-            lc = dbg1.get('level_counts', {})
-            st.caption(f"Tour/Ch/ITF/Q/Unk {lc.get('tour',0)}/{lc.get('challenger',0)}/{lc.get('itf',0)}/{lc.get('qualy',0)}/{lc.get('unknown',0)}")
-            if dbg1.get('source_files'):
-                st.caption("Files: " + ", ".join(dbg1.get('source_files', [])[:4]))
-            radar = []
-            for c in dbg1.get('candidate_matches', [])[:5]:
-                sf = c.get('surface', {}) if isinstance(c.get('surface', {}), dict) else {}
-                radar.append(f"{c.get('name','?')} {c.get('score',0):.0%} {c.get('reason','')} ({c.get('matches_total',0)} · C{sf.get('Clay',0)})")
-            st.caption("Radar nombres: " + (" | ".join(radar) if radar else "sin candidatos"))
-        with dc2:
-            st.caption(
-                f"{d2['Player']} → match: {dbg2.get('matched_name','N/A')} "
-                f"({dbg2.get('match_score',0):.0%}) · total {dbg2.get('matches_total',0)} · "
-                f"H/C/G {dbg2.get('matches_by_surface',{}).get('Hard',0)}/"
-                f"{dbg2.get('matches_by_surface',{}).get('Clay',0)}/"
-                f"{dbg2.get('matches_by_surface',{}).get('Grass',0)}"
-            )
-            lc = dbg2.get('level_counts', {})
-            st.caption(f"Tour/Ch/ITF/Q/Unk {lc.get('tour',0)}/{lc.get('challenger',0)}/{lc.get('itf',0)}/{lc.get('qualy',0)}/{lc.get('unknown',0)}")
-            if dbg2.get('source_files'):
-                st.caption("Files: " + ", ".join(dbg2.get('source_files', [])[:4]))
-            radar = []
-            for c in dbg2.get('candidate_matches', [])[:5]:
-                sf = c.get('surface', {}) if isinstance(c.get('surface', {}), dict) else {}
-                radar.append(f"{c.get('name','?')} {c.get('score',0):.0%} {c.get('reason','')} ({c.get('matches_total',0)} · C{sf.get('Clay',0)})")
-            st.caption("Radar nombres: " + (" | ".join(radar) if radar else "sin candidatos"))
+                st.caption("Ejemplos histórico: " + ", ".join(hist_diag.get("sample_players", [])[:8]))
+            if hist_diag.get("level_cols"):
+                st.caption("Columnas nivel: " + ", ".join([str(x) for x in hist_diag.get("level_cols", [])[:8]]))
+                sample_bits = []
+                for col, vals in (hist_diag.get("level_samples", {}) or {}).items():
+                    if vals:
+                        sample_bits.append(f"{col}={', '.join([str(v) for v in vals[:4]])}")
+                if sample_bits:
+                    st.caption("Ejemplos nivel: " + " · ".join(sample_bits[:4]))
+            # Debug interno del Quality Map/cache. Si esto sale a 0, Streamlit está usando un mapa vacío o cache viejo.
+            qm1 = rs.get("p1", {}).get("quality_meta", {}) or rs.get("p2", {}).get("quality_meta", {}) or {}
+            if qm1:
+                st.caption(
+                    f"QualityMap: version={qm1.get('version','N/A')} · players={qm1.get('raw_player_count','?')} · keys={qm1.get('quality_keys','?')}"
+                )
+                if qm1.get("sample_names"):
+                    st.caption("QualityMap ejemplos: " + ", ".join([str(x) for x in qm1.get("sample_names", [])[:8]]))
+                st.caption("Tour Quality v22.22: Clean UI + Debug Toggle · Name Match Strict + Straight Sets Guard para favoritos claros.")
+            else:
+                st.caption("QualityMap: sin meta visible — posible cache viejo o quality_map vacío")
+            if hist_diag.get("files_count", 0) == 0 or hist_diag.get("rows", 0) == 0 or not hist_diag.get("winner_col") or not hist_diag.get("loser_col"):
+                st.warning(
+                    "Históricos no detectados bien: "
+                    f"folder={hist_diag.get('folder')} · existe={hist_diag.get('folder_exists')} · "
+                    f"files={hist_diag.get('files_count')} · rows={hist_diag.get('rows')} · "
+                    f"Winner={hist_diag.get('winner_col')} · Loser={hist_diag.get('loser_col')} · Surface={hist_diag.get('surface_col')}"
+                )
+                if hist_diag.get("sample_files"):
+                    st.caption("Files detectados: " + ", ".join(hist_diag.get("sample_files", [])))
+                if hist_diag.get("columns"):
+                    st.caption("Columnas detectadas: " + ", ".join([str(x) for x in hist_diag.get("columns", [])[:12]]))
+                if hist_diag.get("sample_players"):
+                    st.caption("Jugadores ejemplo: " + ", ".join(hist_diag.get("sample_players", [])[:6]))
+            dbg1 = rs.get("p1", {})
+            dbg2 = rs.get("p2", {})
+            dc1, dc2 = st.columns(2)
+            with dc1:
+                st.caption(
+                    f"{d1['Player']} → match: {dbg1.get('matched_name','N/A')} "
+                    f"({dbg1.get('match_score',0):.0%}) · total {dbg1.get('matches_total',0)} · "
+                    f"H/C/G {dbg1.get('matches_by_surface',{}).get('Hard',0)}/"
+                    f"{dbg1.get('matches_by_surface',{}).get('Clay',0)}/"
+                    f"{dbg1.get('matches_by_surface',{}).get('Grass',0)}"
+                )
+                lc = dbg1.get('level_counts', {})
+                st.caption(f"Tour/Ch/ITF/Q/Unk {lc.get('tour',0)}/{lc.get('challenger',0)}/{lc.get('itf',0)}/{lc.get('qualy',0)}/{lc.get('unknown',0)}")
+                if dbg1.get('source_files'):
+                    st.caption("Files: " + ", ".join(dbg1.get('source_files', [])[:4]))
+                radar = []
+                for c in dbg1.get('candidate_matches', [])[:5]:
+                    sf = c.get('surface', {}) if isinstance(c.get('surface', {}), dict) else {}
+                    radar.append(f"{c.get('name','?')} {c.get('score',0):.0%} {c.get('reason','')} ({c.get('matches_total',0)} · C{sf.get('Clay',0)})")
+                st.caption("Radar nombres: " + (" | ".join(radar) if radar else "sin candidatos"))
+            with dc2:
+                st.caption(
+                    f"{d2['Player']} → match: {dbg2.get('matched_name','N/A')} "
+                    f"({dbg2.get('match_score',0):.0%}) · total {dbg2.get('matches_total',0)} · "
+                    f"H/C/G {dbg2.get('matches_by_surface',{}).get('Hard',0)}/"
+                    f"{dbg2.get('matches_by_surface',{}).get('Clay',0)}/"
+                    f"{dbg2.get('matches_by_surface',{}).get('Grass',0)}"
+                )
+                lc = dbg2.get('level_counts', {})
+                st.caption(f"Tour/Ch/ITF/Q/Unk {lc.get('tour',0)}/{lc.get('challenger',0)}/{lc.get('itf',0)}/{lc.get('qualy',0)}/{lc.get('unknown',0)}")
+                if dbg2.get('source_files'):
+                    st.caption("Files: " + ", ".join(dbg2.get('source_files', [])[:4]))
+                radar = []
+                for c in dbg2.get('candidate_matches', [])[:5]:
+                    sf = c.get('surface', {}) if isinstance(c.get('surface', {}), dict) else {}
+                    radar.append(f"{c.get('name','?')} {c.get('score',0):.0%} {c.get('reason','')} ({c.get('matches_total',0)} · C{sf.get('Clay',0)})")
+                st.caption("Radar nombres: " + (" | ".join(radar) if radar else "sin candidatos"))
 
         st.divider()
         st.subheader("🧠 Perfil del Partido")
@@ -3809,7 +3844,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.20 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.22 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
