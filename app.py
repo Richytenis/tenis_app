@@ -5,7 +5,7 @@ import numpy as np
 import random, re, os, glob, unicodedata
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.2", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.3", page_icon="🎾", layout="wide")
 
 # =========================================================
 # TENNIS IA v15
@@ -272,32 +272,41 @@ def buscar_stats(nombre, stats_map):
     return None
 
 # =========================================================
-# v22.1 MATCH COUNT + TOUR QUALITY ENGINE
+# v22.3 MATCH COUNT FIX + TOUR QUALITY ENGINE
 # =========================================================
 
 def detectar_nivel_torneo(row):
     """
-    Clasifica la calidad de procedencia del partido histórico.
-    v22.2: lectura más robusta de Series/Tournament/Level/SourceFile.
+    v22.3: clasifica la calidad del histórico aunque las columnas vengan
+    como Series/Tournament/Level/Event/SourceFile o con nombres raros.
     """
-    txt = " ".join(str(row.get(c, "")) for c in ["Series", "Tournament", "Level", "Round", "SourceFile", "Comment"]).lower()
-    txt_clean = re.sub(r"[^a-z0-9]+", " ", txt)
+    txt = " ".join(str(row.get(c, "")) for c in [
+        "Series", "Tournament", "Event", "Level", "Round", "SourceFile", "Comment", "Location"
+    ]).lower()
+    txt_clean = " " + re.sub(r"[^a-z0-9]+", " ", txt) + " "
 
-    # Qualy primero: no queremos tratar una qualy ATP/WTA como main tour completo.
-    if any(x in txt_clean for x in [" qual", " qualifying", " qualification", " q ", " q1 ", " q2 ", " q3 "]):
+    # Qualy primero: una qualy ATP/WTA no debe contar como main tour completo.
+    if any(x in txt_clean for x in [" qual ", " qualifying ", " qualification ", " q1 ", " q2 ", " q3 "]):
         return "qualy"
 
     if any(x in txt_clean for x in [
-        "grand slam", "masters", "masters 1000", "atp1000", "wta1000",
-        "atp 1000", "wta 1000", "atp500", "wta500", "atp 500", "wta 500",
-        "atp250", "wta250", "atp 250", "wta 250", "main tour", "tour"
+        " grand slam ", " masters ", " masters 1000 ", " atp1000 ", " wta1000 ",
+        " atp 1000 ", " wta 1000 ", " atp500 ", " wta500 ", " atp 500 ", " wta 500 ",
+        " atp250 ", " wta250 ", " atp 250 ", " wta 250 ", " main tour ",
+        " davis cup ", " united cup ", " olympics "
     ]):
         return "tour"
 
-    if any(x in txt_clean for x in ["challenger", " challenger ", " ch ", "ch125", "ch 125", "ch100", "ch 100", "ch75", "ch 75", "ch50", "ch 50"]):
+    if any(x in txt_clean for x in [
+        " challenger ", " ch ", " ch125 ", " ch 125 ", " ch100 ", " ch 100 ",
+        " ch75 ", " ch 75 ", " ch50 ", " ch 50 ", " ch175 ", " ch 175 "
+    ]):
         return "challenger"
 
-    if any(x in txt_clean for x in ["itf", "futures", "m15", "m25", "m35", "w15", "w25", "w35", "w50", "w75", "w100"]):
+    if any(x in txt_clean for x in [
+        " itf ", " futures ", " m15 ", " m25 ", " m35 ", " w15 ", " w25 ",
+        " w35 ", " w50 ", " w75 ", " w100 "
+    ]):
         return "itf"
 
     return "unknown"
@@ -318,15 +327,102 @@ def normalizar_superficie_hist(v, default="Hard"):
     return default
 
 
+def variantes_nombre_quality(nombre):
+    """
+    Genera claves de búsqueda robustas para históricos:
+    - Matteo Arnaldi
+    - Arnaldi Matteo
+    - Arnaldi M / M Arnaldi
+    - MATTEOARNALDI limpio
+    """
+    raw = normalizar_texto(nombre)
+    toks = tokens(raw)
+    out = set()
+    clean = limpiar(raw)
+    if clean:
+        out.add(clean)
+    if len(toks) >= 2:
+        first, last = toks[0], toks[-1]
+        out.add(limpiar(f"{last} {first}"))
+        out.add(limpiar(f"{last} {first[0]}"))
+        out.add(limpiar(f"{first[0]} {last}"))
+        out.add(limpiar(f"{last}{first[0]}"))
+        out.add(limpiar(f"{first[0]}{last}"))
+    return {x for x in out if x}
+
+
+def fusionar_quality_rows(items):
+    """Fusiona varias identidades históricas que pertenecen al mismo jugador."""
+    rows = []
+    raw_names = set()
+    aliases = set()
+    source_files = set()
+    for item in items:
+        rows.extend(item.get("_rows", []))
+        raw_names.update(item.get("raw_names", []))
+        aliases.update(item.get("aliases", []))
+        source_files.update(item.get("source_files", []))
+
+    total = len(rows)
+    if total <= 0:
+        return None
+
+    surface_counts = {sf: sum(1 for r in rows if r["surface"] == sf) for sf in ["Hard", "Clay", "Grass"]}
+    level_counts = {lv: sum(1 for r in rows if r["level"] == lv) for lv in ["tour", "challenger", "itf", "qualy", "unknown"]}
+
+    tour_weighted = (
+        level_counts["tour"] * 1.00 +
+        level_counts["challenger"] * 0.62 +
+        level_counts["qualy"] * 0.50 +
+        level_counts["itf"] * 0.32 +
+        level_counts["unknown"] * 0.55
+    ) / total
+
+    out = {
+        "matches_total": total,
+        "matches_surface": surface_counts,
+        "level_counts": level_counts,
+        "tour_quality": float(np.clip(tour_weighted, 0.30, 1.00)),
+        "raw_names": sorted(raw_names)[:12],
+        "aliases": sorted(aliases),
+        "source_files": sorted(source_files)[:8],
+        "_rows": rows,
+    }
+
+    stability = {}
+    confidence = {}
+    for sf in ["Hard", "Clay", "Grass"]:
+        n_sf = surface_counts.get(sf, 0)
+        sample_score = np.sqrt(n_sf / (n_sf + 14)) if n_sf > 0 else 0.0
+        total_score = np.sqrt(total / (total + 28))
+        stab = (sample_score * 0.72) + (total_score * 0.28)
+        conf = 0.38 + 0.62 * stab * out["tour_quality"]
+
+        if n_sf < 5:
+            conf -= 0.18
+        elif n_sf < 10:
+            conf -= 0.09
+        elif n_sf < 18:
+            conf -= 0.04
+
+        if level_counts["tour"] == 0 and level_counts["challenger"] >= 1:
+            conf -= 0.07
+        if level_counts["itf"] >= max(3, total * 0.45):
+            conf -= 0.10
+
+        stability[sf] = float(np.clip(stab, 0.05, 1.00))
+        confidence[sf] = float(np.clip(conf, 0.28, 1.00))
+
+    out["stability"] = stability
+    out["confidence"] = confidence
+    return out
+
+
 def crear_quality_map(circuito):
     """
-    v22.1 Match Count + Tour Quality Engine.
-    Calcula para cada jugador:
-    - partidos totales y por superficie
-    - reparto Tour / Challenger / ITF / Qualy
-    - score de calidad del Elo
-    - estabilidad por superficie
-    - confianza real del rating
+    v22.3 Match Count Fix.
+    Cuenta partidos desde históricos aunque los nombres vengan en formatos distintos.
+    Devuelve también raw_names/source_files para debug visual.
     """
     hist = cargar_historicos(circuito)
     quality = {}
@@ -338,91 +434,96 @@ def crear_quality_map(circuito):
     if "Comment" in df.columns:
         df = df[df["Comment"].astype(str).str.contains("Completed", na=False)]
 
-    if "Winner" not in df.columns or "Loser" not in df.columns:
+    col_winner = buscar_columna(df, ["Winner", "Ganador", "Player1", "WName"])
+    col_loser = buscar_columna(df, ["Loser", "Perdedor", "Player2", "LName"])
+    col_surface = buscar_columna(df, ["Surface", "Superficie", "Court Surface", "Court"])
+
+    if col_winner is None or col_loser is None:
         return quality
 
-    if "Surface" not in df.columns:
-        df["Surface"] = "Hard"
-
-    player_rows = {}
+    player_buckets = {}
 
     for _, row in df.iterrows():
         level = detectar_nivel_torneo(row)
-        surface = normalizar_superficie_hist(row.get("Surface", "Hard"), default="Hard")
+        surface = normalizar_superficie_hist(row.get(col_surface, "Hard"), default="Hard") if col_surface else "Hard"
+        source = normalizar_texto(row.get("SourceFile", ""))
 
-        for player in [normalizar_texto(row.get("Winner", "")), normalizar_texto(row.get("Loser", ""))]:
+        for player in [normalizar_texto(row.get(col_winner, "")), normalizar_texto(row.get(col_loser, ""))]:
+            if not player:
+                continue
             pid = limpiar(player)
             if not pid:
                 continue
-            player_rows.setdefault(pid, []).append({"surface": surface, "level": level})
+            bucket = player_buckets.setdefault(pid, {
+                "_rows": [], "raw_names": set(), "aliases": set(), "source_files": set()
+            })
+            bucket["_rows"].append({"surface": surface, "level": level})
+            bucket["raw_names"].add(player)
+            bucket["aliases"].update(variantes_nombre_quality(player))
+            if source:
+                bucket["source_files"].add(source)
 
-    for pid, rows in player_rows.items():
-        total = len(rows)
-        surface_counts = {sf: sum(1 for r in rows if r["surface"] == sf) for sf in ["Hard", "Clay", "Grass"]}
-        level_counts = {lv: sum(1 for r in rows if r["level"] == lv) for lv in ["tour", "challenger", "itf", "qualy", "unknown"]}
-
-        if total <= 0:
-            continue
-
-        tour_weighted = (
-            level_counts["tour"] * 1.00 +
-            level_counts["challenger"] * 0.62 +
-            level_counts["qualy"] * 0.50 +
-            level_counts["itf"] * 0.32 +
-            level_counts["unknown"] * 0.55
-        ) / total
-
-        quality[pid] = {
-            "matches_total": total,
-            "matches_surface": surface_counts,
-            "level_counts": level_counts,
-            "tour_quality": float(np.clip(tour_weighted, 0.30, 1.00)),
-        }
-
-        # Stability por superficie: sube rápido hasta 20-25 partidos, pero penaliza muestras pequeñas.
-        stability = {}
-        confidence = {}
-        for sf in ["Hard", "Clay", "Grass"]:
-            n_sf = surface_counts.get(sf, 0)
-            sample_score = np.sqrt(n_sf / (n_sf + 14)) if n_sf > 0 else 0.0
-            total_score = np.sqrt(total / (total + 28))
-            stab = (sample_score * 0.72) + (total_score * 0.28)
-            conf = 0.38 + 0.62 * stab * quality[pid]["tour_quality"]
-
-            if n_sf < 5:
-                conf -= 0.18
-            elif n_sf < 10:
-                conf -= 0.09
-            elif n_sf < 18:
-                conf -= 0.04
-
-            if level_counts["tour"] == 0 and level_counts["challenger"] >= 1:
-                conf -= 0.07
-            if level_counts["itf"] >= max(3, total * 0.45):
-                conf -= 0.10
-
-            stability[sf] = float(np.clip(stab, 0.05, 1.00))
-            confidence[sf] = float(np.clip(conf, 0.28, 1.00))
-
-        quality[pid]["stability"] = stability
-        quality[pid]["confidence"] = confidence
+    # Primera pasada: identidad exacta por PID histórico.
+    for pid, data in player_buckets.items():
+        q = fusionar_quality_rows([data])
+        if q:
+            quality[pid] = q
 
     return quality
 
 
 def buscar_quality(nombre, quality_map):
+    """
+    v22.3: busca primero por alias fuerte y después por similitud contra nombres reales.
+    """
     nid = limpiar(nombre)
+    variants = variantes_nombre_quality(nombre)
+
+    # Exacto o alias fuerte.
     if nid in quality_map:
-        return quality_map[nid]
+        out = quality_map[nid].copy()
+        out["matched_name"] = nombre
+        out["match_score"] = 1.0
+        return out
 
-    mejor, best = None, 0
+    alias_hits = []
     for qid, data in quality_map.items():
-        score = similitud_nombre(nombre, qid)
-        if score > best:
-            best, mejor = score, data
+        aliases = set(data.get("aliases", [])) | {qid}
+        if variants & aliases:
+            alias_hits.append((qid, data))
 
-    if mejor is not None and best >= 0.72:
-        return mejor
+    if alias_hits:
+        fused = fusionar_quality_rows([x[1] for x in alias_hits])
+        if fused:
+            fused["matched_name"] = ", ".join(sorted({x[0] for x in alias_hits})[:3])
+            fused["match_score"] = 0.96
+            return fused
+
+    mejor, best = None, 0.0
+    best_label = ""
+    for qid, data in quality_map.items():
+        candidates = [qid] + data.get("raw_names", []) + data.get("aliases", [])
+        for cand in candidates:
+            score = similitud_nombre(nombre, cand)
+            # Refuerzo apellido+inicial para formatos tipo ARNALDI M.
+            t_user = tokens(nombre)
+            t_cand = tokens(cand)
+            if len(t_user) >= 2 and len(t_cand) >= 1:
+                user_last = t_user[-1]
+                user_first_initial = t_user[0][0]
+                cand_txt = " ".join(t_cand)
+                if user_last in t_cand and user_first_initial in cand_txt:
+                    score = max(score, 0.94)
+            if score > best:
+                best = score
+                mejor = data
+                best_label = cand
+
+    if mejor is not None and best >= 0.78:
+        out = mejor.copy()
+        out["matched_name"] = best_label
+        out["match_score"] = float(best)
+        return out
 
     return {
         "matches_total": 0,
@@ -431,6 +532,11 @@ def buscar_quality(nombre, quality_map):
         "tour_quality": 0.45,
         "stability": {"Hard": 0.05, "Clay": 0.05, "Grass": 0.05},
         "confidence": {"Hard": 0.32, "Clay": 0.32, "Grass": 0.32},
+        "raw_names": [],
+        "aliases": [],
+        "source_files": [],
+        "matched_name": "NO ENCONTRADO",
+        "match_score": 0.0,
     }
 
 @st.cache_data
@@ -1377,7 +1483,7 @@ def rating_sanity_engine(d1, d2, surface, circuito):
         "p2": s2,
         "vol_mult": vol_mult,
         "active": bool(s1["flags"] or s2["flags"]),
-        "version": "v22.1"
+        "version": "v22.3"
     }
 
 
@@ -2459,8 +2565,8 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.2")
-    st.caption("Match Count + Tour Quality Engine")
+    st.header("🎾 Tennis IA v22.3")
+    st.caption("Match Count Fix + Tour Quality Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -2724,6 +2830,35 @@ if modo == "Predictor":
             st.metric("Vol mult", f"{rs.get('vol_mult',1.0):.2f}")
             st.caption(f"Engine {rs.get('version','v22')}")
 
+        st.caption("🔎 Match Count Debug")
+        dbg1 = rs.get("p1", {})
+        dbg2 = rs.get("p2", {})
+        dc1, dc2 = st.columns(2)
+        with dc1:
+            st.caption(
+                f"{d1['Player']} → match: {dbg1.get('matched_name','N/A')} "
+                f"({dbg1.get('match_score',0):.0%}) · total {dbg1.get('matches_total',0)} · "
+                f"H/C/G {dbg1.get('matches_surface',{}).get('Hard',0)}/"
+                f"{dbg1.get('matches_surface',{}).get('Clay',0)}/"
+                f"{dbg1.get('matches_surface',{}).get('Grass',0)}"
+            )
+            lc = dbg1.get('level_counts', {})
+            st.caption(f"Tour/Ch/ITF/Q/Unk {lc.get('tour',0)}/{lc.get('challenger',0)}/{lc.get('itf',0)}/{lc.get('qualy',0)}/{lc.get('unknown',0)}")
+            if dbg1.get('source_files'):
+                st.caption("Files: " + ", ".join(dbg1.get('source_files', [])[:4]))
+        with dc2:
+            st.caption(
+                f"{d2['Player']} → match: {dbg2.get('matched_name','N/A')} "
+                f"({dbg2.get('match_score',0):.0%}) · total {dbg2.get('matches_total',0)} · "
+                f"H/C/G {dbg2.get('matches_surface',{}).get('Hard',0)}/"
+                f"{dbg2.get('matches_surface',{}).get('Clay',0)}/"
+                f"{dbg2.get('matches_surface',{}).get('Grass',0)}"
+            )
+            lc = dbg2.get('level_counts', {})
+            st.caption(f"Tour/Ch/ITF/Q/Unk {lc.get('tour',0)}/{lc.get('challenger',0)}/{lc.get('itf',0)}/{lc.get('qualy',0)}/{lc.get('unknown',0)}")
+            if dbg2.get('source_files'):
+                st.caption("Files: " + ", ".join(dbg2.get('source_files', [])[:4]))
+
         st.divider()
         st.subheader("🧠 Perfil del Partido")
         tags = []
@@ -2770,7 +2905,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.2 · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.3 · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
