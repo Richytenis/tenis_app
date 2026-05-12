@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.2 Clean Batch", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.3 Sofascore Parser", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.2"
-QUALITY_ENGINE_VERSION = "v23.2-clean-batch-2026-05-12"
+APP_VERSION = "v23.3"
+QUALITY_ENGINE_VERSION = "v23.3-sofascore-parser-2026-05-12"
 
 # =========================================================
 # TENNIS IA v15
@@ -4048,6 +4048,128 @@ def parse_simple_match_list(raw_text):
                 })
     return matches
 
+
+def is_time_line_sofa(x):
+    return bool(re.match(r"^\d{1,2}:\d{2}$", str(x).strip()))
+
+
+def is_country_line_sofa(x):
+    countries = {
+        "argentina","australia","austria","belgium","bolivia","brazil","canada","chile","china","colombia",
+        "croatia","czechia","denmark","finland","france","georgia","germany","hungary","italy","kazakhstan",
+        "lebanon","lithuania","luxembourg","netherlands","paraguay","peru","portugal","russia","serbia",
+        "spain","switzerland","tunisia","united kingdom","uruguay","usa","ukraine","poland","slovakia",
+        "slovenia","romania","bulgaria","turkey","greece","norway","sweden","japan","india","south korea"
+    }
+    return normalizar_texto(x).lower().strip() in countries
+
+
+def is_sofa_meta_line(x):
+    t = normalizar_texto(x).lower().strip()
+    if not t:
+        return True
+    meta_exact = {"-", "atp", "wta", "challenger", "itf", "tierra batida", "hard", "grass"}
+    if t in meta_exact:
+        return True
+    if re.match(r"^\d+$", t):
+        return True
+    if "doubles" in t:
+        return False  # lo usamos para activar skip doubles
+    if any(k in t for k in ["masters", "rome", "valencia", "bordeaux", "cordoba", "oeiras", "tunis", "zagreb"]):
+        return True
+    if "challenger" in t or "wta 1000" in t or "atp 1000" in t or "atp 250" in t or "atp 500" in t:
+        return True
+    if "," in t and len(t) > 6:
+        return True
+    return False
+
+
+def looks_like_player_line_sofa(x):
+    s = str(x).strip()
+    if not s:
+        return False
+    if is_time_line_sofa(s) or s == "-":
+        return False
+    low = normalizar_texto(s).lower()
+    if is_country_line_sofa(s):
+        return False
+    if is_sofa_meta_line(s):
+        return False
+    if "/" in s:
+        return False  # dobles
+    # Normalmente jugadores: inicial + apellido, o nombre abreviado.
+    return bool(re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", s))
+
+
+def parse_sofascore_paste(raw_text):
+    """
+    v23.3: parser Sofascore.
+    Detecta secuencias:
+    16:20
+    -
+    Russia
+    A. Rublev
+    Georgia
+    N. Basilashvili
+
+    Ignora dobles y metadatos de torneo. Devuelve p1/p2 + hora si existe.
+    """
+    raw_lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    matches = []
+    i = 0
+    skip_doubles_block = False
+
+    while i < len(raw_lines):
+        line = raw_lines[i]
+        low = normalizar_texto(line).lower()
+
+        if "doubles" in low:
+            skip_doubles_block = True
+            i += 1
+            continue
+
+        # Cuando aparece torneo challenger/singles nuevo, desactivar skip doubles.
+        if skip_doubles_block and ("challenger" in low or "wta 1000" in low or "atp" in low) and "doubles" not in low:
+            skip_doubles_block = False
+
+        if is_time_line_sofa(line):
+            hora = line
+            j = i + 1
+            candidates = []
+
+            # Mirar un bloque corto después de la hora hasta antes de otra hora.
+            while j < len(raw_lines) and not is_time_line_sofa(raw_lines[j]) and len(candidates) < 2:
+                ln = raw_lines[j].strip()
+                if ln == "-" or is_country_line_sofa(ln):
+                    j += 1
+                    continue
+                if "/" in ln:
+                    # partido de dobles, saltar esta hora entera
+                    candidates = []
+                    break
+                if looks_like_player_line_sofa(ln):
+                    candidates.append(ln)
+                j += 1
+
+            if len(candidates) >= 2 and not skip_doubles_block:
+                p1_raw, p2_raw = candidates[0], candidates[1]
+                matches.append({
+                    "raw": f"{hora} · {p1_raw} - {p2_raw}",
+                    "time": hora,
+                    "p1_raw": p1_raw,
+                    "p2_raw": p2_raw,
+                    "odd1": None,
+                    "odd2": None,
+                    "quoted_side": None,
+                    "quoted_odd": None,
+                    "quoted_text": None
+                })
+            i = max(j, i + 1)
+        else:
+            i += 1
+
+    return matches
+
 def find_player_in_db(name, db):
     target = normalizar_texto(name).lower()
     target_clean = limpiar(name).lower()
@@ -4110,6 +4232,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
 
         if not p1_key or not p2_key or p1_score < 0.72 or p2_score < 0.72:
             rows.append({
+                "Hora": m.get("time", ""),
                 "Partido": f"{m['p1_raw']} vs {m['p2_raw']}",
                 "Estado": "No encontrado",
                 "Jugador 1 encontrado": p1_key or "N/A",
@@ -4173,6 +4296,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             edge = quoted_odd * quoted_prob_model - 1
 
         rows.append({
+            "Hora": m.get("time", ""),
             "Partido": f"{p1_key} vs {p2_key}",
             "Estado": "OK",
             "Favorito modelo": fav_name,
@@ -4275,6 +4399,7 @@ def prepare_batch_display_table(ok_df):
 
     preferred = [
         "Recomendación",
+        "Hora",
         "Partido",
         "Favorito modelo",
         "ML favorito",
@@ -4383,7 +4508,7 @@ def batch_excel_bytes(df):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.2 Clean Batch")
+    st.header("🎾 Tennis IA v23.3 Sofascore Parser")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -4933,29 +5058,45 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.2 Clean Batch · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.3 Sofascore Parser · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
     st.subheader("📋 Analizador por lista pegada")
-    st.caption("Pega partidos copiados de Winamax u otra casa. Por defecto usa solo Jugador A - Jugador B y descarta cuotas.")
+    st.caption("Pega partidos de Winamax/casa o la lista diaria de Sofascore. En Sofascore se detectan horas y se ignoran dobles.")
 
     with st.sidebar:
         surface = st.selectbox("Superficie lista", ["Hard","Clay","Grass"], index=1)
         formato = st.radio("Formato lista", ["ATP Tour (3 sets)", "Grand Slam (5 sets)"])
         sims_batch = st.select_slider("Simulaciones por partido", [1000,2500,5000,10000], value=2500)
         max_batch = st.number_input("Máx partidos a analizar", 1, 50, 20, 1)
+        formato_pegado = st.radio(
+            "Formato pegado",
+            ["Casa/Winamax limpio", "Sofascore día"],
+            index=0,
+            help="Sofascore día detecta horas, países y superficie. Ignora dobles."
+        )
         usar_cuotas = st.toggle(
             "Leer cuotas pegadas",
             value=False,
             help="Desactivado = usa solo Jugador A - Jugador B. Más limpio y rápido."
         )
 
-    ejemplo = """Taylah Preston - Yulia Starodubtseva
-Emma Navarro - Lola Radivojevic
-Rafael Jódar - Learner Tien
-Sebastián Baez - Roberto Carballés Baena
-Carlos Sánchez Jover - Taro Daniel"""
+    ejemplo = """16:20
+-
+Russia
+A. Rublev
+Georgia
+N. Basilashvili
+
+17:30
+-
+Serbia
+H. Medjedović
+Spain
+M. Landaluce
+
+Sebastián Baez - Roberto Carballés Baena"""
 
     raw_batch = st.text_area(
         "Pega aquí los partidos",
@@ -4965,7 +5106,13 @@ Carlos Sánchez Jover - Taro Daniel"""
 
     cprev, crun = st.columns([1,1])
     with cprev:
-        preview = (parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch)) if raw_batch.strip() else []
+        if raw_batch.strip():
+            if formato_pegado == "Sofascore día":
+                preview = parse_sofascore_paste(raw_batch)
+            else:
+                preview = parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch)
+        else:
+            preview = []
         st.metric("Partidos detectados", len(preview))
     with crun:
         st.metric("Simulaciones estimadas", f"{min(len(preview), int(max_batch)) * int(sims_batch):,}")
@@ -4975,7 +5122,10 @@ Carlos Sánchez Jover - Taro Daniel"""
             st.dataframe(pd.DataFrame(preview[:int(max_batch)]), width='stretch', hide_index=True)
 
     if st.button("🚀 ANALIZAR LISTA", width='stretch'):
-        parsed = (parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch))[:int(max_batch)]
+        if formato_pegado == "Sofascore día":
+            parsed = parse_sofascore_paste(raw_batch)[:int(max_batch)]
+        else:
+            parsed = (parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch))[:int(max_batch)]
         if not parsed:
             st.error("No he detectado partidos. Prueba formato: Jugador A - Jugador B")
             st.stop()
