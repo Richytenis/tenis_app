@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.36 Progress UX", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.0 Batch Paste", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v22.27"
-QUALITY_ENGINE_VERSION = "v22.36-progress-ux-2026-05-11"
+APP_VERSION = "v23.0"
+QUALITY_ENGINE_VERSION = "v23.0-batch-paste-2026-05-12"
 
 # =========================================================
 # TENNIS IA v15
@@ -3885,18 +3885,295 @@ def render_betting_filters(filters):
             st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
 
+
+# =========================================================
+# v23.0 BATCH PASTE ANALYZER
+# =========================================================
+
+def _parse_decimal_odd(x):
+    s = str(x).strip().replace(",", ".")
+    try:
+        v = float(s)
+        if 1.01 <= v <= 100:
+            return v
+    except Exception:
+        pass
+    return None
+
+
+def _abbr_match_score(abbr, full_name):
+    """
+    Compara abreviaturas tipo "S. Baez" o "I. Montes de la Torr"
+    con nombres completos de la línea de partido.
+    """
+    a = normalizar_texto(abbr).lower().replace(".", " ")
+    f = normalizar_texto(full_name).lower()
+    a_parts = [p for p in re.split(r"\s+", a) if p]
+    f_parts = [p for p in re.split(r"\s+", f) if p]
+    if not a_parts or not f_parts:
+        return 0.0
+
+    # Si trae inicial + apellido aproximado.
+    if len(a_parts) >= 2 and len(f_parts) >= 2 and len(a_parts[0]) == 1:
+        initial_ok = f_parts[0].startswith(a_parts[0])
+        last_abbr = " ".join(a_parts[1:])
+        last_full = " ".join(f_parts[1:])
+        last_score = SequenceMatcher(None, last_abbr, last_full).ratio()
+        return (0.35 if initial_ok else 0.0) + 0.65 * last_score
+
+    return SequenceMatcher(None, a, f).ratio()
+
+
+def _match_quoted_player(quoted, p1_raw, p2_raw):
+    quoted = re.sub(r"(?i).*ganador", "", str(quoted)).strip()
+    quoted = quoted.replace("Guarantee Logo", "").strip()
+    if not quoted:
+        return None
+
+    s1 = max(
+        SequenceMatcher(None, normalizar_texto(quoted).lower(), normalizar_texto(p1_raw).lower()).ratio(),
+        _abbr_match_score(quoted, p1_raw)
+    )
+    s2 = max(
+        SequenceMatcher(None, normalizar_texto(quoted).lower(), normalizar_texto(p2_raw).lower()).ratio(),
+        _abbr_match_score(quoted, p2_raw)
+    )
+    if max(s1, s2) < 0.45:
+        return None
+    return 1 if s1 >= s2 else 2
+
+
+def parse_winamax_paste(raw_text):
+    """
+    Acepta formatos como:
+    Jugador A - Jugador B
+    Guarantee LogoGanadorS. Baez
+    1,32
+
+    También acepta:
+    Jugador A - Jugador B | 1,50 | 2,70
+    """
+    lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    matches = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        clean = line.replace("–", "-").replace("—", "-")
+
+        if " - " in clean:
+            left, right = clean.split(" - ", 1)
+            p1_raw = left.strip()
+            rest = right.strip()
+
+            odd1 = odd2 = None
+            quoted_side = None
+            quoted_odd = None
+            quoted_text = None
+
+            # Formato: P1 - P2 | cuota1 | cuota2
+            parts = [p.strip() for p in rest.split("|")]
+            p2_raw = parts[0].strip()
+            if len(parts) >= 3:
+                odd1 = _parse_decimal_odd(parts[1])
+                odd2 = _parse_decimal_odd(parts[2])
+
+            # Mirar 1-3 líneas siguientes por "Ganador..." y cuota.
+            look = lines[i+1:i+4]
+            for j, ln in enumerate(look):
+                if "ganador" in normalizar_texto(ln).lower():
+                    quoted_text = ln
+                    quoted_side = _match_quoted_player(ln, p1_raw, p2_raw)
+                    # cuota suele venir justo después
+                    if i + 1 + j + 1 < len(lines):
+                        quoted_odd = _parse_decimal_odd(lines[i + 1 + j + 1])
+                    break
+
+            # Si no hay "Ganador", intentar cuota directa siguiente.
+            if quoted_odd is None and odd1 is None and i + 1 < len(lines):
+                q = _parse_decimal_odd(lines[i+1])
+                if q is not None:
+                    quoted_odd = q
+
+            matches.append({
+                "raw": line,
+                "p1_raw": p1_raw,
+                "p2_raw": p2_raw,
+                "odd1": odd1,
+                "odd2": odd2,
+                "quoted_side": quoted_side,
+                "quoted_odd": quoted_odd,
+                "quoted_text": quoted_text
+            })
+        i += 1
+
+    return matches
+
+
+def find_player_in_db(name, db):
+    target = normalizar_texto(name).lower()
+    target_clean = limpiar(name).lower()
+    best_key = None
+    best_score = 0.0
+
+    for key in db.keys():
+        k1 = normalizar_texto(key).lower()
+        k2 = limpiar(key).lower()
+        score = max(
+            SequenceMatcher(None, target, k1).ratio(),
+            SequenceMatcher(None, target_clean, k2).ratio()
+        )
+
+        # Bonus apellido+inicial en ambos sentidos.
+        tparts = [p for p in re.split(r"\s+", target_clean) if p]
+        kparts = [p for p in re.split(r"\s+", k2) if p]
+        if len(tparts) >= 2 and len(kparts) >= 2:
+            if tparts[-1] == kparts[-1] and tparts[0][0] == kparts[0][0]:
+                score = max(score, 0.96)
+            elif tparts[-1] == kparts[-1]:
+                score = max(score, 0.86)
+
+        if score > best_score:
+            best_score = score
+            best_key = key
+
+    return best_key, best_score
+
+
+def batch_pick_label(sim, over18, over19, over20, over22, under22, p1_name, p2_name):
+    p1c, p2c = sim.get("p1_cal", 0.5), sim.get("p2_cal", 0.5)
+    fav_name = p1_name if p1c >= p2c else p2_name
+    dog_name = p2_name if p1c >= p2c else p1_name
+
+    candidates = [
+        (f"ML {fav_name}", max(p1c, p2c)),
+        ("Over 18.5", over18),
+        ("Over 19.5", over19),
+        ("Over 20.5", over20),
+        ("Under 22.5", under22),
+        (f"{dog_name} gana al menos 1 set", sim.get("dog_wins_set", 0.0)),
+    ]
+
+    # Evitar recomendar overs altos flojos como principal.
+    candidates = [(k, v) for k, v in candidates if v is not None]
+    label, prob = max(candidates, key=lambda x: x[1])
+    return label, float(prob)
+
+
+def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, progress_callback=None):
+    rows = []
+    total = len(parsed_matches)
+    for idx, m in enumerate(parsed_matches, start=1):
+        if progress_callback:
+            progress_callback(idx-1, total, f"Emparejando {m.get('p1_raw')} vs {m.get('p2_raw')}")
+
+        p1_key, p1_score = find_player_in_db(m["p1_raw"], db)
+        p2_key, p2_score = find_player_in_db(m["p2_raw"], db)
+
+        if not p1_key or not p2_key or p1_score < 0.72 or p2_score < 0.72:
+            rows.append({
+                "Partido": f"{m['p1_raw']} vs {m['p2_raw']}",
+                "Estado": "No encontrado",
+                "Jugador 1 encontrado": p1_key or "N/A",
+                "Score J1": f"{p1_score:.0%}",
+                "Jugador 2 encontrado": p2_key or "N/A",
+                "Score J2": f"{p2_score:.0%}",
+            })
+            continue
+
+        d1, d2 = db[p1_key], db[p2_key]
+        sim = sim_match(d1, d2, surface, circuito, best_of, sims, context_row={})
+        games = sim.get("games", [])
+        avg_games = float(np.mean(games)) if len(games) else 0.0
+        games_p1 = sim.get("games_p1", [])
+        games_p2 = sim.get("games_p2", [])
+        avg_g1 = float(np.mean(games_p1)) if len(games_p1) else 0.0
+        avg_g2 = float(np.mean(games_p2)) if len(games_p2) else 0.0
+
+        over18_raw = sum(x > 18.5 for x in games)/sims if sims else 0
+        over19_raw = sum(x > 19.5 for x in games)/sims if sims else 0
+        over20_raw = sum(x > 20.5 for x in games)/sims if sims else 0
+        over22_raw = sum(x > 22.5 for x in games)/sims if sims else 0
+        caps = aplicar_market_sanity_caps(sim, circuito, surface, over18_raw, over19_raw, over20_raw, over22_raw)
+        over18, over19, over20, over22 = caps["over18"], caps["over19"], caps["over20"], caps["over22"]
+        under22 = 1 - over22
+        sim["market_over18"] = over18
+        sim["market_over19"] = over19
+        sim["market_over20"] = over20
+        sim["market_over22"] = over22
+        sim["market_cap_notes"] = caps.get("notes", [])
+
+        p1c, p2c = sim["p1_cal"], sim["p2_cal"]
+        fav_name = p1_key if p1c >= p2c else p2_key
+        fav_prob = max(p1c, p2c)
+        dog_name = p2_key if p1c >= p2c else p1_key
+
+        best_label, best_prob = batch_pick_label(sim, over18, over19, over20, over22, under22, p1_key, p2_key)
+
+        filters = betting_filter_engine(circuito, surface, sim, p1_key, p2_key)
+        trust = filters.get("status", "")
+        rationale = " · ".join(filters.get("reasons", [])[:2]) if isinstance(filters, dict) else ""
+
+        # Cuota pegada: puede ser de un jugador concreto.
+        quoted_player = None
+        quoted_odd = m.get("quoted_odd")
+        quoted_prob_model = None
+        edge = None
+        fair_odd = None
+
+        if m.get("odd1") is not None:
+            # si hay dos cuotas limpias, usar cuota del favorito modelo
+            quoted_player = fav_name
+            quoted_odd = m["odd1"] if fav_name == p1_key else m["odd2"]
+            quoted_prob_model = fav_prob
+        elif quoted_odd is not None and m.get("quoted_side") in [1, 2]:
+            quoted_player = p1_key if m["quoted_side"] == 1 else p2_key
+            quoted_prob_model = p1c if m["quoted_side"] == 1 else p2c
+
+        if quoted_odd and quoted_prob_model:
+            fair_odd = 1 / max(0.01, quoted_prob_model)
+            edge = quoted_odd * quoted_prob_model - 1
+
+        rows.append({
+            "Partido": f"{p1_key} vs {p2_key}",
+            "Estado": "OK",
+            "Favorito modelo": fav_name,
+            "ML favorito": f"{fav_prob:.1%}",
+            "Mejor señal": best_label,
+            "Prob señal": f"{best_prob:.1%}",
+            "Signal Trust": trust,
+            "Over 18.5": f"{over18:.1%}",
+            "Over 19.5": f"{over19:.1%}",
+            "Under 22.5": f"{under22:.1%}",
+            f"{dog_name} set": f"{sim.get('dog_wins_set', 0):.1%}",
+            "Juegos J1": f"{avg_g1:.1f}",
+            "Juegos J2": f"{avg_g2:.1f}",
+            "Total games": f"{avg_games:.1f}",
+            "Cuota pegada": quoted_odd if quoted_odd else "",
+            "Jugador cuota": quoted_player or "",
+            "Cuota justa": f"{fair_odd:.2f}" if fair_odd else "",
+            "Edge": f"{edge:.1%}" if edge is not None else "",
+            "Riesgos": rationale,
+            "Match J1": f"{p1_score:.0%}",
+            "Match J2": f"{p2_score:.0%}",
+        })
+
+        if progress_callback:
+            progress_callback(idx, total, f"Analizado {p1_key} vs {p2_key}")
+
+    return pd.DataFrame(rows)
+
 # =========================================================
 # UI
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.36 Progress UX")
+    st.header("🎾 Tennis IA v23.0 Batch Paste")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
     circuito = st.radio("Circuito", ["ATP", "WTA"])
-    modo = st.radio("Modo", ["Predictor", "Validador histórico", "Analyzer"])
+    modo = st.radio("Modo", ["Predictor", "Analizador por lista", "Validador histórico", "Analyzer"])
     mostrar_debug = st.toggle("🔧 Mostrar diagnóstico técnico", value=False)
 
 # =========================================================
@@ -4440,7 +4717,112 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.36 Progress UX · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.0 Batch Paste · {sims:,} simulaciones Monte Carlo")
+
+
+elif modo == "Analizador por lista":
+    st.subheader("📋 Analizador por lista pegada")
+    st.caption("Pega partidos copiados de Winamax u otra casa. Acepta formato limpio o texto sucio con Ganador/cuotas.")
+
+    with st.sidebar:
+        surface = st.selectbox("Superficie lista", ["Hard","Clay","Grass"], index=1)
+        formato = st.radio("Formato lista", ["ATP Tour (3 sets)", "Grand Slam (5 sets)"])
+        sims_batch = st.select_slider("Simulaciones por partido", [1000,2500,5000,10000], value=2500)
+        max_batch = st.number_input("Máx partidos a analizar", 1, 50, 20, 1)
+
+    ejemplo = """Taylah Preston - Yulia Starodubtseva
+Guarantee LogoGanadorY. Starodubtseva
+1,26
+
+Rafael Jódar - Learner Tien
+Guarantee LogoGanadorR. Jódar
+1,28
+
+Sebastián Baez - Roberto Carballés Baena
+GanadorS. Baez
+1,32"""
+
+    raw_batch = st.text_area(
+        "Pega aquí los partidos",
+        height=260,
+        placeholder=ejemplo
+    )
+
+    cprev, crun = st.columns([1,1])
+    with cprev:
+        preview = parse_winamax_paste(raw_batch) if raw_batch.strip() else []
+        st.metric("Partidos detectados", len(preview))
+    with crun:
+        st.metric("Simulaciones estimadas", f"{min(len(preview), int(max_batch)) * int(sims_batch):,}")
+
+    if preview:
+        with st.expander("👀 Vista previa detectada", expanded=True):
+            st.dataframe(pd.DataFrame(preview[:int(max_batch)]), width='stretch', hide_index=True)
+
+    if st.button("🚀 ANALIZAR LISTA", width='stretch'):
+        parsed = parse_winamax_paste(raw_batch)[:int(max_batch)]
+        if not parsed:
+            st.error("No he detectado partidos. Prueba formato: Jugador A - Jugador B")
+            st.stop()
+
+        best_of = 5 if "5" in formato else 3
+
+        status = st.status(f"📋 Analizando {len(parsed)} partidos...", expanded=True)
+        with status:
+            bar = st.progress(1, text="Preparando análisis por lote...")
+            msg = st.empty()
+            start = time.time()
+
+            def update_batch(done, total, label=""):
+                pct = int(round((done / total) * 100)) if total else 100
+                pct = max(1, min(100, pct))
+                elapsed = time.time() - start
+                bar.progress(pct, text=f"Analizando lista {done}/{total} · {elapsed:.1f}s")
+                if label:
+                    msg.caption(label)
+
+            df_batch = analyze_batch_matches(
+                parsed, db, circuito, surface, best_of, int(sims_batch),
+                progress_callback=update_batch
+            )
+            bar.progress(100, text=f"Análisis completado · {len(parsed)} partidos")
+            msg.caption("✅ Lista analizada.")
+
+        status.update(label=f"✅ Lista analizada · {len(parsed)} partidos", state="complete", expanded=False)
+
+        st.divider()
+        st.subheader("🔥 Resumen ordenado")
+        if "Estado" in df_batch.columns:
+            ok = df_batch[df_batch["Estado"] == "OK"].copy()
+            ko = df_batch[df_batch["Estado"] != "OK"].copy()
+        else:
+            ok, ko = df_batch, pd.DataFrame()
+
+        if not ok.empty:
+            # Orden simple: primero NO BET abajo, edge positivo arriba si existe.
+            def _edge_num(x):
+                try:
+                    return float(str(x).replace("%","").replace(",", ".")) if str(x).strip() else -999
+                except Exception:
+                    return -999
+            ok["_edge_sort"] = ok["Edge"].apply(_edge_num) if "Edge" in ok.columns else -999
+            ok["_trust_sort"] = ok["Signal Trust"].astype(str).apply(lambda x: 3 if "FUERTE" in x else 2 if "APTO" in x else 1 if "DUDOSO" in x else 0)
+            ok = ok.sort_values(["_trust_sort","_edge_sort"], ascending=[False, False]).drop(columns=["_edge_sort","_trust_sort"], errors="ignore")
+            st.dataframe(ok, width='stretch', hide_index=True)
+            st.download_button(
+                "⬇️ Descargar análisis CSV",
+                data=ok.to_csv(index=False).encode("utf-8"),
+                file_name="analisis_lista_tennis_ia.csv",
+                mime="text/csv"
+            )
+        else:
+            st.warning("No se pudo analizar ningún partido.")
+
+        if not ko.empty:
+            st.divider()
+            st.subheader("⚠️ No encontrados / revisar nombres")
+            st.dataframe(ko, width='stretch', hide_index=True)
+
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
