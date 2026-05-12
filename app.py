@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.13 Validation Fix", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.14 WTA Over Guard", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.13"
-QUALITY_ENGINE_VERSION = "v23.13-validation-fix-2026-05-12"
+APP_VERSION = "v23.14"
+QUALITY_ENGINE_VERSION = "v23.14-wta-over-guard-2026-05-12"
 
 # =========================================================
 # TENNIS IA v15
@@ -3599,6 +3599,43 @@ def aplicar_market_sanity_caps(sim, circuito, surface, over18, over19, over20, o
                 o22 = cap22
                 notes.append(f"Over 22.5 capado a {cap22:.0%} por dominio élite/blowout")
 
+    # v23.14 WTA Over Guard:
+    # En el análisis real WTA Clay, el Over 18.5 quedó sobreinflado.
+    # Solo dejamos overs altos cuando el partido proyecta igualdad real.
+    if circuito == "WTA" and surface == "Clay":
+        dogset = sim.get("dog_wins_set", 0.0)
+        set3 = sim.get("set3", 0.0)
+        longm = sim.get("long_match", 0.0)
+
+        wta_close_match = (
+            fav_prob < 0.60
+            and dogset >= 0.55
+            and (set3 >= 0.42 or longm >= 0.50)
+        )
+
+        if wta_close_match:
+            cap18, cap19, cap20, cap22 = 0.72, 0.64, 0.58, 0.48
+            reason = "WTA clay igualado"
+        elif fav_prob >= 0.68:
+            cap18, cap19, cap20, cap22 = 0.64, 0.56, 0.50, 0.40
+            reason = "WTA clay favorito claro"
+        else:
+            cap18, cap19, cap20, cap22 = 0.66, 0.58, 0.52, 0.42
+            reason = "WTA clay over guard"
+
+        if o18 > cap18:
+            o18 = cap18
+            notes.append(f"Over 18.5 capado a {cap18:.0%} por {reason}")
+        if o19 > cap19:
+            o19 = cap19
+            notes.append(f"Over 19.5 capado a {cap19:.0%} por {reason}")
+        if o20 > cap20:
+            o20 = cap20
+            notes.append(f"Over 20.5 capado a {cap20:.0%} por {reason}")
+        if o22 > cap22:
+            o22 = cap22
+            notes.append(f"Over 22.5 capado a {cap22:.0%} por {reason}")
+
     return {
         "over18": float(np.clip(o18, 0.0, 0.95)),
         "over19": float(np.clip(o19, 0.0, 0.95)),
@@ -3721,7 +3758,11 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             score += 1
 
         if circuito == "WTA" and market_type in ["over", "long"]:
-            score -= 1
+            score -= 2
+            # v23.14: en WTA el ML fue bastante mejor que el Over 18.5.
+            # Si hay favorita clara, los overs no deben dominar el Signal Trust.
+            if fav_prob >= 0.65:
+                score -= 1
         if vol >= 0.060 and market_type in ["ml", "fav20"]:
             score -= 1
         if fav_prob < 0.56 and market_type in ["ml", "fav20"]:
@@ -3791,11 +3832,11 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         add_signal(f"ML favorito: {fav_name}", fav_prob, 0.70, "ml", "ATP Clay con especialista/favorito claro", 0)
 
     elif circuito == "WTA":
-        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.68, "ml", "WTA: exigir probabilidad alta", 1)
-        add_signal("Favorito 2-0", fav20, 0.58, "fav20", "WTA: solo con perfil dominador/top", 1)
-        add_signal("Underdog gana set", dogset, 0.62, "dogset", "WTA: útil con dog peligroso", 0)
-        add_signal("Over 18.5", over18, 0.76, "over", "WTA overs solo con umbral alto", 0)
-        add_signal("Partido largo", longm, 0.66, "long", "WTA long match solo con señal clara", 0)
+        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.66, "ml", "WTA: ML priorizado sobre overs", 2)
+        add_signal("Favorito 2-0", fav20, 0.62, "fav20", "WTA: solo con perfil dominador/top", 1)
+        add_signal("Underdog gana set", dogset, 0.64, "dogset", "WTA: útil con dog peligroso", 0)
+        add_signal("Over 18.5", over18, 0.78, "over", "WTA Clay: over penalizado salvo igualdad clara", -1)
+        add_signal("Partido largo", longm, 0.68, "long", "WTA long match solo con señal clara", -1)
 
     else:
         add_signal("Over 18.5", over18, 0.74, "over", "Filtro general", 0)
@@ -4541,13 +4582,14 @@ def enrich_not_found_with_suggestions(ko_df, db):
     out["Tipo sugerencia"] = reasons
     return out
 
-def batch_pick_label(sim, over18, over19, over20, over22, under22, p1_name, p2_name):
+def batch_pick_label(sim, over18, over19, over20, over22, under22, p1_name, p2_name, circuito=None, surface=None):
     p1c, p2c = sim.get("p1_cal", 0.5), sim.get("p2_cal", 0.5)
+    fav_prob = max(p1c, p2c)
     fav_name = p1_name if p1c >= p2c else p2_name
     dog_name = p2_name if p1c >= p2c else p1_name
 
     candidates = [
-        (f"ML {fav_name}", max(p1c, p2c)),
+        (f"ML {fav_name}", fav_prob),
         ("Over 18.5", over18),
         ("Over 19.5", over19),
         ("Over 20.5", over20),
@@ -4555,7 +4597,14 @@ def batch_pick_label(sim, over18, over19, over20, over22, under22, p1_name, p2_n
         (f"{dog_name} gana al menos 1 set", sim.get("dog_wins_set", 0.0)),
     ]
 
-    # Evitar recomendar overs altos flojos como principal.
+    # v23.14: en WTA Clay, si el ML está claro, no dejar que el Over 18.5
+    # sea la mejor señal solo por venir inflado.
+    if circuito == "WTA" and surface == "Clay" and fav_prob >= 0.65:
+        candidates = [
+            (label, (prob - 0.08 if label.startswith("Over") else prob))
+            for label, prob in candidates
+        ]
+
     candidates = [(k, v) for k, v in candidates if v is not None]
     label, prob = max(candidates, key=lambda x: x[1])
     return label, float(prob)
@@ -4612,7 +4661,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         fav_prob = max(p1c, p2c)
         dog_name = p2_key if p1c >= p2c else p1_key
 
-        best_label, best_prob = batch_pick_label(sim, over18, over19, over20, over22, under22, p1_key, p2_key)
+        best_label, best_prob = batch_pick_label(sim, over18, over19, over20, over22, under22, p1_key, p2_key, circuito, surface)
 
         filters = betting_filter_engine(circuito, surface, sim, p1_key, p2_key)
         trust = filters.get("status", "")
@@ -4937,7 +4986,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.13 Validation Fix")
+    st.header("🎾 Tennis IA v23.14 WTA Over Guard")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5487,7 +5536,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.13 Validation Fix · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.14 WTA Over Guard · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
