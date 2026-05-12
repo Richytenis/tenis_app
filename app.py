@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.8 Name Match Strong", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.9 Results Parser", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.8"
-QUALITY_ENGINE_VERSION = "v23.8-name-match-strong-2026-05-12"
+APP_VERSION = "v23.9"
+QUALITY_ENGINE_VERSION = "v23.9-results-parser-2026-05-12"
 
 # =========================================================
 # TENNIS IA v15
@@ -4269,6 +4269,147 @@ def parse_sofascore_paste(raw_text):
 
     return matches
 
+
+def is_date_line_sofa_result(x):
+    return bool(re.match(r"^\d{1,2}/\d{1,2}/\d{2,4}$", str(x).strip()))
+
+
+def is_status_line_sofa_result(x):
+    t = normalizar_texto(x).lower().strip()
+    return t in {"ft", "final", "cancelado", "retirado", "walkover", "wo", "aplazado", "postponed"}
+
+
+def parse_sofascore_results_paste(raw_text):
+    """
+    v23.9: parser Sofascore resultados.
+    Detecta bloques:
+    11/5/26
+    FT
+    Russia
+    A. Rublev
+    Spain
+    A. Davidovich Fokina
+    2
+    2
+    0
+    0
+
+    Ignora dobles, cancelados y retirados.
+    Guarda ganador real si puede leer sets.
+    """
+    raw_lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    matches = []
+    i = 0
+
+    while i < len(raw_lines):
+        line = raw_lines[i]
+
+        if not is_date_line_sofa_result(line):
+            i += 1
+            continue
+
+        fecha = line
+        if i + 1 >= len(raw_lines):
+            i += 1
+            continue
+
+        status = normalizar_texto(raw_lines[i + 1]).strip()
+        status_low = status.lower()
+
+        j = i + 2
+
+        # Saltar cancelados/retirados: no son buenos para backtest.
+        if status_low not in {"ft", "final"}:
+            # avanzar hasta la siguiente fecha
+            j = i + 2
+            while j < len(raw_lines) and not is_date_line_sofa_result(raw_lines[j]):
+                j += 1
+            i = j
+            continue
+
+        candidates = []
+        numbers = []
+        doubles_match = False
+
+        while j < len(raw_lines) and not is_date_line_sofa_result(raw_lines[j]):
+            ln = raw_lines[j].strip()
+
+            # Si llega metadata de torneo antes de completar partido, cortar.
+            if len(candidates) < 2 and is_sofa_meta_line(ln) and not is_country_like_name(ln):
+                j += 1
+                continue
+
+            if "/" in ln:
+                doubles_match = True
+                break
+
+            # números de marcador
+            if re.match(r"^\d+$", ln):
+                numbers.append(int(ln))
+                j += 1
+                if len(numbers) >= 4:
+                    break
+                continue
+
+            if ln == "-" or is_country_line_sofa(ln) or is_country_like_name(ln):
+                j += 1
+                continue
+
+            if is_pending_opponent_name(ln):
+                doubles_match = True
+                break
+
+            if looks_like_player_line_sofa(ln):
+                if len(candidates) < 2:
+                    candidates.append(ln)
+
+            j += 1
+
+            # Si ya tenemos 2 jugadores, seguimos solo para recoger números.
+
+        if len(candidates) >= 2 and not doubles_match:
+            p1_raw, p2_raw = candidates[0], candidates[1]
+
+            p1_sets = p2_sets = None
+            if len(numbers) >= 4:
+                # Formato típico Sofascore copiado: p1 total, p1 sets?, p2 total, p2 sets?
+                p1_sets = numbers[0]
+                p2_sets = numbers[2]
+            elif len(numbers) >= 2:
+                p1_sets = numbers[0]
+                p2_sets = numbers[1]
+
+            winner_side = None
+            if p1_sets is not None and p2_sets is not None:
+                if p1_sets > p2_sets:
+                    winner_side = 1
+                elif p2_sets > p1_sets:
+                    winner_side = 2
+
+            matches.append({
+                "raw": f"{fecha} · {p1_raw} - {p2_raw}",
+                "date": fecha,
+                "time": "",
+                "status": status,
+                "p1_raw": p1_raw,
+                "p2_raw": p2_raw,
+                "p1_sets_real": p1_sets,
+                "p2_sets_real": p2_sets,
+                "actual_winner_side": winner_side,
+                "odd1": None,
+                "odd2": None,
+                "quoted_side": None,
+                "quoted_odd": None,
+                "quoted_text": None
+            })
+
+        # avanzar al siguiente bloque de fecha
+        while j < len(raw_lines) and not is_date_line_sofa_result(raw_lines[j]):
+            j += 1
+        i = max(j, i + 1)
+
+    return matches
+
 def find_player_in_db(name, db):
     if is_pending_opponent_name(name) or is_country_like_name(name):
         return None, 0.0
@@ -4422,6 +4563,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         # v23.7: aceptar inicial+apellido/apellidos compuestos desde Sofascore aunque el fuzzy bruto sea menor.
         if not p1_key or not p2_key or p1_score < 0.66 or p2_score < 0.66:
             rows.append({
+                "Fecha": m.get("date", ""),
                 "Hora": m.get("time", ""),
                 "Partido": f"{m['p1_raw']} vs {m['p2_raw']}",
                 "Estado": "No encontrado",
@@ -4486,6 +4628,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             edge = quoted_odd * quoted_prob_model - 1
 
         rows.append({
+            "Fecha": m.get("date", ""),
             "Hora": m.get("time", ""),
             "Partido": f"{p1_key} vs {p2_key}",
             "Estado": "OK",
@@ -4506,6 +4649,20 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Jugador cuota": quoted_player or "",
             "Cuota justa": f"{fair_odd:.2f}" if fair_odd else "",
             "Edge": f"{edge:.1%}" if edge is not None else "",
+            "Ganador real": (
+                p1_key if m.get("actual_winner_side") == 1 else
+                p2_key if m.get("actual_winner_side") == 2 else ""
+            ),
+            "Resultado sets": (
+                f"{m.get('p1_sets_real')}-{m.get('p2_sets_real')}"
+                if m.get("p1_sets_real") is not None and m.get("p2_sets_real") is not None else ""
+            ),
+            "Acierta ML modelo": (
+                "Sí" if (
+                    (m.get("actual_winner_side") == 1 and fav_name == p1_key) or
+                    (m.get("actual_winner_side") == 2 and fav_name == p2_key)
+                ) else "No" if m.get("actual_winner_side") in [1,2] else ""
+            ),
             "Riesgos": rationale,
             "Match J1": f"{p1_score:.0%}",
             "Match J2": f"{p2_score:.0%}",
@@ -4589,6 +4746,7 @@ def prepare_batch_display_table(ok_df):
 
     preferred = [
         "Recomendación",
+        "Fecha",
         "Hora",
         "Partido",
         "Favorito modelo",
@@ -4600,6 +4758,9 @@ def prepare_batch_display_table(ok_df):
         "Jugador cuota",
         "Cuota justa",
         "Edge",
+        "Ganador real",
+        "Resultado sets",
+        "Acierta ML modelo",
         "Over 18.5",
         "Over 19.5",
         "Under 22.5",
@@ -4736,7 +4897,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.8 Name Match Strong")
+    st.header("🎾 Tennis IA v23.9 Results Parser")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5286,12 +5447,12 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.8 Name Match Strong · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.9 Results Parser · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
     st.subheader("📋 Analizador por lista pegada")
-    st.caption("Pega partidos de Winamax/casa o la lista diaria de Sofascore. En Sofascore se detectan horas y se ignoran dobles.")
+    st.caption("Pega partidos de Winamax/casa, lista diaria de Sofascore o resultados Sofascore de ayer. Se ignoran dobles/cancelados/retirados.")
 
     with st.sidebar:
         surface = st.selectbox("Superficie lista", ["Hard","Clay","Grass"], index=1)
@@ -5300,9 +5461,9 @@ elif modo == "Analizador por lista":
         max_batch = st.number_input("Máx partidos a analizar", 1, 50, 20, 1)
         formato_pegado = st.radio(
             "Formato pegado",
-            ["Casa/Winamax limpio", "Sofascore día"],
+            ["Casa/Winamax limpio", "Sofascore día", "Sofascore resultados"],
             index=0,
-            help="Sofascore día detecta horas, países y superficie. Ignora dobles."
+            help="Sofascore día detecta horarios. Sofascore resultados detecta fecha, FT y ganador real. Ignora dobles/cancelados/retirados."
         )
         usar_cuotas = st.toggle(
             "Leer cuotas pegadas",
@@ -5337,11 +5498,15 @@ Sebastián Baez - Roberto Carballés Baena"""
         if raw_batch.strip():
             if formato_pegado == "Sofascore día":
                 preview = parse_sofascore_paste(raw_batch)
+            elif formato_pegado == "Sofascore resultados":
+                preview = parse_sofascore_results_paste(raw_batch)
             else:
                 preview = parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch)
-                # v23.4: autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Winamax.
+                # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Winamax.
                 if not preview and any(is_time_line_sofa(x.strip()) for x in raw_batch.splitlines()):
                     preview = parse_sofascore_paste(raw_batch)
+                if not preview and any(is_date_line_sofa_result(x.strip()) for x in raw_batch.splitlines()):
+                    preview = parse_sofascore_results_paste(raw_batch)
         else:
             preview = []
         st.metric("Partidos detectados", len(preview))
@@ -5355,11 +5520,15 @@ Sebastián Baez - Roberto Carballés Baena"""
     if st.button("🚀 ANALIZAR LISTA", width='stretch'):
         if formato_pegado == "Sofascore día":
             parsed = parse_sofascore_paste(raw_batch)[:int(max_batch)]
+        elif formato_pegado == "Sofascore resultados":
+            parsed = parse_sofascore_results_paste(raw_batch)[:int(max_batch)]
         else:
             parsed = (parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch))
-            # v23.4: autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Winamax.
+            # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Winamax.
             if not parsed and any(is_time_line_sofa(x.strip()) for x in raw_batch.splitlines()):
                 parsed = parse_sofascore_paste(raw_batch)
+            if not parsed and any(is_date_line_sofa_result(x.strip()) for x in raw_batch.splitlines()):
+                parsed = parse_sofascore_results_paste(raw_batch)
             parsed = parsed[:int(max_batch)]
         if not parsed:
             st.error("No he detectado partidos. Si pegaste Sofascore, selecciona Formato pegado → Sofascore día, o deja que lo autodetecte con líneas de hora tipo 16:20.")
