@@ -2,13 +2,13 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import random, re, os, glob, unicodedata, time
+import random, re, os, glob, unicodedata, time, io
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.0 Batch Paste", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.1 Batch Excel", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.0"
-QUALITY_ENGINE_VERSION = "v23.0-batch-paste-2026-05-12"
+APP_VERSION = "v23.1"
+QUALITY_ENGINE_VERSION = "v23.1-batch-excel-2026-05-12"
 
 # =========================================================
 # TENNIS IA v15
@@ -4144,7 +4144,8 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Over 18.5": f"{over18:.1%}",
             "Over 19.5": f"{over19:.1%}",
             "Under 22.5": f"{under22:.1%}",
-            f"{dog_name} set": f"{sim.get('dog_wins_set', 0):.1%}",
+            "Jugador gana set": dog_name,
+            "Prob gana set": f"{sim.get('dog_wins_set', 0):.1%}",
             "Juegos J1": f"{avg_g1:.1f}",
             "Juegos J2": f"{avg_g2:.1f}",
             "Total games": f"{avg_games:.1f}",
@@ -4162,12 +4163,177 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
 
     return pd.DataFrame(rows)
 
+
+def _pct_to_float(x):
+    try:
+        s = str(x).replace("%", "").replace(",", ".").strip()
+        if not s:
+            return None
+        return float(s) / 100.0
+    except Exception:
+        return None
+
+
+def batch_recommendation(row):
+    trust = str(row.get("Signal Trust", "")).upper()
+    edge = _pct_to_float(row.get("Edge", ""))
+    signal = str(row.get("Mejor señal", ""))
+    risks = str(row.get("Riesgos", "")).lower()
+
+    if "NO BET" in trust:
+        if edge is not None and edge > 0.06:
+            return "VALUE NUMÉRICO PERO RIESGO"
+        return "NO BET"
+
+    if "FUERTE" in trust:
+        if edge is not None:
+            return "APTA + VALUE" if edge > 0.03 else "APTA SIN VALUE ML"
+        return "APTA"
+
+    if "APTO" in trust:
+        if edge is not None:
+            return "APTA + VALUE" if edge > 0.03 else "APTA SIN VALUE ML"
+        return "APTA"
+
+    if "DUDOSO" in trust:
+        if edge is not None and edge > 0.07:
+            return "DUDOSA CON VALUE"
+        return "DUDOSA"
+
+    if "upset" in risks or "riesgo" in risks:
+        return "NO BET / REVISAR"
+
+    return "REVISAR"
+
+
+def prepare_batch_display_table(ok_df):
+    if ok_df is None or ok_df.empty:
+        return ok_df
+
+    df = ok_df.copy()
+
+    # Unificar columnas dinámicas del tipo "Jugador set".
+    set_cols = [c for c in df.columns if c.endswith(" set")]
+    if set_cols:
+        jugador_set = []
+        prob_set = []
+        for _, row in df.iterrows():
+            found_name = ""
+            found_prob = ""
+            for c in set_cols:
+                val = row.get(c, "")
+                if str(val).strip():
+                    found_name = c[:-4]
+                    found_prob = val
+                    break
+            jugador_set.append(found_name)
+            prob_set.append(found_prob)
+        df["Jugador gana set"] = jugador_set
+        df["Prob gana set"] = prob_set
+        df = df.drop(columns=set_cols, errors="ignore")
+
+    df["Recomendación"] = df.apply(batch_recommendation, axis=1)
+
+    preferred = [
+        "Recomendación",
+        "Partido",
+        "Favorito modelo",
+        "ML favorito",
+        "Mejor señal",
+        "Prob señal",
+        "Signal Trust",
+        "Cuota pegada",
+        "Jugador cuota",
+        "Cuota justa",
+        "Edge",
+        "Over 18.5",
+        "Over 19.5",
+        "Under 22.5",
+        "Jugador gana set",
+        "Prob gana set",
+        "Juegos J1",
+        "Juegos J2",
+        "Total games",
+        "Riesgos",
+        "Match J1",
+        "Match J2",
+    ]
+
+    cols = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
+    return df[cols]
+
+
+def batch_excel_bytes(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Analisis")
+        ws = writer.book["Analisis"]
+
+        # Formato básico tipo tabla legible.
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        header_fill = PatternFill("solid", fgColor="1F4E78")
+        header_font = Font(color="FFFFFF", bold=True)
+        thin = Side(style="thin", color="D9E2F3")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = border
+
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.border = border
+                cell.alignment = Alignment(vertical="center", wrap_text=False)
+
+        widths = {
+            "A": 24, "B": 34, "C": 22, "D": 12, "E": 28, "F": 12,
+            "G": 18, "H": 12, "I": 22, "J": 12, "K": 12,
+            "L": 12, "M": 12, "N": 12, "O": 22, "P": 12,
+            "Q": 10, "R": 10, "S": 11, "T": 42
+        }
+        for col, width in widths.items():
+            ws.column_dimensions[col].width = width
+
+        # Resaltar recomendación
+        rec_col = None
+        for idx, cell in enumerate(ws[1], start=1):
+            if cell.value == "Recomendación":
+                rec_col = idx
+                break
+
+        if rec_col:
+            fills = {
+                "APTA": "E2F0D9",
+                "APTA + VALUE": "C6EFCE",
+                "DUDOSA": "FFF2CC",
+                "DUDOSA CON VALUE": "FCE4D6",
+                "NO BET": "F4CCCC",
+                "VALUE NUMÉRICO PERO RIESGO": "FCE4D6",
+            }
+            for row in range(2, ws.max_row + 1):
+                val = str(ws.cell(row=row, column=rec_col).value or "")
+                color = None
+                for key, fill in fills.items():
+                    if key in val:
+                        color = fill
+                        break
+                if color:
+                    ws.cell(row=row, column=rec_col).fill = PatternFill("solid", fgColor=color)
+
+    output.seek(0)
+    return output.getvalue()
+
 # =========================================================
 # UI
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.0 Batch Paste")
+    st.header("🎾 Tennis IA v23.1 Batch Excel")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -4717,7 +4883,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.0 Batch Paste · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.1 Batch Excel · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
@@ -4799,22 +4965,46 @@ GanadorS. Baez
             ok, ko = df_batch, pd.DataFrame()
 
         if not ok.empty:
-            # Orden simple: primero NO BET abajo, edge positivo arriba si existe.
+            ok = prepare_batch_display_table(ok)
+
+            # Orden simple: recomendación/trust/edge.
             def _edge_num(x):
                 try:
-                    return float(str(x).replace("%","").replace(",", ".")) if str(x).strip() else -999
+                    s = str(x).replace("%","").replace(",", ".").strip()
+                    return float(s) if s else -999
                 except Exception:
                     return -999
+
+            rec_order = {
+                "APTA + VALUE": 5,
+                "APTA": 4,
+                "DUDOSA CON VALUE": 3,
+                "DUDOSA": 2,
+                "VALUE NUMÉRICO PERO RIESGO": 1,
+                "NO BET": 0,
+            }
+
             ok["_edge_sort"] = ok["Edge"].apply(_edge_num) if "Edge" in ok.columns else -999
-            ok["_trust_sort"] = ok["Signal Trust"].astype(str).apply(lambda x: 3 if "FUERTE" in x else 2 if "APTO" in x else 1 if "DUDOSO" in x else 0)
-            ok = ok.sort_values(["_trust_sort","_edge_sort"], ascending=[False, False]).drop(columns=["_edge_sort","_trust_sort"], errors="ignore")
+            ok["_rec_sort"] = ok["Recomendación"].astype(str).apply(lambda x: max([v for k,v in rec_order.items() if k in x] or [0]))
+            ok = ok.sort_values(["_rec_sort","_edge_sort"], ascending=[False, False]).drop(columns=["_edge_sort","_rec_sort"], errors="ignore")
+
             st.dataframe(ok, width='stretch', hide_index=True)
-            st.download_button(
-                "⬇️ Descargar análisis CSV",
-                data=ok.to_csv(index=False).encode("utf-8"),
-                file_name="analisis_lista_tennis_ia.csv",
-                mime="text/csv"
-            )
+
+            dl1, dl2 = st.columns(2)
+            with dl1:
+                st.download_button(
+                    "⬇️ Descargar CSV",
+                    data=ok.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="analisis_lista_tennis_ia.csv",
+                    mime="text/csv"
+                )
+            with dl2:
+                st.download_button(
+                    "📊 Descargar Excel",
+                    data=batch_excel_bytes(ok),
+                    file_name="analisis_lista_tennis_ia.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
         else:
             st.warning("No se pudo analizar ningún partido.")
 
