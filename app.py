@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.1 Batch Excel", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.2 Clean Batch", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.1"
-QUALITY_ENGINE_VERSION = "v23.1-batch-excel-2026-05-12"
+APP_VERSION = "v23.2"
+QUALITY_ENGINE_VERSION = "v23.2-clean-batch-2026-05-12"
 
 # =========================================================
 # TENNIS IA v15
@@ -4009,6 +4009,45 @@ def parse_winamax_paste(raw_text):
     return matches
 
 
+
+def parse_simple_match_list(raw_text):
+    """
+    v23.2: parser limpio sin cuotas.
+    Usa solo líneas con separador de partido:
+    Jugador A - Jugador B
+    Ignora cuotas, "Ganador", logos y líneas sueltas.
+    """
+    matches = []
+    for ln in str(raw_text).splitlines():
+        line = ln.strip()
+        if not line:
+            continue
+        clean = line.replace("–", "-").replace("—", "-")
+        low = normalizar_texto(clean).lower()
+        if "ganador" in low or "guarantee" in low or "logo" in low:
+            continue
+        # ignorar cuotas sueltas
+        if _parse_decimal_odd(clean) is not None:
+            continue
+        if " - " in clean:
+            left, right = clean.split(" - ", 1)
+            p1 = left.strip()
+            p2 = right.strip()
+            # limpiar posibles restos tras separadores
+            p2 = p2.split("|")[0].strip()
+            if p1 and p2:
+                matches.append({
+                    "raw": line,
+                    "p1_raw": p1,
+                    "p2_raw": p2,
+                    "odd1": None,
+                    "odd2": None,
+                    "quoted_side": None,
+                    "quoted_odd": None,
+                    "quoted_text": None
+                })
+    return matches
+
 def find_player_in_db(name, db):
     target = normalizar_texto(name).lower()
     target_clean = limpiar(name).lower()
@@ -4259,6 +4298,17 @@ def prepare_batch_display_table(ok_df):
         "Match J2",
     ]
 
+    # Si no hay cuotas, ocultar columnas de cuotas/value para que pantalla y Excel queden limpios.
+    odds_cols = ["Cuota pegada", "Jugador cuota", "Cuota justa", "Edge"]
+    has_any_odds = False
+    for c in odds_cols:
+        if c in df.columns and df[c].astype(str).str.strip().replace("nan", "").ne("").any():
+            has_any_odds = True
+            break
+    if not has_any_odds:
+        df = df.drop(columns=odds_cols, errors="ignore")
+        preferred = [c for c in preferred if c not in odds_cols]
+
     cols = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
     return df[cols]
 
@@ -4333,7 +4383,7 @@ def batch_excel_bytes(df):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.1 Batch Excel")
+    st.header("🎾 Tennis IA v23.2 Clean Batch")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -4883,30 +4933,29 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.1 Batch Excel · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.2 Clean Batch · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
     st.subheader("📋 Analizador por lista pegada")
-    st.caption("Pega partidos copiados de Winamax u otra casa. Acepta formato limpio o texto sucio con Ganador/cuotas.")
+    st.caption("Pega partidos copiados de Winamax u otra casa. Por defecto usa solo Jugador A - Jugador B y descarta cuotas.")
 
     with st.sidebar:
         surface = st.selectbox("Superficie lista", ["Hard","Clay","Grass"], index=1)
         formato = st.radio("Formato lista", ["ATP Tour (3 sets)", "Grand Slam (5 sets)"])
         sims_batch = st.select_slider("Simulaciones por partido", [1000,2500,5000,10000], value=2500)
         max_batch = st.number_input("Máx partidos a analizar", 1, 50, 20, 1)
+        usar_cuotas = st.toggle(
+            "Leer cuotas pegadas",
+            value=False,
+            help="Desactivado = usa solo Jugador A - Jugador B. Más limpio y rápido."
+        )
 
     ejemplo = """Taylah Preston - Yulia Starodubtseva
-Guarantee LogoGanadorY. Starodubtseva
-1,26
-
+Emma Navarro - Lola Radivojevic
 Rafael Jódar - Learner Tien
-Guarantee LogoGanadorR. Jódar
-1,28
-
 Sebastián Baez - Roberto Carballés Baena
-GanadorS. Baez
-1,32"""
+Carlos Sánchez Jover - Taro Daniel"""
 
     raw_batch = st.text_area(
         "Pega aquí los partidos",
@@ -4916,7 +4965,7 @@ GanadorS. Baez
 
     cprev, crun = st.columns([1,1])
     with cprev:
-        preview = parse_winamax_paste(raw_batch) if raw_batch.strip() else []
+        preview = (parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch)) if raw_batch.strip() else []
         st.metric("Partidos detectados", len(preview))
     with crun:
         st.metric("Simulaciones estimadas", f"{min(len(preview), int(max_batch)) * int(sims_batch):,}")
@@ -4926,7 +4975,7 @@ GanadorS. Baez
             st.dataframe(pd.DataFrame(preview[:int(max_batch)]), width='stretch', hide_index=True)
 
     if st.button("🚀 ANALIZAR LISTA", width='stretch'):
-        parsed = parse_winamax_paste(raw_batch)[:int(max_batch)]
+        parsed = (parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch))[:int(max_batch)]
         if not parsed:
             st.error("No he detectado partidos. Prueba formato: Jugador A - Jugador B")
             st.stop()
