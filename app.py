@@ -2,13 +2,13 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import random, re, os, glob, unicodedata, time, io
+import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.9 Results Parser", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.12 Results Games", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.9"
-QUALITY_ENGINE_VERSION = "v23.9-results-parser-2026-05-12"
+APP_VERSION = "v23.12"
+QUALITY_ENGINE_VERSION = "v23.12-results-games-2026-05-12"
 
 # =========================================================
 # TENNIS IA v15
@@ -4281,21 +4281,19 @@ def is_status_line_sofa_result(x):
 
 def parse_sofascore_results_paste(raw_text):
     """
-    v23.9: parser Sofascore resultados.
-    Detecta bloques:
-    11/5/26
-    FT
-    Russia
-    A. Rublev
-    Spain
-    A. Davidovich Fokina
-    2
-    2
-    0
-    0
+    v23.12: parser Sofascore resultados con juegos reales.
+    Detecta bloques como:
+    fecha / FT / país / jugador1 / país / jugador2 /
+    juegos por set + sets finales.
 
-    Ignora dobles, cancelados y retirados.
-    Guarda ganador real si puede leer sets.
+    Ejemplo 2 sets:
+    6 6 4 4 2 2 0 0
+    => sets reales 2-0, games reales 20
+
+    Ejemplo con tiebreak/super tie:
+    6 8 1 7 10 6 0 0 2 2
+    => juegos reales estimados sumando todos los números de set antes de los 4 finales.
+       Nota: si Sofascore incluye puntos de tie-break (8/10), el total de games puede inflarse.
     """
     raw_lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
     matches = []
@@ -4315,13 +4313,10 @@ def parse_sofascore_results_paste(raw_text):
 
         status = normalizar_texto(raw_lines[i + 1]).strip()
         status_low = status.lower()
-
         j = i + 2
 
         # Saltar cancelados/retirados: no son buenos para backtest.
         if status_low not in {"ft", "final"}:
-            # avanzar hasta la siguiente fecha
-            j = i + 2
             while j < len(raw_lines) and not is_date_line_sofa_result(raw_lines[j]):
                 j += 1
             i = j
@@ -4334,21 +4329,13 @@ def parse_sofascore_results_paste(raw_text):
         while j < len(raw_lines) and not is_date_line_sofa_result(raw_lines[j]):
             ln = raw_lines[j].strip()
 
-            # Si llega metadata de torneo antes de completar partido, cortar.
-            if len(candidates) < 2 and is_sofa_meta_line(ln) and not is_country_like_name(ln):
-                j += 1
-                continue
-
             if "/" in ln:
                 doubles_match = True
                 break
 
-            # números de marcador
             if re.match(r"^\d+$", ln):
                 numbers.append(int(ln))
                 j += 1
-                if len(numbers) >= 4:
-                    break
                 continue
 
             if ln == "-" or is_country_line_sofa(ln) or is_country_like_name(ln):
@@ -4359,32 +4346,55 @@ def parse_sofascore_results_paste(raw_text):
                 doubles_match = True
                 break
 
-            if looks_like_player_line_sofa(ln):
-                if len(candidates) < 2:
-                    candidates.append(ln)
+            # Ignorar metadatos de torneo.
+            if len(candidates) < 2 and is_sofa_meta_line(ln) and not looks_like_player_line_sofa(ln):
+                j += 1
+                continue
+
+            if looks_like_player_line_sofa(ln) and len(candidates) < 2:
+                candidates.append(ln)
 
             j += 1
-
-            # Si ya tenemos 2 jugadores, seguimos solo para recoger números.
 
         if len(candidates) >= 2 and not doubles_match:
             p1_raw, p2_raw = candidates[0], candidates[1]
 
             p1_sets = p2_sets = None
-            if len(numbers) >= 4:
-                # Formato típico Sofascore copiado: p1 total, p1 sets?, p2 total, p2 sets?
+            winner_side = None
+            actual_total_games = None
+            score_games = ""
+
+            # Sofascore suele dejar los 4 últimos números como:
+            # p1_sets, p1_sets, p2_sets, p2_sets
+            # y todo lo anterior como juegos/puntos visibles.
+            game_nums = []
+            if len(numbers) >= 6:
+                p1_sets = numbers[-4]
+                p2_sets = numbers[-2]
+                game_nums = numbers[:-4]
+            elif len(numbers) >= 4:
+                # fallback antiguo: solo sets duplicados
                 p1_sets = numbers[0]
                 p2_sets = numbers[2]
+                game_nums = []
             elif len(numbers) >= 2:
                 p1_sets = numbers[0]
                 p2_sets = numbers[1]
+                game_nums = []
 
-            winner_side = None
             if p1_sets is not None and p2_sets is not None:
                 if p1_sets > p2_sets:
                     winner_side = 1
                 elif p2_sets > p1_sets:
                     winner_side = 2
+
+            # Calcular total games si hay juegos por set.
+            # Emparejamos números de 2 en 2: p1_set1, p2_set1, p1_set2, p2_set2...
+            # Si hay 6-8 / 7-10 por puntos de tie-break, esto puede inflar el total.
+            if len(game_nums) >= 4 and len(game_nums) % 2 == 0:
+                pairs = [(game_nums[k], game_nums[k+1]) for k in range(0, len(game_nums), 2)]
+                actual_total_games = int(sum(a + b for a, b in pairs))
+                score_games = " ".join([f"{a}-{b}" for a, b in pairs])
 
             matches.append({
                 "raw": f"{fecha} · {p1_raw} - {p2_raw}",
@@ -4396,6 +4406,8 @@ def parse_sofascore_results_paste(raw_text):
                 "p1_sets_real": p1_sets,
                 "p2_sets_real": p2_sets,
                 "actual_winner_side": winner_side,
+                "actual_total_games": actual_total_games,
+                "score_games": score_games,
                 "odd1": None,
                 "odd2": None,
                 "quoted_side": None,
@@ -4403,7 +4415,6 @@ def parse_sofascore_results_paste(raw_text):
                 "quoted_text": None
             })
 
-        # avanzar al siguiente bloque de fecha
         while j < len(raw_lines) and not is_date_line_sofa_result(raw_lines[j]):
             j += 1
         i = max(j, i + 1)
@@ -4657,20 +4668,40 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
                 f"{m.get('p1_sets_real')}-{m.get('p2_sets_real')}"
                 if m.get("p1_sets_real") is not None and m.get("p2_sets_real") is not None else ""
             ),
+            "Marcador games": m.get("score_games", ""),
+            "Total games real": m.get("actual_total_games", ""),
             "Acierta ML modelo": (
                 "Sí" if (
                     (m.get("actual_winner_side") == 1 and fav_name == p1_key) or
                     (m.get("actual_winner_side") == 2 and fav_name == p2_key)
                 ) else "No" if m.get("actual_winner_side") in [1,2] else ""
             ),
+            "Over 18.5 real": (
+                "Sí" if m.get("actual_total_games") is not None and m.get("actual_total_games") > 18.5
+                else "No" if m.get("actual_total_games") is not None
+                else "N/D"
+            ),
+            "Acierta Over 18.5": (
+                "Sí" if m.get("actual_total_games") is not None and ((over18 >= 0.50) == (m.get("actual_total_games") > 18.5))
+                else "N/D"
+            ),
             "Riesgos": rationale,
             "Match J1": f"{p1_score:.0%}",
             "Match J2": f"{p2_score:.0%}",
         })
 
+        # v23.10: liberar arrays de simulación en lotes largos.
+        try:
+            del sim, games, games_p1, games_p2
+        except Exception:
+            pass
+        if idx % 3 == 0:
+            gc.collect()
+
         if progress_callback:
             progress_callback(idx, total, f"Analizado {p1_key} vs {p2_key}")
 
+    gc.collect()
     return pd.DataFrame(rows)
 
 
@@ -4760,8 +4791,12 @@ def prepare_batch_display_table(ok_df):
         "Edge",
         "Ganador real",
         "Resultado sets",
+        "Marcador games",
+        "Total games real",
         "Acierta ML modelo",
         "Over 18.5",
+        "Over 18.5 real",
+        "Acierta Over 18.5",
         "Over 19.5",
         "Under 22.5",
         "Jugador gana set",
@@ -4897,7 +4932,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.9 Results Parser")
+    st.header("🎾 Tennis IA v23.12 Results Games")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5447,18 +5482,28 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.9 Results Parser · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.12 Results Games · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
     st.subheader("📋 Analizador por lista pegada")
     st.caption("Pega partidos de Winamax/casa, lista diaria de Sofascore o resultados Sofascore de ayer. Se ignoran dobles/cancelados/retirados.")
+    st.info("Nota: en Sofascore resultados, el ML se valida con ganador real. Si el pegado incluye juegos por set, también valida Over 18.5. En tie-breaks puede contar puntos extra si Sofascore los copia como números separados.")
 
     with st.sidebar:
         surface = st.selectbox("Superficie lista", ["Hard","Clay","Grass"], index=1)
         formato = st.radio("Formato lista", ["ATP Tour (3 sets)", "Grand Slam (5 sets)"])
-        sims_batch = st.select_slider("Simulaciones por partido", [1000,2500,5000,10000], value=2500)
-        max_batch = st.number_input("Máx partidos a analizar", 1, 50, 20, 1)
+        sims_batch = st.select_slider(
+            "Simulaciones por partido",
+            [500, 1000, 2500, 5000],
+            value=1000,
+            help="Para lotes largos usa 500/1000. Para confirmar señales concretas usa el Predictor individual."
+        )
+        max_batch = st.number_input(
+            "Máx partidos a analizar",
+            1, 30, 12, 1,
+            help="Streamlit Cloud tiene memoria limitada. Analiza resultados largos en bloques de 10-15 partidos."
+        )
         formato_pegado = st.radio(
             "Formato pegado",
             ["Casa/Winamax limpio", "Sofascore día", "Sofascore resultados"],
@@ -5469,6 +5514,11 @@ elif modo == "Analizador por lista":
             "Leer cuotas pegadas",
             value=False,
             help="Desactivado = usa solo Jugador A - Jugador B. Más limpio y rápido."
+        )
+        vista_resultados_simple = st.toggle(
+            "Vista simple resultados",
+            value=True,
+            help="En Sofascore resultados muestra solo ML y Over 18.5 para revisar aciertos."
         )
 
     ejemplo = """16:20
@@ -5511,13 +5561,24 @@ Sebastián Baez - Roberto Carballés Baena"""
             preview = []
         st.metric("Partidos detectados", len(preview))
     with crun:
-        st.metric("Simulaciones estimadas", f"{min(len(preview), int(max_batch)) * int(sims_batch):,}")
+        total_est_sims = min(len(preview), int(max_batch)) * int(sims_batch)
+        st.metric("Simulaciones estimadas", f"{total_est_sims:,}")
+        if total_est_sims > 30000:
+            st.warning("Lote pesado para Streamlit Cloud. Mejor baja a 500/1000 sims o analiza menos partidos.")
 
     if preview:
         with st.expander("👀 Vista previa detectada", expanded=True):
-            st.dataframe(pd.DataFrame(preview[:int(max_batch)]), width='stretch', hide_index=True)
+            prev_df = pd.DataFrame(preview[:int(max_batch)])
+            show_cols = [c for c in ["date", "time", "p1_raw", "p2_raw", "p1_sets_real", "p2_sets_real"] if c in prev_df.columns]
+            st.dataframe(prev_df[show_cols] if show_cols else prev_df, width='stretch', hide_index=True)
 
     if st.button("🚀 ANALIZAR LISTA", width='stretch'):
+        # v23.10: liberar resultado anterior antes de un lote nuevo.
+        for _k in ["batch_ok_df", "batch_ko_df", "batch_last_ready"]:
+            if _k in st.session_state:
+                del st.session_state[_k]
+        gc.collect()
+
         if formato_pegado == "Sofascore día":
             parsed = parse_sofascore_paste(raw_batch)[:int(max_batch)]
         elif formato_pegado == "Sofascore resultados":
@@ -5530,6 +5591,12 @@ Sebastián Baez - Roberto Carballés Baena"""
             if not parsed and any(is_date_line_sofa_result(x.strip()) for x in raw_batch.splitlines()):
                 parsed = parse_sofascore_results_paste(raw_batch)
             parsed = parsed[:int(max_batch)]
+
+        # v23.10: seguridad para evitar superar memoria en Cloud.
+        if len(parsed) * int(sims_batch) > 50000:
+            st.error("Lote demasiado pesado para Streamlit Cloud. Baja simulaciones o reduce Máx partidos. Recomendado: 10-15 partidos a 500/1000 sims.")
+            st.stop()
+
         if not parsed:
             st.error("No he detectado partidos. Si pegaste Sofascore, selecciona Formato pegado → Sofascore día, o deja que lo autodetecte con líneas de hora tipo 16:20.")
             st.stop()
@@ -5590,6 +5657,25 @@ Sebastián Baez - Roberto Carballés Baena"""
             ok["_edge_sort"] = ok["Edge"].apply(_edge_num) if "Edge" in ok.columns else -999
             ok["_rec_sort"] = ok["Recomendación"].astype(str).apply(lambda x: max([v for k,v in rec_order.items() if k in x] or [0]))
             ok = ok.sort_values(["_rec_sort","_edge_sort"], ascending=[False, False]).drop(columns=["_edge_sort","_rec_sort"], errors="ignore")
+
+            # v23.11: vista simple para backtest de resultados.
+            if formato_pegado == "Sofascore resultados" and vista_resultados_simple:
+                simple_cols = [
+                    "Fecha",
+                    "Partido",
+                    "Favorito modelo",
+                    "ML favorito",
+                    "Ganador real",
+                    "Resultado sets",
+                    "Acierta ML modelo",
+                    "Over 18.5",
+                    "Over 18.5 real",
+                    "Acierta Over 18.5",
+                    "Signal Trust",
+                    "Recomendación",
+                    "Riesgos"
+                ]
+                ok = ok[[c for c in simple_cols if c in ok.columns]]
 
             # v23.5: guardar resultado para que descargar Excel/CSV no limpie pantalla tras rerun.
             st.session_state["batch_ok_df"] = ok
