@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.6 No Encontrados", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.7 Name Match Fix", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.6"
-QUALITY_ENGINE_VERSION = "v23.6-notfound-export-2026-05-12"
+APP_VERSION = "v23.7"
+QUALITY_ENGINE_VERSION = "v23.7-name-match-fix-2026-05-12"
 
 # =========================================================
 # TENNIS IA v15
@@ -4144,7 +4144,7 @@ def parse_sofascore_paste(raw_text):
                 doubles_match = True
                 break
 
-            if looks_like_player_line_sofa(ln):
+            if looks_like_player_line_sofa(ln) and not is_pending_opponent_name(ln) and not is_country_like_name(ln):
                 candidates.append(ln)
 
             j += 1
@@ -4168,6 +4168,9 @@ def parse_sofascore_paste(raw_text):
     return matches
 
 def find_player_in_db(name, db):
+    if is_pending_opponent_name(name) or is_country_like_name(name):
+        return None, 0.0
+
     target = normalizar_texto(name).lower()
     target_clean = limpiar(name).lower()
     best_key = None
@@ -4176,19 +4179,30 @@ def find_player_in_db(name, db):
     for key in db.keys():
         k1 = normalizar_texto(key).lower()
         k2 = limpiar(key).lower()
+
         score = max(
             SequenceMatcher(None, target, k1).ratio(),
-            SequenceMatcher(None, target_clean, k2).ratio()
+            SequenceMatcher(None, target_clean, k2).ratio(),
+            abbreviation_player_score(name, key)
         )
 
         # Bonus apellido+inicial en ambos sentidos.
-        tparts = [p for p in re.split(r"\s+", target_clean) if p]
+        tparts = [p for p in re.split(r"\s+", target_clean.replace(".", " ")) if p]
         kparts = [p for p in re.split(r"\s+", k2) if p]
         if len(tparts) >= 2 and len(kparts) >= 2:
-            if tparts[-1] == kparts[-1] and tparts[0][0] == kparts[0][0]:
+            # "C Ruud" vs "Casper Ruud"
+            t_initial = len(tparts[0]) == 1 and kparts[0].startswith(tparts[0])
+            same_last = tparts[-1] == kparts[-1]
+            if t_initial and same_last:
+                score = max(score, 0.97)
+            elif same_last:
+                score = max(score, 0.88)
+
+            # Apellidos compuestos.
+            t_surname = " ".join(tparts[1:]) if len(tparts[0]) == 1 else " ".join(tparts[1:])
+            k_surname = " ".join(kparts[1:])
+            if t_initial and t_surname and (t_surname in k_surname or k_surname in t_surname):
                 score = max(score, 0.96)
-            elif tparts[-1] == kparts[-1]:
-                score = max(score, 0.86)
 
         if score > best_score:
             best_score = score
@@ -4196,9 +4210,10 @@ def find_player_in_db(name, db):
 
     return best_key, best_score
 
-
-
 def find_player_candidates_in_db(name, db, top_n=5):
+    if is_pending_opponent_name(name) or is_country_like_name(name):
+        return [{"candidate": "Rival pendiente / país detectado", "score": 0.0, "reason": "no analizable"}]
+
     target = normalizar_texto(name).lower()
     target_clean = limpiar(name).lower()
     rows = []
@@ -4208,26 +4223,34 @@ def find_player_candidates_in_db(name, db, top_n=5):
         k2 = limpiar(key).lower()
         score = max(
             SequenceMatcher(None, target, k1).ratio(),
-            SequenceMatcher(None, target_clean, k2).ratio()
+            SequenceMatcher(None, target_clean, k2).ratio(),
+            abbreviation_player_score(name, key)
         )
 
-        tparts = [p for p in re.split(r"\s+", target_clean) if p]
+        tparts = [p for p in re.split(r"\s+", target_clean.replace(".", " ")) if p]
         kparts = [p for p in re.split(r"\s+", k2) if p]
 
         reason = "fuzzy"
         if len(tparts) >= 2 and len(kparts) >= 2:
-            if tparts[-1] == kparts[-1] and tparts[0][0] == kparts[0][0]:
+            t_initial = len(tparts[0]) == 1 and kparts[0].startswith(tparts[0])
+            same_last = tparts[-1] == kparts[-1]
+            t_surname = " ".join(tparts[1:]) if len(tparts[0]) == 1 else " ".join(tparts[1:])
+            k_surname = " ".join(kparts[1:])
+
+            if t_initial and same_last:
+                score = max(score, 0.97)
+                reason = "inicial+apellido"
+            elif t_initial and t_surname and (t_surname in k_surname or k_surname in t_surname):
                 score = max(score, 0.96)
-                reason = "apellido+inicial"
-            elif tparts[-1] == kparts[-1]:
-                score = max(score, 0.86)
+                reason = "inicial+apellido compuesto"
+            elif same_last:
+                score = max(score, 0.88)
                 reason = "apellido"
 
         rows.append({"candidate": key, "score": score, "reason": reason})
 
     rows = sorted(rows, key=lambda x: x["score"], reverse=True)[:top_n]
     return rows
-
 
 def enrich_not_found_with_suggestions(ko_df, db):
     if ko_df is None or ko_df.empty:
@@ -4294,7 +4317,8 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         p1_key, p1_score = find_player_in_db(m["p1_raw"], db)
         p2_key, p2_score = find_player_in_db(m["p2_raw"], db)
 
-        if not p1_key or not p2_key or p1_score < 0.72 or p2_score < 0.72:
+        # v23.7: aceptar inicial+apellido/apellidos compuestos desde Sofascore aunque el fuzzy bruto sea menor.
+        if not p1_key or not p2_key or p1_score < 0.66 or p2_score < 0.66:
             rows.append({
                 "Hora": m.get("time", ""),
                 "Partido": f"{m['p1_raw']} vs {m['p2_raw']}",
@@ -4610,7 +4634,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.6 No Encontrados")
+    st.header("🎾 Tennis IA v23.7 Name Match Fix")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5160,7 +5184,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.6 No Encontrados · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.7 Name Match Fix · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
