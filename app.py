@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.7.1 Name Match Hotfix", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.8 Name Match Strong", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.7.1"
-QUALITY_ENGINE_VERSION = "v23.7.1-name-match-hotfix-2026-05-12"
+APP_VERSION = "v23.8"
+QUALITY_ENGINE_VERSION = "v23.8-name-match-strong-2026-05-12"
 
 # =========================================================
 # TENNIS IA v15
@@ -4106,32 +4106,38 @@ def is_pending_opponent_name(name):
     t = normalizar_texto(name).lower().strip()
     if not t:
         return True
+    t = re.sub(r"\s+", "", t)
     if re.match(r"^(qf|sf|f|r\d+|r\d+p\d+|q\d+|w\d+|ll\d+|bye)(p\d+)?$", t):
         return True
     if re.match(r"^r\d+p\d+$", t):
         return True
-    if t in {"qf1","qf2","qf3","qf4","sf1","sf2","winner","qualifier","lucky loser"}:
+    if t in {"qf1","qf2","qf3","qf4","sf1","sf2","winner","qualifier","luckyloser"}:
         return True
     return False
 
 
 def is_country_like_name(name):
     t = normalizar_texto(name).lower().strip()
-    try:
-        if is_country_line_sofa(t):
-            return True
-    except Exception:
-        pass
+    if is_country_line_sofa(t):
+        return True
     country_like = {
         "bosnia & herzegovina", "bosnia and herzegovina", "great britain",
-        "united states", "dominican republic", "south africa", "new zealand"
+        "united states", "dominican republic", "south africa", "new zealand",
+        "estonia", "bosnia", "herzegovina", "moldova", "moldavia", "israel",
+        "ireland", "mexico", "ecuador", "venezuela", "morocco", "egypt",
+        "taiwan", "hong kong", "thailand", "indonesia"
     }
     return t in country_like
 
 
+def name_words_keep_initials(name):
+    # Importante: NO usar limpiar(), porque elimina puntos/espacios y rompe "C. Ruud".
+    t = normalizar_texto(name).lower().replace(".", " ")
+    return [p for p in re.findall(r"[a-z]+", t) if p]
+
+
 def surname_tokens_for_match(name):
-    t = limpiar(name).lower()
-    parts = [p for p in re.split(r"\s+", t) if p]
+    parts = name_words_keep_initials(name)
     if not parts:
         return []
     if len(parts[0]) == 1 and len(parts) >= 2:
@@ -4142,28 +4148,42 @@ def surname_tokens_for_match(name):
 
 
 def abbreviation_player_score(query, full_name):
-    q = limpiar(query).lower().replace(".", " ")
-    f = limpiar(full_name).lower()
-    q_parts = [p for p in re.split(r"\s+", q) if p]
-    f_parts = [p for p in re.split(r"\s+", f) if p]
+    """
+    v23.8:
+    C. Ruud -> Casper Ruud
+    B. Van de Zandschulp -> Botic Van De Zandschulp
+    T. Seyboth Wild -> Thiago Seyboth Wild
+    J. Pinnington Jones -> Jack Pinnington Jones
+    """
+    q_parts = name_words_keep_initials(query)
+    f_parts = name_words_keep_initials(full_name)
     if not q_parts or not f_parts:
         return 0.0
 
+    # Inicial + apellido(s)
     if len(q_parts[0]) == 1 and len(q_parts) >= 2 and len(f_parts) >= 2:
         initial_ok = f_parts[0].startswith(q_parts[0])
         q_surname = " ".join(q_parts[1:])
         f_surname = " ".join(f_parts[1:])
         surname_score = SequenceMatcher(None, q_surname, f_surname).ratio()
+
         q_last = q_parts[-1]
         f_last = f_parts[-1]
         last_score = SequenceMatcher(None, q_last, f_last).ratio()
-        contains_bonus = 0.0
-        if q_surname and (q_surname in f_surname or f_surname in q_surname):
-            contains_bonus = 0.08
+
+        # apellido compuesto exacto/contención
+        if initial_ok and q_surname == f_surname:
+            return 0.99
+        if initial_ok and q_surname and (q_surname in f_surname or f_surname in q_surname):
+            return 0.97
+        if initial_ok and q_last == f_last:
+            return max(0.94, 0.40 + 0.55 * surname_score)
         if initial_ok:
-            return min(0.99, max(0.0, 0.38 + 0.52 * max(surname_score, last_score) + contains_bonus))
+            return min(0.93, 0.38 + 0.55 * max(surname_score, last_score))
+
         return 0.55 * max(surname_score, last_score)
 
+    # Apellido solo o nombre parcial.
     q_surname_tokens = surname_tokens_for_match(query)
     f_surname_tokens = surname_tokens_for_match(full_name)
     if q_surname_tokens and f_surname_tokens:
@@ -4175,7 +4195,7 @@ def abbreviation_player_score(query, full_name):
             return 0.88
         return 0.70 * SequenceMatcher(None, qs, fs).ratio()
 
-    return 0.0
+    return SequenceMatcher(None, " ".join(q_parts), " ".join(f_parts)).ratio() * 0.75
 
 
 def parse_sofascore_paste(raw_text):
@@ -4208,9 +4228,14 @@ def parse_sofascore_paste(raw_text):
             ln = raw_lines[j].strip()
             low = normalizar_texto(ln).lower()
 
-            if ln == "-" or is_country_line_sofa(ln):
+            if ln == "-" or is_country_line_sofa(ln) or is_country_like_name(ln):
                 j += 1
                 continue
+
+            # Si aparece rival pendiente dentro del partido, ignorar esta hora entera.
+            if is_pending_opponent_name(ln):
+                doubles_match = True
+                break
 
             # Si justo después de la hora aparecen metadatos de torneo, cortar.
             if len(candidates) == 0 and is_sofa_meta_line(ln):
@@ -4221,7 +4246,7 @@ def parse_sofascore_paste(raw_text):
                 doubles_match = True
                 break
 
-            if looks_like_player_line_sofa(ln) and not is_pending_opponent_name(ln) and not is_country_like_name(ln):
+            if looks_like_player_line_sofa(ln) and not is_country_like_name(ln):
                 candidates.append(ln)
 
             j += 1
@@ -4264,8 +4289,8 @@ def find_player_in_db(name, db):
         )
 
         # Bonus apellido+inicial en ambos sentidos.
-        tparts = [p for p in re.split(r"\s+", target_clean.replace(".", " ")) if p]
-        kparts = [p for p in re.split(r"\s+", k2) if p]
+        tparts = name_words_keep_initials(name)
+        kparts = name_words_keep_initials(key)
         if len(tparts) >= 2 and len(kparts) >= 2:
             # "C Ruud" vs "Casper Ruud"
             t_initial = len(tparts[0]) == 1 and kparts[0].startswith(tparts[0])
@@ -4304,8 +4329,8 @@ def find_player_candidates_in_db(name, db, top_n=5):
             abbreviation_player_score(name, key)
         )
 
-        tparts = [p for p in re.split(r"\s+", target_clean.replace(".", " ")) if p]
-        kparts = [p for p in re.split(r"\s+", k2) if p]
+        tparts = name_words_keep_initials(name)
+        kparts = name_words_keep_initials(key)
 
         reason = "fuzzy"
         if len(tparts) >= 2 and len(kparts) >= 2:
@@ -4711,7 +4736,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.7.1 Name Match Hotfix")
+    st.header("🎾 Tennis IA v23.8 Name Match Strong")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5261,7 +5286,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.7.1 Name Match Hotfix · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.8 Name Match Strong · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
