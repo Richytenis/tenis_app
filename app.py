@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.35 Visual Games", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.36 Progress UX", page_icon="🎾", layout="wide")
 
 APP_VERSION = "v22.27"
-QUALITY_ENGINE_VERSION = "v22.35-visual-games-2026-05-11"
+QUALITY_ENGINE_VERSION = "v22.36-progress-ux-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -2572,8 +2572,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "p1_wins_set_any": 0, "p2_wins_set_any": 0
     }
 
-    # v22.34: menos llamadas a Streamlit durante la simulación = más rápido
-    progress_step = max(1, n // 25)
+    # v22.36: progreso más suave sin saturar Streamlit
+    progress_step = max(1, min(250, n // 40))
 
     if progress_callback is not None:
         try:
@@ -3890,7 +3890,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.35 Visual Games")
+    st.header("🎾 Tennis IA v22.36 Progress UX")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3903,18 +3903,22 @@ with st.sidebar:
 # UX Progress Engine: carga visible de datos
 # =========================================================
 
-load_status = st.status("🔄 Cargando datos del modelo...", expanded=False)
+load_status = st.status("🔄 Preparando datos del modelo...", expanded=False)
 with load_status:
-    load_bar = st.progress(0, text="Preparando lectura de ficheros...")
-    load_bar.progress(15, text="Leyendo Elo, stats y fatiga...")
+    st.caption("Fase 1/3 · Leyendo jugadores, Elo, stats y fatiga. Si es la primera carga puede tardar.")
+    load_bar = st.progress(5, text="Fase 1/3 · Cargando base de jugadores...")
     db = cargar_datos(circuito)
-    load_bar.progress(70, text="Construyendo Match Count / QualityMap...")
+
+    load_bar.progress(65, text="Fase 2/3 · Cargando Match Count / QualityMap...")
+    st.caption("Fase 2/3 · Integrando históricos ATP + Challenger/Qualy.")
     try:
         qm_preview = crear_quality_map(circuito)
         q_players = qm_preview.get("_meta", {}).get("raw_player_count", "?") if isinstance(qm_preview, dict) else "?"
     except Exception:
         q_players = "?"
-    load_bar.progress(100, text=f"Datos listos · jugadores={len(db)} · quality players={q_players}")
+
+    load_bar.progress(100, text=f"Fase 3/3 · Datos listos · jugadores={len(db)} · quality players={q_players}")
+    st.caption("✅ Datos preparados. Las siguientes cargas deberían ir más rápido por caché.")
 
 load_status.update(label=f"✅ Datos listos · {len(db)} jugadores cargados", state="complete", expanded=False)
 
@@ -3957,24 +3961,42 @@ if modo == "Predictor":
         best_of = 5 if "5" in formato else 3
         if sims >= 10000:
             st.warning("🎯 Modo preciso: puede tardar bastante en Streamlit Cloud. Para pruebas rápidas usa 2.500 o 5.000 sims.")
-        sim_status = st.status(f"🎲 Simulando {sims:,} partidos Monte Carlo...", expanded=True)
+        sim_status = st.status(f"🎲 Preparando simulación Monte Carlo...", expanded=True)
         with sim_status:
-            sim_bar = st.progress(0, text="Preparando motores de simulación...")
+            sim_bar = st.progress(1, text="Fase 1/2 · Preparando engines...")
             sim_msg = st.empty()
             sim_start = time.time()
-            sim_bar.progress(0.01, text=f"Preparando simulación · 0 / {sims:,}")
-            sim_msg.caption("Inicializando hold/return, fatiga, rating sanity y mercados...")
+            sim_msg.caption("Calculando hold/return, fatiga, rating sanity, clay engines y contexto...")
+
+            last_ui_update = {"t": 0.0}
 
             def update_sim_progress(done, total):
-                pct = min(1.0, max(0.01, done / total)) if total else 1.0
                 elapsed = max(0.001, time.time() - sim_start)
+
+                if done <= 0:
+                    sim_bar.progress(3, text=f"Fase 1/2 · Preparando engines · 0 / {total:,}")
+                    sim_msg.caption("Aún no ha empezado el bucle Monte Carlo; esto es normal.")
+                    return
+
+                # Limitar repintados: suficiente para parecer vivo, sin ralentizar demasiado.
+                now = time.time()
+                if done < total and (now - last_ui_update["t"]) < 0.20:
+                    return
+                last_ui_update["t"] = now
+
+                pct_float = min(1.0, max(0.03, done / total)) if total else 1.0
+                pct_int = int(round(pct_float * 100))
                 rate = done / elapsed if done else 0
                 eta = (total - done) / rate if rate > 0 else 0
+
                 sim_bar.progress(
-                    pct,
-                    text=f"Simulando {done:,} / {total:,} ({pct:.0%}) · {elapsed:.1f}s · ETA {eta:.1f}s"
+                    pct_int,
+                    text=f"Fase 2/2 · Monte Carlo {done:,} / {total:,} ({pct_int}%) · {elapsed:.1f}s · ETA {eta:.1f}s"
                 )
-                sim_msg.caption(f"Último lote procesado: {done:,} simulaciones")
+                sim_msg.caption(f"Simulando partidos... último lote procesado: {done:,}")
+
+            # Primer repintado antes de entrar al cálculo pesado.
+            update_sim_progress(0, sims)
 
             sim = sim_match(
                 d1, d2, surface, circuito, best_of, sims,
@@ -3982,8 +4004,8 @@ if modo == "Predictor":
                 progress_callback=update_sim_progress
             )
             total_elapsed = time.time() - sim_start
-            sim_bar.progress(1.0, text=f"Simulación completada · {sims:,} partidos · {total_elapsed:.1f}s")
-            sim_msg.caption("Resultados listos para pintar en pantalla.")
+            sim_bar.progress(100, text=f"Simulación completada · {sims:,} partidos · {total_elapsed:.1f}s")
+            sim_msg.caption("✅ Resultados listos para pintar en pantalla.")
 
         sim_status.update(label=f"✅ Simulación completada · {sims:,} partidos", state="complete", expanded=False)
 
@@ -4418,7 +4440,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.35 Visual Games · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.36 Progress UX · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
