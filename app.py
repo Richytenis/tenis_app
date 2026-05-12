@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.12 Results Games", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.13 Validation Fix", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.12"
-QUALITY_ENGINE_VERSION = "v23.12-results-games-2026-05-12"
+APP_VERSION = "v23.13"
+QUALITY_ENGINE_VERSION = "v23.13-validation-fix-2026-05-12"
 
 # =========================================================
 # TENNIS IA v15
@@ -4677,13 +4677,18 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
                 ) else "No" if m.get("actual_winner_side") in [1,2] else ""
             ),
             "Over 18.5 real": (
-                "Sí" if m.get("actual_total_games") is not None and m.get("actual_total_games") > 18.5
-                else "No" if m.get("actual_total_games") is not None
+                "Sí" if m.get("actual_total_games", None) is not None and float(m.get("actual_total_games")) > 18.5
+                else "No" if m.get("actual_total_games", None) is not None
                 else "N/D"
             ),
             "Acierta Over 18.5": (
-                "Sí" if m.get("actual_total_games") is not None and ((over18 >= 0.50) == (m.get("actual_total_games") > 18.5))
+                "Sí" if m.get("actual_total_games", None) is not None and ((over18 >= 0.50) == (float(m.get("actual_total_games")) > 18.5))
+                else "No" if m.get("actual_total_games", None) is not None and ((over18 >= 0.50) != (float(m.get("actual_total_games")) > 18.5))
                 else "N/D"
+            ),
+            "Resultado válido": (
+                "Sí" if m.get("p1_sets_real") in [0,1,2] and m.get("p2_sets_real") in [0,1,2] and m.get("p1_sets_real") != m.get("p2_sets_real")
+                else "Revisar"
             ),
             "Riesgos": rationale,
             "Match J1": f"{p1_score:.0%}",
@@ -4932,7 +4937,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.12 Results Games")
+    st.header("🎾 Tennis IA v23.13 Validation Fix")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5482,7 +5487,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.12 Results Games · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.13 Validation Fix · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
