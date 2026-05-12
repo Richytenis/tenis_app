@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.7 Name Match Fix", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.7.1 Name Match Hotfix", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.7"
-QUALITY_ENGINE_VERSION = "v23.7-name-match-fix-2026-05-12"
+APP_VERSION = "v23.7.1"
+QUALITY_ENGINE_VERSION = "v23.7.1-name-match-hotfix-2026-05-12"
 
 # =========================================================
 # TENNIS IA v15
@@ -4101,6 +4101,83 @@ def looks_like_player_line_sofa(x):
     return bool(re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", s))
 
 
+
+def is_pending_opponent_name(name):
+    t = normalizar_texto(name).lower().strip()
+    if not t:
+        return True
+    if re.match(r"^(qf|sf|f|r\d+|r\d+p\d+|q\d+|w\d+|ll\d+|bye)(p\d+)?$", t):
+        return True
+    if re.match(r"^r\d+p\d+$", t):
+        return True
+    if t in {"qf1","qf2","qf3","qf4","sf1","sf2","winner","qualifier","lucky loser"}:
+        return True
+    return False
+
+
+def is_country_like_name(name):
+    t = normalizar_texto(name).lower().strip()
+    try:
+        if is_country_line_sofa(t):
+            return True
+    except Exception:
+        pass
+    country_like = {
+        "bosnia & herzegovina", "bosnia and herzegovina", "great britain",
+        "united states", "dominican republic", "south africa", "new zealand"
+    }
+    return t in country_like
+
+
+def surname_tokens_for_match(name):
+    t = limpiar(name).lower()
+    parts = [p for p in re.split(r"\s+", t) if p]
+    if not parts:
+        return []
+    if len(parts[0]) == 1 and len(parts) >= 2:
+        return parts[1:]
+    if len(parts) >= 2:
+        return parts[1:]
+    return parts
+
+
+def abbreviation_player_score(query, full_name):
+    q = limpiar(query).lower().replace(".", " ")
+    f = limpiar(full_name).lower()
+    q_parts = [p for p in re.split(r"\s+", q) if p]
+    f_parts = [p for p in re.split(r"\s+", f) if p]
+    if not q_parts or not f_parts:
+        return 0.0
+
+    if len(q_parts[0]) == 1 and len(q_parts) >= 2 and len(f_parts) >= 2:
+        initial_ok = f_parts[0].startswith(q_parts[0])
+        q_surname = " ".join(q_parts[1:])
+        f_surname = " ".join(f_parts[1:])
+        surname_score = SequenceMatcher(None, q_surname, f_surname).ratio()
+        q_last = q_parts[-1]
+        f_last = f_parts[-1]
+        last_score = SequenceMatcher(None, q_last, f_last).ratio()
+        contains_bonus = 0.0
+        if q_surname and (q_surname in f_surname or f_surname in q_surname):
+            contains_bonus = 0.08
+        if initial_ok:
+            return min(0.99, max(0.0, 0.38 + 0.52 * max(surname_score, last_score) + contains_bonus))
+        return 0.55 * max(surname_score, last_score)
+
+    q_surname_tokens = surname_tokens_for_match(query)
+    f_surname_tokens = surname_tokens_for_match(full_name)
+    if q_surname_tokens and f_surname_tokens:
+        qs = " ".join(q_surname_tokens)
+        fs = " ".join(f_surname_tokens)
+        if qs == fs:
+            return 0.94
+        if qs in fs or fs in qs:
+            return 0.88
+        return 0.70 * SequenceMatcher(None, qs, fs).ratio()
+
+    return 0.0
+
+
 def parse_sofascore_paste(raw_text):
     """
     v23.4 parser Sofascore robusto.
@@ -4634,7 +4711,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.7 Name Match Fix")
+    st.header("🎾 Tennis IA v23.7.1 Name Match Hotfix")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5184,7 +5261,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.7 Name Match Fix · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.7.1 Name Match Hotfix · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
