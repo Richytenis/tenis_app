@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.4 Sofascore Hotfix", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.6 No Encontrados", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.4"
-QUALITY_ENGINE_VERSION = "v23.4-sofascore-hotfix-2026-05-12"
+APP_VERSION = "v23.6"
+QUALITY_ENGINE_VERSION = "v23.6-notfound-export-2026-05-12"
 
 # =========================================================
 # TENNIS IA v15
@@ -4197,6 +4197,73 @@ def find_player_in_db(name, db):
     return best_key, best_score
 
 
+
+def find_player_candidates_in_db(name, db, top_n=5):
+    target = normalizar_texto(name).lower()
+    target_clean = limpiar(name).lower()
+    rows = []
+
+    for key in db.keys():
+        k1 = normalizar_texto(key).lower()
+        k2 = limpiar(key).lower()
+        score = max(
+            SequenceMatcher(None, target, k1).ratio(),
+            SequenceMatcher(None, target_clean, k2).ratio()
+        )
+
+        tparts = [p for p in re.split(r"\s+", target_clean) if p]
+        kparts = [p for p in re.split(r"\s+", k2) if p]
+
+        reason = "fuzzy"
+        if len(tparts) >= 2 and len(kparts) >= 2:
+            if tparts[-1] == kparts[-1] and tparts[0][0] == kparts[0][0]:
+                score = max(score, 0.96)
+                reason = "apellido+inicial"
+            elif tparts[-1] == kparts[-1]:
+                score = max(score, 0.86)
+                reason = "apellido"
+
+        rows.append({"candidate": key, "score": score, "reason": reason})
+
+    rows = sorted(rows, key=lambda x: x["score"], reverse=True)[:top_n]
+    return rows
+
+
+def enrich_not_found_with_suggestions(ko_df, db):
+    if ko_df is None or ko_df.empty:
+        return ko_df
+
+    out = ko_df.copy()
+    suggestions = []
+    scores = []
+    reasons = []
+
+    for _, row in out.iterrows():
+        raw_match = str(row.get("Partido", ""))
+        parts = raw_match.split(" vs ")
+        raw_names = [p.strip() for p in parts if p.strip()]
+
+        cand_bits = []
+        score_bits = []
+        reason_bits = []
+
+        for nm in raw_names:
+            cands = find_player_candidates_in_db(nm, db, top_n=3)
+            if cands:
+                best = cands[0]
+                cand_bits.append(f"{nm} → {best['candidate']}")
+                score_bits.append(f"{best['score']:.0%}")
+                reason_bits.append(best["reason"])
+
+        suggestions.append(" | ".join(cand_bits))
+        scores.append(" | ".join(score_bits))
+        reasons.append(" | ".join(reason_bits))
+
+    out["Sugerencia"] = suggestions
+    out["Score sugerencia"] = scores
+    out["Tipo sugerencia"] = reasons
+    return out
+
 def batch_pick_label(sim, over18, over19, over20, over22, under22, p1_name, p2_name):
     p1c, p2c = sim.get("p1_cal", 0.5), sim.get("p2_cal", 0.5)
     fav_name = p1_name if p1c >= p2c else p2_name
@@ -4500,12 +4567,50 @@ def batch_excel_bytes(df):
     output.seek(0)
     return output.getvalue()
 
+
+def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        ok_sheet = ok_df.copy() if ok_df is not None else pd.DataFrame()
+        ko_sheet = enrich_not_found_with_suggestions(ko_df, db) if ko_df is not None and not ko_df.empty else pd.DataFrame()
+
+        ok_sheet.to_excel(writer, index=False, sheet_name="Analisis")
+        if not ko_sheet.empty:
+            ko_sheet.to_excel(writer, index=False, sheet_name="No encontrados")
+
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        header_fill = PatternFill("solid", fgColor="1F4E78")
+        header_font = Font(color="FFFFFF", bold=True)
+        thin = Side(style="thin", color="D9E2F3")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        for ws in writer.book.worksheets:
+            ws.freeze_panes = "A2"
+            ws.auto_filter.ref = ws.dimensions
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+                cell.border = border
+            for row in ws.iter_rows(min_row=2):
+                for cell in row:
+                    cell.border = border
+                    cell.alignment = Alignment(vertical="center", wrap_text=False)
+
+            for col_cells in ws.columns:
+                letter = col_cells[0].column_letter
+                max_len = max([len(str(c.value)) if c.value is not None else 0 for c in col_cells] + [10])
+                ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 42)
+
+    output.seek(0)
+    return output.getvalue()
+
 # =========================================================
 # UI
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.4 Sofascore Hotfix")
+    st.header("🎾 Tennis IA v23.6 No Encontrados")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5055,7 +5160,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.4 Sofascore Hotfix · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.6 No Encontrados · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
@@ -5191,30 +5296,68 @@ Sebastián Baez - Roberto Carballés Baena"""
             ok["_rec_sort"] = ok["Recomendación"].astype(str).apply(lambda x: max([v for k,v in rec_order.items() if k in x] or [0]))
             ok = ok.sort_values(["_rec_sort","_edge_sort"], ascending=[False, False]).drop(columns=["_edge_sort","_rec_sort"], errors="ignore")
 
-            st.dataframe(ok, width='stretch', hide_index=True)
+            # v23.5: guardar resultado para que descargar Excel/CSV no limpie pantalla tras rerun.
+            st.session_state["batch_ok_df"] = ok
+            st.session_state["batch_ko_df"] = ko
+            st.session_state["batch_last_ready"] = True
+
+        else:
+            st.warning("No se pudo analizar ningún partido.")
+            st.session_state["batch_ok_df"] = pd.DataFrame()
+            st.session_state["batch_ko_df"] = ko
+            st.session_state["batch_last_ready"] = True
+
+    # v23.5: render persistente fuera del botón. Así los downloads no borran la tabla.
+    if st.session_state.get("batch_last_ready", False):
+        ok_saved = st.session_state.get("batch_ok_df", pd.DataFrame())
+        ko_saved = st.session_state.get("batch_ko_df", pd.DataFrame())
+
+        if ok_saved is not None and not ok_saved.empty:
+            st.divider()
+            st.subheader("🔥 Resumen ordenado")
+            st.dataframe(ok_saved, width='stretch', hide_index=True)
 
             dl1, dl2 = st.columns(2)
             with dl1:
                 st.download_button(
                     "⬇️ Descargar CSV",
-                    data=ok.to_csv(index=False).encode("utf-8-sig"),
+                    data=ok_saved.to_csv(index=False).encode("utf-8-sig"),
                     file_name="analisis_lista_tennis_ia.csv",
-                    mime="text/csv"
+                    mime="text/csv",
+                    key="download_batch_csv"
                 )
             with dl2:
                 st.download_button(
                     "📊 Descargar Excel",
-                    data=batch_excel_bytes(ok),
+                    data=batch_excel_with_not_found_bytes(ok_saved, ko_saved, db),
                     file_name="analisis_lista_tennis_ia.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_batch_excel"
                 )
-        else:
-            st.warning("No se pudo analizar ningún partido.")
 
-        if not ko.empty:
+        if ko_saved is not None and not ko_saved.empty:
             st.divider()
             st.subheader("⚠️ No encontrados / revisar nombres")
-            st.dataframe(ko, width='stretch', hide_index=True)
+            ko_view = enrich_not_found_with_suggestions(ko_saved, db)
+            st.dataframe(ko_view, width='stretch', hide_index=True)
+
+            nf1, nf2 = st.columns(2)
+            with nf1:
+                st.download_button(
+                    "⬇️ Descargar no encontrados CSV",
+                    data=ko_view.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="no_encontrados_tennis_ia.csv",
+                    mime="text/csv",
+                    key="download_not_found_csv"
+                )
+            with nf2:
+                st.download_button(
+                    "📊 Descargar no encontrados Excel",
+                    data=batch_excel_bytes(ko_view),
+                    file_name="no_encontrados_tennis_ia.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_not_found_excel"
+                )
 
 
 elif modo == "Validador histórico":
