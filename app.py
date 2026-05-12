@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v22.34 Fast Mode", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v22.35 Visual Games", page_icon="🎾", layout="wide")
 
 APP_VERSION = "v22.27"
-QUALITY_ENGINE_VERSION = "v22.34-fast-mode-2026-05-11"
+QUALITY_ENGINE_VERSION = "v22.35-visual-games-2026-05-11"
 
 # =========================================================
 # TENNIS IA v15
@@ -2559,6 +2559,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
 
     res = {
         "p1": 0, "p2": 0, "set3": 0, "tb": 0, "games": [],
+        # v22.35: juegos esperados por jugador
+        "games_p1": [], "games_p2": [],
         "p1_fs": 0, "p2_fs": 0,
         "fav_under22": 0, "dog_over20": 0,
         "fav_2_0": 0, "dog_wins_set": 0, "long_match": 0,
@@ -2581,6 +2583,7 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
 
     for sim_i in range(n):
         sets1 = sets2 = games = 0
+        games_p1 = games_p2 = 0
         tb_seen = False
         first_done = False
         shift = np.random.normal(0, vol)
@@ -2592,6 +2595,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
             )
 
             games += g1 + g2
+            games_p1 += g1
+            games_p2 += g2
 
             if tb:
                 tb_seen = True
@@ -2656,6 +2661,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
             res["long_match"] += 1
 
         res["games"].append(games)
+        res["games_p1"].append(games_p1)
+        res["games_p2"].append(games_p2)
 
         if progress_callback is not None and ((sim_i + 1) % progress_step == 0 or (sim_i + 1) == n):
             try:
@@ -2805,6 +2812,8 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "dog_wins_set": dogset,
         "long_match": longm,
         "games": res["games"],
+        "games_p1": res["games_p1"],
+        "games_p2": res["games_p2"],
         "hold1": hold1,
         "hold2": hold2,
         "raw_hold1": raw1,
@@ -3881,7 +3890,7 @@ def render_betting_filters(filters):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v22.34 Fast Mode")
+    st.header("🎾 Tennis IA v22.35 Visual Games")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -3987,6 +3996,13 @@ if modo == "Predictor":
         p1, p2, p1c, p2c = sim["p1"], sim["p2"], sim["p1_cal"], sim["p2_cal"]
         games = sim["games"]
         avg_games, med_games = np.mean(games), np.median(games)
+        games_p1 = sim.get("games_p1", [])
+        games_p2 = sim.get("games_p2", [])
+        avg_g1 = float(np.mean(games_p1)) if len(games_p1) else 0.0
+        avg_g2 = float(np.mean(games_p2)) if len(games_p2) else 0.0
+        med_g1 = float(np.median(games_p1)) if len(games_p1) else 0.0
+        med_g2 = float(np.median(games_p2)) if len(games_p2) else 0.0
+        game_diff = avg_g1 - avg_g2
         over18_raw = sum(x > 18.5 for x in games)/sims
         over19_raw = sum(x > 19.5 for x in games)/sims
         over20_raw = sum(x > 20.5 for x in games)/sims
@@ -4029,7 +4045,7 @@ if modo == "Predictor":
         with fs2: st.metric(f"{d2['Player']} gana", f"{sim['p2_fs']:.1%}", nivel(sim["p2_fs"]))
 
         st.divider()
-        st.subheader("📊 Mercados")
+        st.subheader("📊 Mercados principales")
         m1,m2,m3,m4,m5 = st.columns(5)
         with m1: st.metric("Over 18.5", f"{over18:.1%}", nivel(over18))
         with m2: st.metric("Over 19.5", f"{over19:.1%}", nivel(over19))
@@ -4037,17 +4053,42 @@ if modo == "Predictor":
         with m4: st.metric("Over 22.5", f"{over22:.1%}", nivel(over22))
         with m5: st.metric("Under 22.5", f"{under22:.1%}", nivel(under22))
 
-        e1,e2,e3,e4,e5 = st.columns(5)
+        model_dog_name = sim.get("model_dog_name", "Underdog")
+        e1,e2,e3 = st.columns(3)
         with e1: st.metric("3 sets", f"{sim['set3']:.1%}", nivel(sim["set3"]))
         with e2: st.metric("Tie-break", f"{sim['tb']:.1%}", nivel(sim["tb"]))
-        with e3: st.metric("Underdog gana set", f"{sim['dog_wins_set']:.1%}", nivel(sim["dog_wins_set"]))
-        with e4: st.metric("Favorito 2-0", f"{sim['fav_2_0']:.1%}", nivel(sim["fav_2_0"]))
-        with e5: st.metric("Partido largo", f"{sim['long_match']:.1%}", nivel(sim["long_match"]))
-        st.caption(f"Media games: {avg_games:.1f} · Mediana games: {med_games:.0f}")
+        with e3: st.metric(f"{model_dog_name} gana al menos 1 set", f"{sim['dog_wins_set']:.1%}", nivel(sim["dog_wins_set"]))
+
+        st.subheader("🎮 Juegos esperados")
+        gcol1, gcol2, gcol3, gcol4 = st.columns(4)
+        with gcol1:
+            st.metric(d1["Player"], f"{avg_g1:.1f}", f"Mediana {med_g1:.0f}")
+        with gcol2:
+            st.metric(d2["Player"], f"{avg_g2:.1f}", f"Mediana {med_g2:.0f}")
+        with gcol3:
+            st.metric("Total esperado", f"{avg_games:.1f}", f"Mediana {med_games:.0f}")
+        with gcol4:
+            diff_label = d1["Player"] if game_diff >= 0 else d2["Player"]
+            st.metric("Diferencia juegos", f"{abs(game_diff):.1f}", f"Ventaja {diff_label}")
+
+        st.caption(
+            f"Proyección: {d1['Player']} {avg_g1:.1f} - {avg_g2:.1f} {d2['Player']} · "
+            f"Total medio {avg_games:.1f}"
+        )
         if sim.get("market_cap_notes"):
             st.caption("🧯 Market sanity: " + " · ".join(sim.get("market_cap_notes", [])))
 
         with st.expander("🔧 Ver diagnóstico técnico", expanded=mostrar_debug):
+            st.divider()
+            st.subheader("📋 Mercados derivados")
+            dm1, dm2, dm3 = st.columns(3)
+            with dm1:
+                st.metric(f"{sim.get('model_fav_name','Favorito')} 2-0", f"{sim['fav_2_0']:.1%}", nivel(sim["fav_2_0"]))
+            with dm2:
+                st.metric("Partido largo", f"{sim['long_match']:.1%}", nivel(sim["long_match"]))
+            with dm3:
+                st.metric("Fav + Under 22.5", f"{sim['fav_under22']:.1%}", nivel(sim["fav_under22"]))
+
             st.divider()
             st.subheader("🎾 Hold / Return Engine")
             h1,h2 = st.columns(2)
@@ -4368,8 +4409,8 @@ if modo == "Predictor":
             "Over 19.5": over19, "Over 20.5": over20, "Over 22.5": over22, "Under 22.5": under22,
             "Tie-break": sim["tb"], "Fav + Under 22.5": sim["fav_under22"],
             "Dog + Over 20.5": sim["dog_over20"],
-            "Underdog gana set": sim["dog_wins_set"],
-            "Favorito 2-0": sim["fav_2_0"],
+            f"{sim.get('model_dog_name','Underdog')} gana set": sim["dog_wins_set"],
+            f"{sim.get('model_fav_name','Favorito')} 2-0": sim["fav_2_0"],
             "Partido largo": sim["long_match"]
         }
         best = max(markets.items(), key=lambda x: x[1])
@@ -4377,7 +4418,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v22.34 Fast Mode · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v22.35 Visual Games · {sims:,} simulaciones Monte Carlo")
 
 elif modo == "Validador histórico":
     st.subheader("📚 Validador histórico")
