@@ -5,12 +5,12 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.20 WTA Over 17.5 + Watchlist Tight", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.21 WTA Over17 Export Fix", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.20"
-QUALITY_ENGINE_VERSION = "v23.20-wta-over17-watchlist-tight-2026-05-13"
+APP_VERSION = "v23.21"
+QUALITY_ENGINE_VERSION = "v23.21-wta-over17-export-fix-2026-05-13"
 
-# v23.20: WTA Over 17.5 + Watchlist Tight + Strict Surname Fix.
+# v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 
 # =========================================================
 # TENNIS IA v15
@@ -4867,6 +4867,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Mejor señal": best_label,
             "Prob señal": f"{best_prob:.1%}",
             "WTA Watchlist": wta_watchlist,
+            "Mejor mercado WTA": (best_label if circuito == "WTA" else ""),
             "Signal Trust": trust,
             "Over 17.5": f"{over17:.1%}" if circuito == "WTA" else "",
             "Over 18.5": f"{over18:.1%}",
@@ -5051,6 +5052,7 @@ def prepare_batch_display_table(ok_df):
         "Mejor señal",
         "Prob señal",
         "WTA Watchlist",
+        "Mejor mercado WTA",
         "Signal Trust",
         "Cuota pegada",
         "Jugador cuota",
@@ -5214,7 +5216,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.20 WTA Over 17.5 + Watchlist Tight")
+    st.header("🎾 Tennis IA v23.21 WTA Over17 Export Fix")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5773,7 +5775,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.20 WTA Over 17.5 + Watchlist Tight · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.21 WTA Over17 Export Fix · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
@@ -5809,7 +5811,7 @@ elif modo == "Analizador por lista":
         vista_resultados_simple = st.toggle(
             "Vista simple resultados",
             value=True,
-            help="En Sofascore resultados muestra solo ML y Over 18.5 para revisar aciertos."
+            help="En Sofascore resultados muestra ML, Over 18.5 y, solo en WTA, Over 17.5 para revisar aciertos."
         )
 
     ejemplo = """16:20
@@ -5942,6 +5944,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 "DUDOSA CON VALUE": 3,
                 "DUDOSA": 2,
                 "VALUE NUMÉRICO PERO RIESGO": 1,
+                "WATCHLIST OVER": 1,
                 "NO BET": 0,
             }
 
@@ -5959,9 +5962,14 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "Ganador real",
                     "Resultado sets",
                     "Acierta ML modelo",
+                    "Mejor mercado WTA",
+                    "Over 17.5",
+                    "Over 17.5 real",
+                    "Acierta Over 17.5",
                     "Over 18.5",
                     "Over 18.5 real",
                     "Acierta Over 18.5",
+                    "WTA Watchlist",
                     "Signal Trust",
                     "Recomendación",
                     "Riesgos"
