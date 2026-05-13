@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.21 WTA Over17 Export Fix", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.23 WTA Over17 Priority", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.21"
-QUALITY_ENGINE_VERSION = "v23.21-wta-over17-export-fix-2026-05-13"
+APP_VERSION = "v23.23"
+QUALITY_ENGINE_VERSION = "v23.23-wta-over17-priority-2026-05-13"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 
@@ -3946,6 +3946,17 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         if s["Acción"] in ["APTO fuerte", "APTO"]:
             main = s
             break
+
+    # v23.23 WTA Over17 Priority:
+    # Si no hay APTA clara y el Over 17.5 WTA es alto, lo priorizamos como lectura
+    # conservadora antes que forzar ML u Over 18.5. No convierte la señal en APTA;
+    # sigue saliendo como SPOT DUDOSO si el Signal Trust lo marca como B.
+    if main is None and circuito == "WTA" and surface == "Clay" and over17 >= 0.77:
+        over17_signal = next((x for x in signals if x.get("Mercado") == "Over 17.5"), None)
+        if over17_signal is not None and over17_signal.get("Acción", "").startswith("Solo"):
+            over17_signal["Motivo"] = str(over17_signal.get("Motivo", "")) + " · v23.23: prioridad conservadora Over 17.5"
+            main = over17_signal
+
     if main is None and signals:
         main = signals[0]
 
@@ -4771,6 +4782,17 @@ def batch_pick_label(sim, over17, over18, over19, over20, over22, under22, p1_na
         candidates = adjusted
 
     candidates = [(k, v) for k, v in candidates if v is not None]
+
+    # v23.23 WTA Over17 Priority:
+    # Para WTA Clay, si el 17.5 está alto, se muestra como mejor mercado conservador.
+    # ATP/Challenger no pasan por aquí porque Over 17.5 solo se inserta para WTA.
+    if circuito == "WTA" and surface == "Clay" and over17 is not None:
+        try:
+            if float(over17) >= 0.77 and 0.50 <= float(fav_prob) < 0.75:
+                return "Over 17.5", float(over17)
+        except Exception:
+            pass
+
     label, prob = max(candidates, key=lambda x: x[1])
     return label, float(prob)
 
@@ -4858,6 +4880,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             edge = quoted_odd * quoted_prob_model - 1
 
         rows.append({
+            "Versión app": APP_VERSION,
             "Fecha": m.get("date", ""),
             "Hora": m.get("time", ""),
             "Partido": f"{p1_key} vs {p2_key}",
@@ -4868,6 +4891,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Prob señal": f"{best_prob:.1%}",
             "WTA Watchlist": wta_watchlist,
             "Mejor mercado WTA": (best_label if circuito == "WTA" else ""),
+            "WTA Over17 Priority": ("Sí" if circuito == "WTA" and best_label == "Over 17.5" and over17 >= 0.77 else ""),
             "Signal Trust": trust,
             "Over 17.5": f"{over17:.1%}" if circuito == "WTA" else "",
             "Over 18.5": f"{over18:.1%}",
@@ -5043,6 +5067,7 @@ def prepare_batch_display_table(ok_df):
     df["Recomendación"] = df.apply(batch_recommendation, axis=1)
 
     preferred = [
+        "Versión app",
         "Recomendación",
         "Fecha",
         "Hora",
@@ -5053,6 +5078,7 @@ def prepare_batch_display_table(ok_df):
         "Prob señal",
         "WTA Watchlist",
         "Mejor mercado WTA",
+        "WTA Over17 Priority",
         "Signal Trust",
         "Cuota pegada",
         "Jugador cuota",
@@ -5083,7 +5109,7 @@ def prepare_batch_display_table(ok_df):
 
     # Si no hay WTA, ocultar columnas Over 17.5 para no tocar ATP/Challenger visualmente.
     over17_cols = ["Over 17.5", "Over 17.5 real", "Acierta Over 17.5"]
-    has_over17 = False
+    has_over17 = str(globals().get("circuito", "")).upper().strip() == "WTA"
     for c in over17_cols:
         if c in df.columns and df[c].astype(str).str.strip().replace("nan", "").ne("").any():
             has_over17 = True
@@ -5216,7 +5242,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.21 WTA Over17 Export Fix")
+    st.header("🎾 Tennis IA v23.23 WTA Over17 Priority")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5251,6 +5277,12 @@ load_status.update(label=f"✅ Datos listos · {len(db)} jugadores cargados", st
 if not db:
     st.error("No se encontraron jugadores. Revisa carpetas y archivos.")
     st.stop()
+
+# v23.23: evita que Streamlit conserve tablas/descargas antiguas al cambiar de versión.
+if st.session_state.get("batch_app_version") != APP_VERSION:
+    for _k in ["batch_ok_df", "batch_ko_df", "batch_last_ready"]:
+        st.session_state.pop(_k, None)
+    st.session_state["batch_app_version"] = APP_VERSION
 
 if modo == "Predictor":
     with st.sidebar:
@@ -5775,7 +5807,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.21 WTA Over17 Export Fix · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.23 WTA Over17 Priority · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
@@ -5955,6 +5987,7 @@ Sebastián Baez - Roberto Carballés Baena"""
             # v23.11: vista simple para backtest de resultados.
             if formato_pegado == "Sofascore resultados" and vista_resultados_simple:
                 simple_cols = [
+                    "Versión app",
                     "Fecha",
                     "Partido",
                     "Favorito modelo",
@@ -5963,6 +5996,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "Resultado sets",
                     "Acierta ML modelo",
                     "Mejor mercado WTA",
+                    "WTA Over17 Priority",
                     "Over 17.5",
                     "Over 17.5 real",
                     "Acierta Over 17.5",
@@ -6002,7 +6036,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.download_button(
                     "⬇️ Descargar CSV",
                     data=ok_saved.to_csv(index=False).encode("utf-8-sig"),
-                    file_name="analisis_lista_tennis_ia.csv",
+                    file_name="analisis_lista_tennis_ia_v23_23.csv",
                     mime="text/csv",
                     key="download_batch_csv"
                 )
@@ -6010,7 +6044,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.download_button(
                     "📊 Descargar Excel",
                     data=batch_excel_with_not_found_bytes(ok_saved, ko_saved, db),
-                    file_name="analisis_lista_tennis_ia.xlsx",
+                    file_name="analisis_lista_tennis_ia_v23_23.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="download_batch_excel"
                 )
