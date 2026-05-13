@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.23 WTA Over17 Priority", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.24 Fix Países + Watchlist Label", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.23"
-QUALITY_ENGINE_VERSION = "v23.23-wta-over17-priority-2026-05-13"
+APP_VERSION = "v23.24"
+QUALITY_ENGINE_VERSION = "v23.24-fix-paises-watchlist-label-2026-05-13"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 
@@ -4203,7 +4203,7 @@ def is_time_line_sofa(x):
 
 def is_country_line_sofa(x):
     countries = {
-        "argentina","australia","austria","belgium","bolivia","brazil","canada","chile","china","colombia",
+        "andorra","argentina","australia","austria","belgium","bolivia","brazil","canada","chile","china","colombia",
         "croatia","czechia","denmark","finland","france","georgia","germany","hungary","italy","kazakhstan",
         "latvia","lebanon","lithuania","luxembourg","netherlands","paraguay","peru","portugal","russia","serbia",
         "spain","switzerland","tunisia","united kingdom","uruguay","usa","ukraine","poland","slovakia",
@@ -4272,7 +4272,7 @@ def is_country_like_name(name):
     if is_country_line_sofa(t):
         return True
     country_like = {
-        "bosnia & herzegovina", "bosnia and herzegovina", "great britain",
+        "andorra", "bosnia & herzegovina", "bosnia and herzegovina", "great britain",
         "united states", "dominican republic", "south africa", "new zealand",
         "estonia", "bosnia", "herzegovina", "moldova", "moldavia", "israel",
         "ireland", "mexico", "ecuador", "venezuela", "morocco", "egypt",
@@ -4993,13 +4993,13 @@ def wta_over_watchlist_reason(circuito, surface, fav_prob, over18, over17=None):
         return ""
 
     if over17 >= 0.78 and 0.50 <= fav_prob < 0.64:
-        return "👀 WATCHLIST OVER 17.5: mercado WTA alto con partido igualado"
+        return "👀 OBSERVAR OVER 17.5: mercado WTA alto con partido igualado"
     if over17 >= 0.74 and 0.64 <= fav_prob < 0.72:
-        return "👀 WATCHLIST OVER 17.5: zona ideal favorita 64-72%"
+        return "👀 OBSERVAR OVER 17.5: zona ideal favorita 64-72%"
     if over18 >= 0.68 and 0.64 <= fav_prob < 0.67:
-        return "👀 WATCHLIST OVER 18.5: favorita 64-67%"
+        return "👀 OBSERVAR OVER 18.5: favorita 64-67%"
     if over18 >= 0.66 and 0.68 <= fav_prob < 0.71:
-        return "👀 WATCHLIST OVER 18.5: favorita 68-71%"
+        return "👀 OBSERVAR OVER 18.5: favorita 68-71%"
     return ""
 
 
@@ -5012,7 +5012,11 @@ def batch_recommendation(row):
 
     if "NO BET" in trust:
         if watchlist:
-            return "WATCHLIST OVER"
+            if "17.5" in watchlist:
+                return "OBSERVAR OVER 17.5"
+            if "18.5" in watchlist:
+                return "OBSERVAR OVER 18.5"
+            return "OBSERVAR OVER"
         if edge is not None and edge > 0.06:
             return "VALUE NUMÉRICO PERO RIESGO"
         return "NO BET"
@@ -5183,6 +5187,9 @@ def batch_excel_bytes(df):
                 "DUDOSA": "FFF2CC",
                 "DUDOSA CON VALUE": "FCE4D6",
                 "WATCHLIST OVER": "D9EAD3",
+                "OBSERVAR OVER": "D9EAD3",
+                "OBSERVAR OVER 17.5": "D9EAD3",
+                "OBSERVAR OVER 18.5": "D9EAD3",
                 "NO BET": "F4CCCC",
                 "VALUE NUMÉRICO PERO RIESGO": "FCE4D6",
             }
@@ -5242,7 +5249,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.23 WTA Over17 Priority")
+    st.header("🎾 Tennis IA v23.24 Fix Países + Watchlist Label")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5278,7 +5285,7 @@ if not db:
     st.error("No se encontraron jugadores. Revisa carpetas y archivos.")
     st.stop()
 
-# v23.23: evita que Streamlit conserve tablas/descargas antiguas al cambiar de versión.
+# v23.24: evita que Streamlit conserve tablas/descargas antiguas al cambiar de versión.
 if st.session_state.get("batch_app_version") != APP_VERSION:
     for _k in ["batch_ok_df", "batch_ko_df", "batch_last_ready"]:
         st.session_state.pop(_k, None)
@@ -5807,7 +5814,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.23 WTA Over17 Priority · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.24 Fix Países + Watchlist Label · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
@@ -6036,7 +6043,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.download_button(
                     "⬇️ Descargar CSV",
                     data=ok_saved.to_csv(index=False).encode("utf-8-sig"),
-                    file_name="analisis_lista_tennis_ia_v23_23.csv",
+                    file_name="analisis_lista_tennis_ia_v23_24.csv",
                     mime="text/csv",
                     key="download_batch_csv"
                 )
@@ -6044,7 +6051,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.download_button(
                     "📊 Descargar Excel",
                     data=batch_excel_with_not_found_bytes(ok_saved, ko_saved, db),
-                    file_name="analisis_lista_tennis_ia_v23_23.xlsx",
+                    file_name="analisis_lista_tennis_ia_v23_24.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="download_batch_excel"
                 )
