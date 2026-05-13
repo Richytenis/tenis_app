@@ -5,10 +5,12 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.16 WTA Over Recovery", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.17 WTA Over Soft Recovery", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.16"
-QUALITY_ENGINE_VERSION = "v23.16-wta-over-recovery-2026-05-13"
+APP_VERSION = "v23.17"
+QUALITY_ENGINE_VERSION = "v23.17-wta-over-soft-recovery-fix-nombres-2026-05-13"
+
+# v23.17: Soft Recovery para Over 18.5 WTA Clay + fix países/nombres abreviados.
 
 # =========================================================
 # TENNIS IA v15
@@ -3599,7 +3601,7 @@ def aplicar_market_sanity_caps(sim, circuito, surface, over18, over19, over20, o
                 o22 = cap22
                 notes.append(f"Over 22.5 capado a {cap22:.0%} por dominio élite/blowout")
 
-    # v23.16 WTA Over Recovery:
+    # v23.17 WTA Over Soft Recovery:
     # Mantiene protección contra palizas, pero recupera Over 18.5 cuando
     # el partido WTA Clay no tiene favorita aplastante.
     if circuito == "WTA" and surface == "Clay":
@@ -3616,22 +3618,22 @@ def aplicar_market_sanity_caps(sim, circuito, surface, over18, over19, over20, o
         if fav_prob >= 0.72:
             # Favorita muy fuerte: riesgo real de 6-2 6-3 / 6-1 6-4.
             cap18, cap19, cap20, cap22 = 0.64, 0.56, 0.50, 0.40
-            reason = "WTA v23.16 favorita muy fuerte"
+            reason = "WTA v23.17 favorita muy fuerte"
         elif fav_prob >= 0.68:
             # Favorita clara: ya no hundimos tanto el 18.5; ayer muchos overs buenos caían aquí.
             cap18, cap19, cap20, cap22 = 0.66, 0.58, 0.52, 0.42
-            reason = "WTA v23.16 favorita clara, over recuperable"
+            reason = "WTA v23.17 favorita clara, over recuperable"
         elif fav_prob >= 0.65:
             # Favorita moderada: permitir Over si sigue alto tras ajuste.
             cap18, cap19, cap20, cap22 = 0.68, 0.60, 0.54, 0.44
-            reason = "WTA v23.16 favorita moderada"
+            reason = "WTA v23.17 favorita moderada"
         elif wta_close_match:
             # Partido igualado: Over 18.5 vuelve a respirar.
             cap18, cap19, cap20, cap22 = 0.72, 0.64, 0.58, 0.48
-            reason = "WTA v23.16 partido igualado"
+            reason = "WTA v23.17 partido igualado"
         else:
             cap18, cap19, cap20, cap22 = 0.68, 0.60, 0.54, 0.44
-            reason = "WTA v23.16 over recovery neutro"
+            reason = "WTA v23.17 over recovery neutro"
 
         if o18 > cap18:
             o18 = cap18
@@ -3768,7 +3770,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             score += 1
 
         if circuito == "WTA" and market_type in ["over", "long"]:
-            # v23.16: WTA sigue siendo mercado de cautela, pero no bloqueamos
+            # v23.17: WTA sigue siendo mercado de cautela, pero recuperamos
             # automáticamente el Over 18.5 en Clay si queda >=66% tras ajuste.
             if surface == "Clay" and name == "Over 18.5":
                 if fav_prob >= 0.72:
@@ -3779,6 +3781,16 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
                     score += 0
                 else:
                     score += 1
+
+                # v23.17 Soft Recovery:
+                # recupera Overs que v23.16 dejaba como NO BET cuando el partido
+                # no tiene favorita dominante y el Over ajustado sigue alto.
+                if 0.55 <= fav_prob < 0.67 and prob >= 0.68:
+                    score += 2
+                    reason = reason + " · v23.17: Over recuperado por favorito 55-67% y prob >=68%"
+                if fav_prob < 0.64 and prob >= 0.72:
+                    score += 2
+                    reason = reason + " · v23.17: Over 72% con partido igualado"
             else:
                 score -= 2
                 if fav_prob >= 0.65:
@@ -3805,7 +3817,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         if circuito == "WTA" and surface == "Clay" and name == "Over 18.5" and action in ["APTO fuerte", "APTO"]:
             grade = "⚖️ B"
             action = "Solo si acompaña lectura"
-            reason = reason + " · v23.16 Over Recovery: señal válida pero no APTA automática"
+            reason = reason + " · v23.17 Soft Recovery: señal válida pero no APTA automática"
 
         # v22.25: con confianza <65% no dejamos señales agresivas ML/fav20.
         # Evita casos tipo favorito 80% + 2-0 95% con calidad Challenger/Qualy.
@@ -3864,11 +3876,13 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
 
         if surface == "Clay":
             if fav_prob >= 0.72:
-                over18_min, over18_bonus, over18_reason = 0.70, -1, "WTA Clay v23.16: favorita muy fuerte, over solo si queda excepcional"
+                over18_min, over18_bonus, over18_reason = 0.70, -1, "WTA Clay v23.17: favorita muy fuerte, over solo si queda excepcional"
             elif fav_prob >= 0.68:
-                over18_min, over18_bonus, over18_reason = 0.64, 0, "WTA Clay v23.16: over recuperable con favorita clara"
+                over18_min, over18_bonus, over18_reason = 0.64, 0, "WTA Clay v23.17: over recuperable con favorita clara"
+            elif fav_prob >= 0.55:
+                over18_min, over18_bonus, over18_reason = 0.68, 2, "WTA Clay v23.17: Soft Recovery 55-67%, over desde 68%"
             else:
-                over18_min, over18_bonus, over18_reason = 0.66, 1, "WTA Clay v23.16: Over Recovery si partido no es paliza clara"
+                over18_min, over18_bonus, over18_reason = 0.66, 1, "WTA Clay v23.17: partido igualado, over permitido"
             add_signal("Over 18.5", over18, over18_min, "over", over18_reason, over18_bonus)
         else:
             add_signal("Over 18.5", over18, 0.74, "over", "WTA: over solo con señal clara", -1)
@@ -4135,9 +4149,12 @@ def is_country_line_sofa(x):
     countries = {
         "argentina","australia","austria","belgium","bolivia","brazil","canada","chile","china","colombia",
         "croatia","czechia","denmark","finland","france","georgia","germany","hungary","italy","kazakhstan",
-        "lebanon","lithuania","luxembourg","netherlands","paraguay","peru","portugal","russia","serbia",
+        "latvia","lebanon","lithuania","luxembourg","netherlands","paraguay","peru","portugal","russia","serbia",
         "spain","switzerland","tunisia","united kingdom","uruguay","usa","ukraine","poland","slovakia",
-        "slovenia","romania","bulgaria","turkey","greece","norway","sweden","japan","india","south korea"
+        "slovenia","romania","bulgaria","turkey","greece","norway","sweden","japan","india","south korea",
+        "latvia","belarus","cyprus","malta","albania","armenia","azerbaijan","montenegro","north macedonia",
+        "macedonia","kosovo","iran","iraq","qatar","uae","united arab emirates","saudi arabia","vietnam",
+        "philippines","malaysia","singapore","uzbekistan","costa rica","puerto rico"
     }
     return normalizar_texto(x).lower().strip() in countries
 
@@ -4203,7 +4220,9 @@ def is_country_like_name(name):
         "united states", "dominican republic", "south africa", "new zealand",
         "estonia", "bosnia", "herzegovina", "moldova", "moldavia", "israel",
         "ireland", "mexico", "ecuador", "venezuela", "morocco", "egypt",
-        "taiwan", "hong kong", "thailand", "indonesia"
+        "taiwan", "hong kong", "thailand", "indonesia", "latvia", "belarus",
+        "cyprus", "malta", "qatar", "uae", "uzbekistan", "vietnam", "philippines",
+        "malaysia", "singapore", "costa rica", "puerto rico"
     }
     return t in country_like
 
@@ -4223,6 +4242,26 @@ def surname_tokens_for_match(name):
     if len(parts) >= 2:
         return parts[1:]
     return parts
+
+
+def strict_abbrev_surname_compatible(query, full_name):
+    """
+    v23.17 Fix nombres:
+    Para entradas tipo "D. Chiesa" solo aceptamos candidatos que mantengan
+    el apellido Chiesa. Evita sugerencias falsas como Danielle Collins.
+    """
+    qparts = name_words_keep_initials(query)
+    fparts = name_words_keep_initials(full_name)
+    if len(qparts) < 2 or len(fparts) < 2:
+        return True
+    # Solo activamos el bloqueo duro cuando la consulta trae inicial + apellido.
+    if len(qparts[0]) != 1:
+        return True
+    q_surname = " ".join(qparts[1:]).strip()
+    f_surname = " ".join(fparts[1:]).strip()
+    if not q_surname or not f_surname:
+        return True
+    return q_surname == f_surname or q_surname in f_surname or f_surname in q_surname
 
 
 def abbreviation_player_score(query, full_name):
@@ -4536,6 +4575,11 @@ def find_player_in_db(name, db):
             if t_initial and t_surname and (t_surname in k_surname or k_surname in t_surname):
                 score = max(score, 0.96)
 
+        # v23.17 Fix nombres: si viene "D. Chiesa", no aceptar candidatos
+        # cuyo apellido no sea Chiesa aunque el fuzzy general sea alto.
+        if not strict_abbrev_surname_compatible(name, key):
+            score = min(score, 0.74)
+
         if score > best_score:
             best_score = score
             best_key = key
@@ -4578,6 +4622,12 @@ def find_player_candidates_in_db(name, db, top_n=5):
             elif same_last:
                 score = max(score, 0.88)
                 reason = "apellido"
+
+        # v23.17 Fix nombres: evita sugerencias falsas por fuzzy cuando
+        # la consulta es inicial + apellido y el apellido no coincide.
+        if not strict_abbrev_surname_compatible(name, key):
+            score = min(score, 0.74)
+            reason = "apellido no coincide"
 
         rows.append({"candidate": key, "score": score, "reason": reason})
 
@@ -4634,7 +4684,7 @@ def batch_pick_label(sim, over18, over19, over20, over22, under22, p1_name, p2_n
         (f"{dog_name} gana al menos 1 set", sim.get("dog_wins_set", 0.0)),
     ]
 
-    # v23.16: en WTA Clay solo penalizamos fuerte el Over si la favorita
+    # v23.17: en WTA Clay solo penalizamos fuerte el Over si la favorita
     # es muy superior. En partidos igualados dejamos que Over 18.5 pueda ser mejor señal.
     if circuito == "WTA" and surface == "Clay":
         if fav_prob >= 0.72:
@@ -4645,10 +4695,20 @@ def batch_pick_label(sim, over18, over19, over20, over22, under22, p1_name, p2_n
             penalty = 0.01
         else:
             penalty = 0.00
-        candidates = [
-            (label, (prob - penalty if label.startswith("Over") else prob))
-            for label, prob in candidates
-        ]
+
+        adjusted = []
+        for label, prob in candidates:
+            p = prob
+            if label.startswith("Over"):
+                p = prob - penalty
+                # v23.17: la etiqueta rápida también recupera Over 18.5
+                # en partidos WTA Clay sin favorita dominante.
+                if label == "Over 18.5" and 0.55 <= fav_prob < 0.67 and prob >= 0.68:
+                    p += 0.04
+                if label == "Over 18.5" and fav_prob < 0.64 and prob >= 0.72:
+                    p += 0.04
+            adjusted.append((label, p))
+        candidates = adjusted
 
     candidates = [(k, v) for k, v in candidates if v is not None]
     label, prob = max(candidates, key=lambda x: x[1])
@@ -5031,7 +5091,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.16 WTA Over Recovery")
+    st.header("🎾 Tennis IA v23.17 WTA Over Soft Recovery")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5581,7 +5641,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.16 WTA Over Recovery · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.17 WTA Over Soft Recovery · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
