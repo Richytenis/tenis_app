@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.14 WTA Over Guard", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.15 WTA Dynamic Over Guard", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.14"
-QUALITY_ENGINE_VERSION = "v23.14-wta-over-guard-2026-05-12"
+APP_VERSION = "v23.15"
+QUALITY_ENGINE_VERSION = "v23.15-wta-dynamic-over-guard-2026-05-13"
 
 # =========================================================
 # TENNIS IA v15
@@ -3599,42 +3599,52 @@ def aplicar_market_sanity_caps(sim, circuito, surface, over18, over19, over20, o
                 o22 = cap22
                 notes.append(f"Over 22.5 capado a {cap22:.0%} por dominio élite/blowout")
 
-    # v23.14 WTA Over Guard:
-    # En el análisis real WTA Clay, el Over 18.5 quedó sobreinflado.
-    # Solo dejamos overs altos cuando el partido proyecta igualdad real.
+    # v23.15 WTA Dynamic Over Guard:
+    # En WTA Clay ya no bloqueamos/capamos el Over siempre.
+    # Lo rebajamos solo cuando hay riesgo real de paliza por favorita fuerte,
+    # y dejamos respirar el Over cuando el partido está igualado.
     if circuito == "WTA" and surface == "Clay":
         dogset = sim.get("dog_wins_set", 0.0)
         set3 = sim.get("set3", 0.0)
         longm = sim.get("long_match", 0.0)
 
-        wta_close_match = (
-            fav_prob < 0.60
-            and dogset >= 0.55
-            and (set3 >= 0.42 or longm >= 0.50)
-        )
-
-        if wta_close_match:
-            cap18, cap19, cap20, cap22 = 0.72, 0.64, 0.58, 0.48
-            reason = "WTA clay igualado"
+        if fav_prob >= 0.72:
+            # Favorita muy fuerte: riesgo de 6-2 6-3 / 6-1 6-4.
+            adj18, adj19, adj20, adj22 = 0.12, 0.10, 0.08, 0.06
+            reason = "WTA Dynamic Guard fuerte: favorita muy superior"
         elif fav_prob >= 0.68:
-            cap18, cap19, cap20, cap22 = 0.64, 0.56, 0.50, 0.40
-            reason = "WTA clay favorito claro"
+            # Favorita clara: rebaja, pero sin matar el Over.
+            adj18, adj19, adj20, adj22 = 0.08, 0.07, 0.05, 0.04
+            reason = "WTA Dynamic Guard medio: favorita clara"
+        elif fav_prob >= 0.65:
+            # Favorita moderada: solo ajuste suave.
+            adj18, adj19, adj20, adj22 = 0.04, 0.03, 0.02, 0.02
+            reason = "WTA Dynamic Guard suave: favorita moderada"
         else:
-            cap18, cap19, cap20, cap22 = 0.66, 0.58, 0.52, 0.42
-            reason = "WTA clay over guard"
+            # Partido igualado: el Over 18.5 puede ser útil.
+            adj18 = adj19 = adj20 = adj22 = 0.00
+            reason = "WTA Dynamic Guard: partido igualado, Over permitido"
 
-        if o18 > cap18:
-            o18 = cap18
-            notes.append(f"Over 18.5 capado a {cap18:.0%} por {reason}")
-        if o19 > cap19:
-            o19 = cap19
-            notes.append(f"Over 19.5 capado a {cap19:.0%} por {reason}")
-        if o20 > cap20:
-            o20 = cap20
-            notes.append(f"Over 20.5 capado a {cap20:.0%} por {reason}")
-        if o22 > cap22:
-            o22 = cap22
-            notes.append(f"Over 22.5 capado a {cap22:.0%} por {reason}")
+        # Refuerzo de igualdad: si el guion sugiere 3 sets/long match, no penalizamos.
+        wta_close_match = (
+            fav_prob < 0.65
+            and dogset >= 0.52
+            and (set3 >= 0.40 or longm >= 0.48)
+        )
+        if wta_close_match:
+            adj18 = adj19 = adj20 = adj22 = 0.00
+            reason = "WTA Dynamic Guard: igualdad real detectada, Over permitido"
+
+        before = (o18, o19, o20, o22)
+        o18 = max(0.0, o18 - adj18)
+        o19 = max(0.0, o19 - adj19)
+        o20 = max(0.0, o20 - adj20)
+        o22 = max(0.0, o22 - adj22)
+
+        if any(abs(a-b) > 1e-9 for a, b in zip(before, (o18, o19, o20, o22))):
+            notes.append(f"{reason}: Over 18.5 {before[0]:.0%} → {o18:.0%}")
+        else:
+            notes.append(reason)
 
     return {
         "over18": float(np.clip(o18, 0.0, 0.95)),
@@ -3758,11 +3768,17 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             score += 1
 
         if circuito == "WTA" and market_type in ["over", "long"]:
-            score -= 2
-            # v23.14: en WTA el ML fue bastante mejor que el Over 18.5.
-            # Si hay favorita clara, los overs no deben dominar el Signal Trust.
-            if fav_prob >= 0.65:
-                score -= 1
+            # v23.15: penalización dinámica.
+            # Over 18.5 no se bloquea por sistema si el partido está igualado.
+            if market_type == "over" and surface == "Clay":
+                if fav_prob >= 0.72:
+                    score -= 2
+                elif fav_prob >= 0.68:
+                    score -= 1
+                elif fav_prob < 0.65:
+                    score += 1
+            else:
+                score -= 2
         if vol >= 0.060 and market_type in ["ml", "fav20"]:
             score -= 1
         if fav_prob < 0.56 and market_type in ["ml", "fav20"]:
@@ -3832,10 +3848,23 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         add_signal(f"ML favorito: {fav_name}", fav_prob, 0.70, "ml", "ATP Clay con especialista/favorito claro", 0)
 
     elif circuito == "WTA":
-        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.66, "ml", "WTA: ML priorizado sobre overs", 2)
+        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.66, "ml", "WTA: ML útil, pero sin forzar si hay volatilidad", 2)
         add_signal("Favorito 2-0", fav20, 0.62, "fav20", "WTA: solo con perfil dominador/top", 1)
         add_signal("Underdog gana set", dogset, 0.64, "dogset", "WTA: útil con dog peligroso", 0)
-        add_signal("Over 18.5", over18, 0.78, "over", "WTA Clay: over penalizado salvo igualdad clara", -1)
+
+        if surface == "Clay":
+            if fav_prob >= 0.72:
+                over18_min, over18_bonus, over18_reason = 0.74, -1, "WTA Dynamic Guard: favorita muy fuerte, Over exige mucho"
+            elif fav_prob >= 0.68:
+                over18_min, over18_bonus, over18_reason = 0.68, 0, "WTA Dynamic Guard: favorita clara, Over con cautela"
+            elif fav_prob >= 0.65:
+                over18_min, over18_bonus, over18_reason = 0.66, 0, "WTA Dynamic Guard: favorita moderada, Over permitido si alto"
+            else:
+                over18_min, over18_bonus, over18_reason = 0.66, 1, "WTA Dynamic Guard: partido igualado, Over permitido"
+        else:
+            over18_min, over18_bonus, over18_reason = 0.72, 0, "WTA: Over permitido con filtro general"
+
+        add_signal("Over 18.5", over18, over18_min, "over", over18_reason, over18_bonus)
         add_signal("Partido largo", longm, 0.68, "long", "WTA long match solo con señal clara", -1)
 
     else:
@@ -4597,11 +4626,19 @@ def batch_pick_label(sim, over18, over19, over20, over22, under22, p1_name, p2_n
         (f"{dog_name} gana al menos 1 set", sim.get("dog_wins_set", 0.0)),
     ]
 
-    # v23.14: en WTA Clay, si el ML está claro, no dejar que el Over 18.5
-    # sea la mejor señal solo por venir inflado.
-    if circuito == "WTA" and surface == "Clay" and fav_prob >= 0.65:
+    # v23.15: WTA Dynamic Over Guard también para la etiqueta rápida de lote.
+    # Penaliza Over solo con favorita clara; si está igualado, deja el Over vivo.
+    if circuito == "WTA" and surface == "Clay":
+        if fav_prob >= 0.72:
+            over_penalty = 0.10
+        elif fav_prob >= 0.68:
+            over_penalty = 0.05
+        elif fav_prob >= 0.65:
+            over_penalty = 0.02
+        else:
+            over_penalty = 0.00
         candidates = [
-            (label, (prob - 0.08 if label.startswith("Over") else prob))
+            (label, (prob - over_penalty if label.startswith("Over") else prob))
             for label, prob in candidates
         ]
 
@@ -4698,6 +4735,8 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Prob señal": f"{best_prob:.1%}",
             "Signal Trust": trust,
             "Over 18.5": f"{over18:.1%}",
+            "Over 18.5 Original": f"{over18_raw:.1%}",
+            "WTA Dynamic Guard": " · ".join(caps.get("notes", [])) if circuito == "WTA" and surface == "Clay" else "",
             "Over 19.5": f"{over19:.1%}",
             "Under 22.5": f"{under22:.1%}",
             "Jugador gana set": dog_name,
@@ -4986,7 +5025,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.14 WTA Over Guard")
+    st.header("🎾 Tennis IA v23.15 WTA Dynamic Over Guard")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5536,7 +5575,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.14 WTA Over Guard · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.15 WTA Dynamic Over Guard · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
