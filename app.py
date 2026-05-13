@@ -5031,7 +5031,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.14 WTA Over Guard")
+    st.header("🎾 Tennis IA v23.16 WTA Over Recovery")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5581,7 +5581,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.14 WTA Over Guard · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.16 WTA Over Recovery · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
