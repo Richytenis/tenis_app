@@ -5,12 +5,12 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.18 WTA Selective Over", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.19 WTA Over Watchlist", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.18"
-QUALITY_ENGINE_VERSION = "v23.18-wta-selective-over-strict-surname-2026-05-13"
+APP_VERSION = "v23.19"
+QUALITY_ENGINE_VERSION = "v23.19-wta-over-watchlist-strict-surname-2026-05-13"
 
-# v23.18: Selective Over WTA Clay + Strict Surname Fix para nombres abreviados.
+# v23.19: WTA Over Watchlist + Strict Surname Fix para nombres abreviados.
 
 # =========================================================
 # TENNIS IA v15
@@ -3601,7 +3601,7 @@ def aplicar_market_sanity_caps(sim, circuito, surface, over18, over19, over20, o
                 o22 = cap22
                 notes.append(f"Over 22.5 capado a {cap22:.0%} por dominio élite/blowout")
 
-    # v23.18 WTA Selective Over:
+    # v23.19 WTA Over Watchlist:
     # Recupera solo perfiles concretos detectados como útiles:
     # - Over >=72% con favorita <=64%.
     # - Over >=68% con favorita 64-67%.
@@ -3620,25 +3620,25 @@ def aplicar_market_sanity_caps(sim, circuito, surface, over18, over19, over20, o
 
         if fav_prob >= 0.75:
             cap18, cap19, cap20, cap22 = 0.62, 0.54, 0.48, 0.38
-            reason = "WTA v23.18 favorita dominante, over muy protegido"
+            reason = "WTA v23.19 favorita dominante, over muy protegido"
         elif fav_prob >= 0.72:
             cap18, cap19, cap20, cap22 = 0.64, 0.56, 0.50, 0.40
-            reason = "WTA v23.18 favorita muy fuerte"
+            reason = "WTA v23.19 favorita muy fuerte"
         elif fav_prob >= 0.70:
             cap18, cap19, cap20, cap22 = 0.66, 0.58, 0.52, 0.42
-            reason = "WTA v23.18 zona 70-72, over 66 recuperable"
+            reason = "WTA v23.19 zona 70-72, over 66 recuperable"
         elif fav_prob >= 0.68:
             cap18, cap19, cap20, cap22 = 0.66, 0.58, 0.52, 0.42
-            reason = "WTA v23.18 favorita clara, cautela"
+            reason = "WTA v23.19 favorita clara, cautela"
         elif fav_prob >= 0.64:
             cap18, cap19, cap20, cap22 = 0.68, 0.60, 0.54, 0.44
-            reason = "WTA v23.18 zona 64-67, over 68 recuperable"
+            reason = "WTA v23.19 zona 64-67, over 68 recuperable"
         elif wta_close_match:
             cap18, cap19, cap20, cap22 = 0.72, 0.64, 0.58, 0.48
-            reason = "WTA v23.18 partido igualado, over 72 recuperable"
+            reason = "WTA v23.19 partido igualado, over 72 recuperable"
         else:
             cap18, cap19, cap20, cap22 = 0.68, 0.60, 0.54, 0.44
-            reason = "WTA v23.18 neutro, sin recuperación extra"
+            reason = "WTA v23.19 neutro, sin recuperación extra"
 
         if o18 > cap18:
             o18 = cap18
@@ -3775,7 +3775,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             score += 1
 
         if circuito == "WTA" and market_type in ["over", "long"]:
-            # v23.18: recuperación quirúrgica del Over 18.5 en WTA Clay.
+            # v23.19: recuperación quirúrgica del Over 18.5 en WTA Clay.
             # No abrimos todos los 55-67%; solo patrones concretos detectados.
             if surface == "Clay" and name == "Over 18.5":
                 if fav_prob >= 0.75:
@@ -3792,13 +3792,13 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
                 selective_recovery = False
                 if fav_prob <= 0.64 and prob >= 0.72:
                     selective_recovery = True
-                    reason = reason + " · v23.18: Over 72% con partido igualado"
+                    reason = reason + " · v23.19: Over 72% con partido igualado"
                 elif 0.64 < fav_prob < 0.67 and prob >= 0.68:
                     selective_recovery = True
-                    reason = reason + " · v23.18: Over 68% con favorita 64-67%"
+                    reason = reason + " · v23.19: Over 68% con favorita 64-67%"
                 elif 0.70 <= fav_prob < 0.72 and prob >= 0.66:
                     selective_recovery = True
-                    reason = reason + " · v23.18: Over 66% recuperado en zona 70-72%"
+                    reason = reason + " · v23.19: Over 66% recuperado en zona 70-72%"
 
                 if selective_recovery:
                     score += 2
@@ -3828,7 +3828,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         if circuito == "WTA" and surface == "Clay" and name == "Over 18.5" and action in ["APTO fuerte", "APTO"]:
             grade = "⚖️ B"
             action = "Solo si acompaña lectura"
-            reason = reason + " · v23.18 Selective Over: señal válida pero no APTA automática"
+            reason = reason + " · v23.19 Selective Over: señal válida pero no APTA automática"
 
         # v22.25: con confianza <65% no dejamos señales agresivas ML/fav20.
         # Evita casos tipo favorito 80% + 2-0 95% con calidad Challenger/Qualy.
@@ -3887,17 +3887,17 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
 
         if surface == "Clay":
             if fav_prob >= 0.75:
-                over18_min, over18_bonus, over18_reason = 0.74, -2, "WTA Clay v23.18: favorita dominante, no forzar over"
+                over18_min, over18_bonus, over18_reason = 0.74, -2, "WTA Clay v23.19: favorita dominante, no forzar over"
             elif fav_prob >= 0.72:
-                over18_min, over18_bonus, over18_reason = 0.70, -1, "WTA Clay v23.18: favorita muy fuerte, over solo excepcional"
+                over18_min, over18_bonus, over18_reason = 0.70, -1, "WTA Clay v23.19: favorita muy fuerte, over solo excepcional"
             elif fav_prob >= 0.70:
-                over18_min, over18_bonus, over18_reason = 0.66, 1, "WTA Clay v23.18: zona 70-72%, over 66 recuperable"
+                over18_min, over18_bonus, over18_reason = 0.66, 1, "WTA Clay v23.19: zona 70-72%, over 66 recuperable"
             elif fav_prob >= 0.68:
-                over18_min, over18_bonus, over18_reason = 0.70, -1, "WTA Clay v23.18: 68-70%, cautela con over"
+                over18_min, over18_bonus, over18_reason = 0.70, -1, "WTA Clay v23.19: 68-70%, cautela con over"
             elif fav_prob >= 0.64:
-                over18_min, over18_bonus, over18_reason = 0.68, 2, "WTA Clay v23.18: 64-67%, over 68 recuperable"
+                over18_min, over18_bonus, over18_reason = 0.68, 2, "WTA Clay v23.19: 64-67%, over 68 recuperable"
             else:
-                over18_min, over18_bonus, over18_reason = 0.72, 1, "WTA Clay v23.18: partido igualado, solo over 72"
+                over18_min, over18_bonus, over18_reason = 0.72, 1, "WTA Clay v23.19: partido igualado, solo over 72"
             add_signal("Over 18.5", over18, over18_min, "over", over18_reason, over18_bonus)
         else:
             add_signal("Over 18.5", over18, 0.74, "over", "WTA: over solo con señal clara", -1)
@@ -4261,7 +4261,7 @@ def surname_tokens_for_match(name):
 
 def strict_abbrev_surname_compatible(query, full_name):
     """
-    v23.18 Strict Surname Fix.
+    v23.19 Strict Surname Fix.
     Si la entrada viene como inicial + apellido, por ejemplo "D. Chiesa",
     solo se acepta un candidato cuyo apellido contenga exactamente Chiesa.
     Esto bloquea falsos positivos como Danielle Collins aunque el fuzzy sea medio.
@@ -4600,7 +4600,7 @@ def find_player_in_db(name, db):
             if t_initial and t_surname and (t_surname in k_surname or k_surname in t_surname):
                 score = max(score, 0.96)
 
-        # v23.18 Fix nombres: si viene "D. Chiesa", no aceptar candidatos
+        # v23.19 Fix nombres: si viene "D. Chiesa", no aceptar candidatos
         # cuyo apellido no sea Chiesa aunque el fuzzy general sea alto.
         if not strict_abbrev_surname_compatible(name, key):
             score = min(score, 0.40)
@@ -4648,7 +4648,7 @@ def find_player_candidates_in_db(name, db, top_n=5):
                 score = max(score, 0.88)
                 reason = "apellido"
 
-        # v23.18 Fix nombres: evita sugerencias falsas por fuzzy cuando
+        # v23.19 Fix nombres: evita sugerencias falsas por fuzzy cuando
         # la consulta es inicial + apellido y el apellido no coincide.
         if not strict_abbrev_surname_compatible(name, key):
             score = min(score, 0.40)
@@ -4709,7 +4709,7 @@ def batch_pick_label(sim, over18, over19, over20, over22, under22, p1_name, p2_n
         (f"{dog_name} gana al menos 1 set", sim.get("dog_wins_set", 0.0)),
     ]
 
-    # v23.18: etiqueta rápida selectiva para WTA Clay.
+    # v23.19: etiqueta rápida selectiva para WTA Clay.
     # Solo damos bonus al Over 18.5 en los patrones concretos recuperados.
     if circuito == "WTA" and surface == "Clay":
         if fav_prob >= 0.75:
@@ -4792,6 +4792,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         dog_name = p2_key if p1c >= p2c else p1_key
 
         best_label, best_prob = batch_pick_label(sim, over18, over19, over20, over22, under22, p1_key, p2_key, circuito, surface)
+        wta_watchlist = wta_over_watchlist_reason(circuito, surface, fav_prob, over18)
 
         filters = betting_filter_engine(circuito, surface, sim, p1_key, p2_key)
         trust = filters.get("status", "")
@@ -4826,6 +4827,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "ML favorito": f"{fav_prob:.1%}",
             "Mejor señal": best_label,
             "Prob señal": f"{best_prob:.1%}",
+            "WTA Watchlist": wta_watchlist,
             "Signal Trust": trust,
             "Over 18.5": f"{over18:.1%}",
             "Over 19.5": f"{over19:.1%}",
@@ -4899,13 +4901,40 @@ def _pct_to_float(x):
         return None
 
 
+def wta_over_watchlist_reason(circuito, surface, fav_prob, over18):
+    """
+    v23.19 WTA Over Watchlist.
+    No convierte estos perfiles en APTA/DUDOSA fuerte; solo los separa de NO BET
+    para revisarlos con cuota, marcador esperado y nombres correctamente encontrados.
+    """
+    try:
+        fav_prob = float(fav_prob or 0)
+        over18 = float(over18 or 0)
+    except Exception:
+        return ""
+
+    if str(circuito).upper().strip() != "WTA" or str(surface).strip() != "Clay":
+        return ""
+
+    if over18 >= 0.72 and 0.50 <= fav_prob <= 0.60:
+        return "👀 WATCHLIST OVER: Over 72% con partido igualado 50-60%"
+    if over18 >= 0.68 and 0.64 <= fav_prob < 0.67:
+        return "👀 WATCHLIST OVER: Over 68% con favorita 64-67%"
+    if over18 >= 0.66 and 0.68 <= fav_prob < 0.71:
+        return "👀 WATCHLIST OVER: Over 66% con favorita 68-71%"
+    return ""
+
+
 def batch_recommendation(row):
     trust = str(row.get("Signal Trust", "")).upper()
     edge = _pct_to_float(row.get("Edge", ""))
     signal = str(row.get("Mejor señal", ""))
     risks = str(row.get("Riesgos", "")).lower()
+    watchlist = str(row.get("WTA Watchlist", "")).strip()
 
     if "NO BET" in trust:
+        if watchlist:
+            return "WATCHLIST OVER"
         if edge is not None and edge > 0.06:
             return "VALUE NUMÉRICO PERO RIESGO"
         return "NO BET"
@@ -4968,6 +4997,7 @@ def prepare_batch_display_table(ok_df):
         "ML favorito",
         "Mejor señal",
         "Prob señal",
+        "WTA Watchlist",
         "Signal Trust",
         "Cuota pegada",
         "Jugador cuota",
@@ -5057,6 +5087,7 @@ def batch_excel_bytes(df):
                 "APTA + VALUE": "C6EFCE",
                 "DUDOSA": "FFF2CC",
                 "DUDOSA CON VALUE": "FCE4D6",
+                "WATCHLIST OVER": "D9EAD3",
                 "NO BET": "F4CCCC",
                 "VALUE NUMÉRICO PERO RIESGO": "FCE4D6",
             }
@@ -5116,7 +5147,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.18 WTA Selective Over")
+    st.header("🎾 Tennis IA v23.19 WTA Over Watchlist")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5666,7 +5697,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.18 WTA Selective Over · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.19 WTA Over Watchlist · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
