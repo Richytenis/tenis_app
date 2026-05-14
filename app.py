@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Tennis IA v23.25 Fix Países + Watchlist Label", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.25"
+APP_VERSION = "v23.25.1"
 QUALITY_ENGINE_VERSION = "v23.25-over-focus-engine-2026-05-14"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -3694,6 +3694,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     dogset = sim.get("dog_wins_set", 0)
     longm = sim.get("long_match", 0)
     tb = sim.get("tb", 0)
+    set3 = sim.get("set3", sim.get("market_3sets", sim.get("prob_3sets", 0.0)))
     vol = sim.get("vol", 0)
 
     # v22.2 Signal Trust Gate: una probabilidad puede ser buena,
@@ -6112,7 +6113,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.download_button(
                     "📊 Descargar Excel",
                     data=batch_excel_with_not_found_bytes(ok_saved, ko_saved, db),
-                    file_name="analisis_lista_tennis_ia_v23_25.xlsx",
+                    file_name="analisis_lista_tennis_ia_v23_25_1.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="download_batch_excel"
                 )
