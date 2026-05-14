@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.25 Fix Países + Watchlist Label", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.25.2 Over Focus Priority Fix", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.25.1"
-QUALITY_ENGINE_VERSION = "v23.25-over-focus-engine-2026-05-14"
+APP_VERSION = "v23.25.2"
+QUALITY_ENGINE_VERSION = "v23.25.2-over-focus-priority-fix-2026-05-14"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 
@@ -3943,11 +3943,55 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     grade_order = {"🔥 A+": 4, "✅ A": 3, "⚖️ B": 2, "⚠️ C": 1}
     signals = sorted(signals, key=lambda x: (grade_order.get(x["Grade"], 0), x["Probabilidad"]), reverse=True)
 
-    main = None
-    for s in signals:
-        if s["Acción"] in ["APTO fuerte", "APTO"]:
-            main = s
-            break
+    # v23.25.2 Over Focus Priority Fix:
+    # La señal principal no debe ser ML/gana set si los Overs muestran estructura larga.
+    # Se promueve el mercado de juegos de forma explícita antes de elegir el main.
+    def _get_signal(market_name):
+        return next((x for x in signals if x.get("Mercado") == market_name), None)
+
+    def _promote_signal(signal, grade="✅ A", action="APTO", note=""):
+        if signal is None:
+            return None
+        signal["Grade"] = grade
+        signal["Acción"] = action
+        if note:
+            signal["Motivo"] = str(signal.get("Motivo", "")) + " · " + note
+        return signal
+
+    priority_main = None
+    circuito_norm = str(circuito).upper().strip()
+    if circuito_norm != "WTA":
+        # Over 18.5 alto sigue siendo la lectura conservadora principal.
+        if over18 >= 0.73:
+            priority_main = _promote_signal(
+                _get_signal("Over 18.5"),
+                grade="🔥 A+",
+                action="APTO fuerte",
+                note="v23.25.2: Over 18.5 no puede ser tapado por ML/contexto"
+            )
+        # Si el 18.5 está fuerte y el 19.5 acompaña, destacamos el 19.5 como mercado de valor.
+        elif over18 >= 0.70 and over19 >= 0.66:
+            priority_main = _promote_signal(
+                _get_signal("Over 19.5"),
+                grade="✅ A",
+                action="APTO",
+                note="v23.25.2: Over 19.5 priorizado por estructura larga"
+            )
+        # Si el 3 sets acompaña, mantenemos Over 18.5 como principal y 3 sets como apoyo.
+        elif over18 >= 0.70 and set3 >= 0.45:
+            priority_main = _promote_signal(
+                _get_signal("Over 18.5"),
+                grade="✅ A",
+                action="APTO",
+                note="v23.25.2: Over apoyado por probabilidad de 3 sets"
+            )
+
+    main = priority_main
+    if main is None:
+        for s in signals:
+            if s["Acción"] in ["APTO fuerte", "APTO"]:
+                main = s
+                break
 
     # v23.25 WTA Over17 Priority:
     # Si no hay APTA clara y el Over 17.5 WTA es alto, lo priorizamos como lectura
@@ -4785,6 +4829,23 @@ def batch_pick_label(sim, over17, over18, over19, over20, over22, under22, p1_na
 
     candidates = [(k, v) for k, v in candidates if v is not None]
 
+    # v23.25.2 Over Focus Priority Fix:
+    # En ATP/Challenger el ML queda como contexto. Si la estructura de juegos es clara,
+    # el mejor mercado visible debe ser Over 18.5 / Over 19.5 y no ML ni "gana set".
+    if circuito != "WTA":
+        try:
+            set3_prob = float(sim.get("set3", sim.get("market_3sets", sim.get("prob_3sets", 0.0))) or 0.0)
+            o18 = float(over18 or 0.0)
+            o19 = float(over19 or 0.0)
+            if o18 >= 0.73:
+                return "Over 18.5", o18
+            if o18 >= 0.70 and o19 >= 0.66:
+                return "Over 19.5", o19
+            if o18 >= 0.70 and set3_prob >= 0.45:
+                return "Over 18.5", o18
+        except Exception:
+            pass
+
     # v23.25 WTA Over17 Priority:
     # Para WTA Clay, si el 17.5 está alto, se muestra como mejor mercado conservador.
     # ATP/Challenger no pasan por aquí porque Over 17.5 solo se inserta para WTA.
@@ -5042,6 +5103,8 @@ def over_focus_label(circuito, best_label, best_prob, set3, over17, over18, over
             return "✅ OVER 18.5 APTO"
         return "👀 OVER 18.5 WATCH"
     if "Over 19.5" in label:
+        if over18 >= 0.70 and over19 >= 0.66:
+            return "✅ OVER 19.5 APTO"
         if over19 >= 0.68:
             return "✅ OVER 19.5 APTO"
         return "👀 OVER 19.5 WATCH"
@@ -6105,7 +6168,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.download_button(
                     "⬇️ Descargar CSV",
                     data=ok_saved.to_csv(index=False).encode("utf-8-sig"),
-                    file_name="analisis_lista_tennis_ia_v23_25.csv",
+                    file_name="analisis_lista_tennis_ia_v23_25_2.csv",
                     mime="text/csv",
                     key="download_batch_csv"
                 )
@@ -6113,7 +6176,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.download_button(
                     "📊 Descargar Excel",
                     data=batch_excel_with_not_found_bytes(ok_saved, ko_saved, db),
-                    file_name="analisis_lista_tennis_ia_v23_25_1.xlsx",
+                    file_name="analisis_lista_tennis_ia_v23_25_2.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="download_batch_excel"
                 )
