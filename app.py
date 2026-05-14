@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.24 Fix Países + Watchlist Label", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.25 Fix Países + Watchlist Label", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.24"
-QUALITY_ENGINE_VERSION = "v23.24-fix-paises-watchlist-label-2026-05-13"
+APP_VERSION = "v23.25"
+QUALITY_ENGINE_VERSION = "v23.25-over-focus-engine-2026-05-14"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 
@@ -3887,56 +3887,57 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             "Motivo": reason
         })
 
+    # =========================================================
+    # v23.25 OVER FOCUS ENGINE
+    # Cambio de filosofía: el ML queda como contexto visible, pero NO entra
+    # como recomendación principal. El motor prioriza juegos y 3 sets.
+    # =========================================================
     if circuito == "ATP" and surface == "Hard":
-        add_signal("Over 18.5", over18, 0.72, "over", "ATP Hard: mercado históricamente más fuerte", 2)
-        add_signal("Over 19.5", over19, 0.66, "over", "ATP Hard: mejor equilibrio riesgo/calidad", 2)
-        add_signal("Over 20.5", over20, 0.62, "over", "ATP Hard si hay señal clara de games", 1)
-        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.68, "ml", "ATP Hard favorito medio/fuerte", 1)
+        add_signal("Over 18.5", over18, 0.73, "over", "v23.25 ATP Hard: foco principal en Over 18.5", 3)
+        add_signal("Over 19.5", over19, 0.67, "over", "v23.25 ATP Hard: alternativa con mejor cuota si acompaña", 2)
+        add_signal("Partido a 3 sets", set3, 0.43, "set3", "v23.25 ATP Hard: señal de partido largo / resistencia", 1)
+        add_signal("Over 20.5", over20, 0.64, "over", "v23.25 ATP Hard: solo si la línea larga acompaña", 0)
 
     elif circuito == "ATP" and surface == "Clay":
-        add_signal("Over 18.5", over18, 0.72, "over", "ATP Clay: over bajo útil, exige confianza", 2)
-        add_signal("Over 19.5", over19, 0.64, "over", "ATP Clay: buena señal si clay engine acompaña", 1)
-        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.70, "ml", "ATP Clay con especialista/favorito claro", 0)
+        add_signal("Over 18.5", over18, 0.73, "over", "v23.25 ATP Clay: mercado principal por estabilidad", 3)
+        add_signal("Over 19.5", over19, 0.66, "over", "v23.25 ATP Clay: segundo mercado si hay resistencia", 2)
+        add_signal("Partido a 3 sets", set3, 0.44, "set3", "v23.25 ATP Clay: apoyo a lectura de over", 1)
+        add_signal("Over 20.5", over20, 0.63, "over", "v23.25 ATP Clay: línea larga con cautela", 0)
 
     elif circuito == "WTA":
-        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.66, "ml", "WTA: ML útil, pero sin confianza ciega", 2)
-        add_signal("Favorito 2-0", fav20, 0.62, "fav20", "WTA: solo con perfil dominador/top", 1)
-        add_signal("Underdog gana set", dogset, 0.64, "dogset", "WTA: útil con dog peligroso", 0)
-
         if surface == "Clay":
-            # Mercado nuevo SOLO WTA: Over 17.5. No se añade en ATP/Challenger.
+            # WTA mantiene la ventaja observada del Over 17.5.
             if fav_prob >= 0.78:
-                over17_min, over17_bonus, over17_reason = 0.82, -2, "WTA Clay v23.20: favorita dominante, Over 17.5 solo excepcional"
+                over17_min, over17_bonus, over17_reason = 0.82, -1, "v23.25 WTA Clay: favorita dominante, Over 17.5 solo excepcional"
             elif fav_prob >= 0.72:
-                over17_min, over17_bonus, over17_reason = 0.78, 0, "WTA Clay v23.20: favorita fuerte, Over 17.5 con cautela"
+                over17_min, over17_bonus, over17_reason = 0.78, 1, "v23.25 WTA Clay: Over 17.5 conservador con favorita fuerte"
             elif fav_prob >= 0.64:
-                over17_min, over17_bonus, over17_reason = 0.74, 2, "WTA Clay v23.20: zona ideal Over 17.5"
+                over17_min, over17_bonus, over17_reason = 0.74, 3, "v23.25 WTA Clay: zona ideal Over 17.5"
             else:
-                over17_min, over17_bonus, over17_reason = 0.78, 1, "WTA Clay v23.20: partido igualado, Over 17.5 si sale alto"
+                over17_min, over17_bonus, over17_reason = 0.78, 2, "v23.25 WTA Clay: partido igualado, mirar Over 17.5"
             add_signal("Over 17.5", over17, over17_min, "wta_over17", over17_reason, over17_bonus)
 
             if fav_prob >= 0.75:
-                over18_min, over18_bonus, over18_reason = 0.74, -2, "WTA Clay v23.20: favorita dominante, no forzar over 18.5"
-            elif fav_prob >= 0.72:
-                over18_min, over18_bonus, over18_reason = 0.70, -1, "WTA Clay v23.20: favorita muy fuerte, over 18.5 solo excepcional"
+                over18_min, over18_bonus, over18_reason = 0.74, -2, "v23.25 WTA Clay: Over 18.5 solo si sale muy claro"
             elif fav_prob >= 0.70:
-                over18_min, over18_bonus, over18_reason = 0.66, 1, "WTA Clay v23.20: zona 70-72%, over 18.5 recuperable"
-            elif fav_prob >= 0.68:
-                over18_min, over18_bonus, over18_reason = 0.70, -1, "WTA Clay v23.20: 68-70%, cautela con over 18.5"
+                over18_min, over18_bonus, over18_reason = 0.66, 1, "v23.25 WTA Clay: Over 18.5 recuperable en zona 70-75%"
             elif fav_prob >= 0.64:
-                over18_min, over18_bonus, over18_reason = 0.68, 2, "WTA Clay v23.20: 64-67%, over 18.5 recuperable"
+                over18_min, over18_bonus, over18_reason = 0.68, 1, "v23.25 WTA Clay: Over 18.5 secundario"
             else:
-                over18_min, over18_bonus, over18_reason = 0.74, -1, "WTA Clay v23.20: quitado patrón flojo 50-60% para over 18.5"
+                over18_min, over18_bonus, over18_reason = 0.74, -1, "v23.25 WTA Clay: Over 18.5 exige mucha claridad en igualados"
             add_signal("Over 18.5", over18, over18_min, "over", over18_reason, over18_bonus)
         else:
-            add_signal("Over 17.5", over17, 0.78, "wta_over17", "WTA: Over 17.5 solo si señal muy clara", 0)
-            add_signal("Over 18.5", over18, 0.74, "over", "WTA: over solo con señal clara", -1)
+            add_signal("Over 17.5", over17, 0.78, "wta_over17", "v23.25 WTA: Over 17.5 solo si señal muy clara", 1)
+            add_signal("Over 18.5", over18, 0.74, "over", "v23.25 WTA: Over 18.5 secundario", 0)
 
-        add_signal("Partido largo", longm, 0.68, "long", "WTA long match solo con señal clara", -1)
+        add_signal("Partido a 3 sets", set3, 0.44, "set3", "v23.25 WTA: apoyo a lectura de partido largo", 1)
 
     else:
-        add_signal("Over 18.5", over18, 0.74, "over", "Filtro general", 0)
-        add_signal(f"ML favorito: {fav_name}", fav_prob, 0.70, "ml", "Filtro general ML", 0)
+        # Challenger / otros: no usar ML como pick principal. Over primero, 3 sets como apoyo.
+        add_signal("Over 18.5", over18, 0.72, "over", "v23.25 Challenger: mercado principal, más fiable que ML", 2)
+        add_signal("Over 19.5", over19, 0.67, "over", "v23.25 Challenger: alternativa si la cuota compensa", 1)
+        add_signal("Partido a 3 sets", set3, 0.45, "set3", "v23.25 Challenger: watch de partido largo", 1)
+        add_signal("Over 20.5", over20, 0.64, "over", "v23.25 Challenger: línea larga solo con cautela", 0)
 
     grade_order = {"🔥 A+": 4, "✅ A": 3, "⚖️ B": 2, "⚠️ C": 1}
     signals = sorted(signals, key=lambda x: (grade_order.get(x["Grade"], 0), x["Probabilidad"]), reverse=True)
@@ -3947,14 +3948,14 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             main = s
             break
 
-    # v23.23 WTA Over17 Priority:
+    # v23.25 WTA Over17 Priority:
     # Si no hay APTA clara y el Over 17.5 WTA es alto, lo priorizamos como lectura
     # conservadora antes que forzar ML u Over 18.5. No convierte la señal en APTA;
     # sigue saliendo como SPOT DUDOSO si el Signal Trust lo marca como B.
     if main is None and circuito == "WTA" and surface == "Clay" and over17 >= 0.77:
         over17_signal = next((x for x in signals if x.get("Mercado") == "Over 17.5"), None)
         if over17_signal is not None and over17_signal.get("Acción", "").startswith("Solo"):
-            over17_signal["Motivo"] = str(over17_signal.get("Motivo", "")) + " · v23.23: prioridad conservadora Over 17.5"
+            over17_signal["Motivo"] = str(over17_signal.get("Motivo", "")) + " · v23.25: prioridad conservadora Over 17.5"
             main = over17_signal
 
     if main is None and signals:
@@ -4783,7 +4784,7 @@ def batch_pick_label(sim, over17, over18, over19, over20, over22, under22, p1_na
 
     candidates = [(k, v) for k, v in candidates if v is not None]
 
-    # v23.23 WTA Over17 Priority:
+    # v23.25 WTA Over17 Priority:
     # Para WTA Clay, si el 17.5 está alto, se muestra como mejor mercado conservador.
     # ATP/Challenger no pasan por aquí porque Over 17.5 solo se inserta para WTA.
     if circuito == "WTA" and surface == "Clay" and over17 is not None:
@@ -4889,6 +4890,8 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "ML favorito": f"{fav_prob:.1%}",
             "Mejor señal": best_label,
             "Prob señal": f"{best_prob:.1%}",
+            "Mejor mercado Over Focus": best_label if any(x in str(best_label) for x in ["Over", "3 sets", "Partido"]) else "",
+            "Over Focus Label": over_focus_label(circuito, best_label, best_prob, sim.get("set3", 0.0), over17, over18, over19),
             "WTA Watchlist": wta_watchlist,
             "Mejor mercado WTA": (best_label if circuito == "WTA" else ""),
             "WTA Over17 Priority": ("Sí" if circuito == "WTA" and best_label == "Over 17.5" and over17 >= 0.77 else ""),
@@ -4899,6 +4902,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Under 22.5": f"{under22:.1%}",
             "Jugador gana set": dog_name,
             "Prob gana set": f"{sim.get('dog_wins_set', 0):.1%}",
+            "Partido a 3 sets": f"{sim.get('set3', 0):.1%}",
             "Juegos J1": f"{avg_g1:.1f}",
             "Juegos J2": f"{avg_g2:.1f}",
             "Total games": f"{avg_games:.1f}",
@@ -4937,9 +4941,19 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
                 else "No" if m.get("actual_total_games", None) is not None
                 else "N/D"
             ),
+            "3 sets real": (
+                "Sí" if m.get("p1_sets_real") is not None and m.get("p2_sets_real") is not None and int(m.get("p1_sets_real")) + int(m.get("p2_sets_real")) == 3
+                else "No" if m.get("p1_sets_real") is not None and m.get("p2_sets_real") is not None
+                else "N/D"
+            ),
             "Acierta Over 18.5": (
                 "Sí" if m.get("actual_total_games", None) is not None and ((over18 >= 0.50) == (float(m.get("actual_total_games")) > 18.5))
                 else "No" if m.get("actual_total_games", None) is not None and ((over18 >= 0.50) != (float(m.get("actual_total_games")) > 18.5))
+                else "N/D"
+            ),
+            "Acierta 3 sets": (
+                "Sí" if m.get("p1_sets_real") is not None and m.get("p2_sets_real") is not None and ((sim.get("set3", 0) >= 0.50) == (int(m.get("p1_sets_real")) + int(m.get("p2_sets_real")) == 3))
+                else "No" if m.get("p1_sets_real") is not None and m.get("p2_sets_real") is not None and ((sim.get("set3", 0) >= 0.50) != (int(m.get("p1_sets_real")) + int(m.get("p2_sets_real")) == 3))
                 else "N/D"
             ),
             "Resultado válido": (
@@ -5003,12 +5017,56 @@ def wta_over_watchlist_reason(circuito, surface, fav_prob, over18, over17=None):
     return ""
 
 
+def over_focus_label(circuito, best_label, best_prob, set3, over17, over18, over19):
+    """Etiqueta visual v23.25 para priorizar Over/3 sets sobre ML."""
+    label = str(best_label or "")
+    try:
+        best_prob = float(best_prob or 0)
+        set3 = float(set3 or 0)
+        over17 = float(over17 or 0)
+        over18 = float(over18 or 0)
+        over19 = float(over19 or 0)
+    except Exception:
+        return ""
+
+    c = str(circuito).upper().strip()
+    if "Over 17.5" in label:
+        if c == "WTA" and over17 >= 0.78:
+            return "🔥 OVER 17.5 FUERTE"
+        return "✅ OVER 17.5 APTO"
+    if "Over 18.5" in label:
+        if c in ["ATP", "CHALLENGER"] and over18 >= 0.73:
+            return "🔥 OVER 18.5 FUERTE"
+        if over18 >= 0.68:
+            return "✅ OVER 18.5 APTO"
+        return "👀 OVER 18.5 WATCH"
+    if "Over 19.5" in label:
+        if over19 >= 0.68:
+            return "✅ OVER 19.5 APTO"
+        return "👀 OVER 19.5 WATCH"
+    if "3 sets" in label or "Partido a 3" in label:
+        if set3 >= 0.48:
+            return "🎯 3 SETS WATCH FUERTE"
+        return "🎯 3 SETS WATCH"
+    return "ML SOLO CONTEXTO" if "ML" in label else ""
+
+
 def batch_recommendation(row):
     trust = str(row.get("Signal Trust", "")).upper()
-    edge = _pct_to_float(row.get("Edge", ""))
     signal = str(row.get("Mejor señal", ""))
-    risks = str(row.get("Riesgos", "")).lower()
+    focus = str(row.get("Over Focus Label", "")).strip()
     watchlist = str(row.get("WTA Watchlist", "")).strip()
+    risks = str(row.get("Riesgos", "")).lower()
+
+    if focus:
+        if "FUERTE" in trust and "OVER" in focus:
+            return focus
+        if "APTO" in trust and "OVER" in focus:
+            return focus
+        if "DUDOSO" in trust and "OVER" in focus:
+            return focus.replace("✅", "👀").replace("FUERTE", "WATCH")
+        if "3 SETS" in focus and ("DUDOSO" in trust or "APTO" in trust or "FUERTE" in trust):
+            return focus
 
     if "NO BET" in trust:
         if watchlist:
@@ -5017,30 +5075,23 @@ def batch_recommendation(row):
             if "18.5" in watchlist:
                 return "OBSERVAR OVER 18.5"
             return "OBSERVAR OVER"
-        if edge is not None and edge > 0.06:
-            return "VALUE NUMÉRICO PERO RIESGO"
         return "NO BET"
 
-    if "FUERTE" in trust:
-        if edge is not None:
-            return "APTA + VALUE" if edge > 0.03 else "APTA SIN VALUE ML"
-        return "APTA"
+    if "OVER" in signal.upper():
+        if "FUERTE" in trust:
+            return "🔥 OVER FUERTE"
+        if "APTO" in trust:
+            return "✅ OVER APTO"
+        if "DUDOSO" in trust:
+            return "👀 OVER WATCHLIST"
 
-    if "APTO" in trust:
-        if edge is not None:
-            return "APTA + VALUE" if edge > 0.03 else "APTA SIN VALUE ML"
-        return "APTA"
-
-    if "DUDOSO" in trust:
-        if edge is not None and edge > 0.07:
-            return "DUDOSA CON VALUE"
-        return "DUDOSA"
+    if "3 SETS" in signal.upper() or "PARTIDO A 3" in signal.upper():
+        return "🎯 3 SETS WATCH"
 
     if "upset" in risks or "riesgo" in risks:
         return "NO BET / REVISAR"
 
-    return "REVISAR"
-
+    return "ML SOLO CONTEXTO"
 
 def prepare_batch_display_table(ok_df):
     if ok_df is None or ok_df.empty:
@@ -5080,6 +5131,8 @@ def prepare_batch_display_table(ok_df):
         "ML favorito",
         "Mejor señal",
         "Prob señal",
+        "Mejor mercado Over Focus",
+        "Over Focus Label",
         "WTA Watchlist",
         "Mejor mercado WTA",
         "WTA Over17 Priority",
@@ -5099,6 +5152,8 @@ def prepare_batch_display_table(ok_df):
         "Over 18.5",
         "Over 18.5 real",
         "Acierta Over 18.5",
+        "3 sets real",
+        "Acierta 3 sets",
         "Over 19.5",
         "Under 22.5",
         "Jugador gana set",
@@ -5190,6 +5245,12 @@ def batch_excel_bytes(df):
                 "OBSERVAR OVER": "D9EAD3",
                 "OBSERVAR OVER 17.5": "D9EAD3",
                 "OBSERVAR OVER 18.5": "D9EAD3",
+                "🔥 OVER 18.5 FUERTE": "B6D7A8",
+                "🔥 OVER 17.5 FUERTE": "B6D7A8",
+                "✅ OVER 18.5 APTO": "D9EAD3",
+                "✅ OVER 17.5 APTO": "D9EAD3",
+                "✅ OVER 19.5 APTO": "D9EAD3",
+                "🎯 3 SETS WATCH": "FFF2CC",
                 "NO BET": "F4CCCC",
                 "VALUE NUMÉRICO PERO RIESGO": "FCE4D6",
             }
@@ -5249,7 +5310,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.24 Fix Países + Watchlist Label")
+    st.header("🎾 Tennis IA v23.25 Fix Países + Watchlist Label")
     st.caption("Favorite Identity Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -5285,7 +5346,7 @@ if not db:
     st.error("No se encontraron jugadores. Revisa carpetas y archivos.")
     st.stop()
 
-# v23.24: evita que Streamlit conserve tablas/descargas antiguas al cambiar de versión.
+# v23.25: evita que Streamlit conserve tablas/descargas antiguas al cambiar de versión.
 if st.session_state.get("batch_app_version") != APP_VERSION:
     for _k in ["batch_ok_df", "batch_ko_df", "batch_last_ready"]:
         st.session_state.pop(_k, None)
@@ -5814,7 +5875,7 @@ if modo == "Predictor":
         filters = betting_filter_engine(circuito, surface, sim, d1["Player"], d2["Player"])
         render_betting_filters(filters)
 
-        st.caption(f"Tennis IA v23.24 Fix Países + Watchlist Label · {sims:,} simulaciones Monte Carlo")
+        st.caption(f"Tennis IA v23.25 Fix Países + Watchlist Label · {sims:,} simulaciones Monte Carlo")
 
 
 elif modo == "Analizador por lista":
@@ -6043,7 +6104,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.download_button(
                     "⬇️ Descargar CSV",
                     data=ok_saved.to_csv(index=False).encode("utf-8-sig"),
-                    file_name="analisis_lista_tennis_ia_v23_24.csv",
+                    file_name="analisis_lista_tennis_ia_v23_25.csv",
                     mime="text/csv",
                     key="download_batch_csv"
                 )
@@ -6051,7 +6112,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.download_button(
                     "📊 Descargar Excel",
                     data=batch_excel_with_not_found_bytes(ok_saved, ko_saved, db),
-                    file_name="analisis_lista_tennis_ia_v23_24.xlsx",
+                    file_name="analisis_lista_tennis_ia_v23_25.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="download_batch_excel"
                 )
