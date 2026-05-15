@@ -4823,6 +4823,163 @@ def parse_sofascore_results_paste(raw_text):
 
     return matches
 
+
+def parse_sofascore_results_grouped_paste(raw_text):
+    """
+    Parser para pegar resultados completos del día desde Sofascore/Flashscore.
+    Mantiene el parser de resultados original, pero añade contexto de torneo/circuito/superficie
+    para poder filtrar ATP/WTA/Challenger sin mezclar motores.
+    No cambia cálculos: solo clasifica, filtra dobles y conserva ganador/games reales.
+    """
+    lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    matches = []
+    current_tournament = ""
+    current_meta = []
+    current_circuit = "DESCONOCIDO"
+    current_surface = "Clay"
+    current_ignore_doubles = False
+
+    def refresh_context():
+        nonlocal current_circuit, current_surface, current_ignore_doubles
+        current_circuit = clasificar_bloque_torneo_pegado(current_tournament, current_meta)
+        current_ignore_doubles = current_circuit == "IGNORAR_DOBLES"
+        for ml in current_meta:
+            surf = normalizar_superficie_pegada(ml, default="")
+            if surf in ["Hard", "Clay", "Grass"]:
+                current_surface = surf
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Nuevo bloque de torneo antes de un resultado. Guardamos metadatos cercanos.
+        if es_linea_torneo_pegado(line) and not es_rival_pendiente_pegado(line):
+            current_tournament = line
+            current_meta = []
+            j = i + 1
+            while j < len(lines) and len(current_meta) < 8 and not is_date_line_sofa_result(lines[j]):
+                if is_status_line_sofa_result(lines[j]):
+                    break
+                current_meta.append(lines[j])
+                j += 1
+            refresh_context()
+            i += 1
+            continue
+
+        if not is_date_line_sofa_result(line):
+            i += 1
+            continue
+
+        fecha = line
+        if i + 1 >= len(lines):
+            i += 1
+            continue
+
+        status = normalizar_texto(lines[i + 1]).strip()
+        status_low = status.lower()
+        j = i + 2
+
+        # Saltar cancelados/retirados/no finalizados y avanzar al siguiente resultado/bloque.
+        if status_low not in {"ft", "final"}:
+            while j < len(lines) and not is_date_line_sofa_result(lines[j]) and not es_linea_torneo_pegado(lines[j]):
+                j += 1
+            i = max(j, i + 1)
+            continue
+
+        candidates = []
+        numbers = []
+        invalid_match = False
+
+        while j < len(lines) and not is_date_line_sofa_result(lines[j]) and not es_linea_torneo_pegado(lines[j]):
+            ln = lines[j].strip()
+
+            if "/" in ln:
+                invalid_match = True
+                break
+
+            if re.match(r"^\d+$", ln):
+                numbers.append(int(ln))
+                j += 1
+                continue
+
+            if ln == "-" or is_country_line_sofa(ln) or is_country_like_name(ln):
+                j += 1
+                continue
+
+            if es_rival_pendiente_pegado(ln):
+                invalid_match = True
+                break
+
+            # Ignorar metadatos del torneo dentro del bloque si aparecen copiados entre líneas.
+            if len(candidates) < 2 and is_sofa_meta_line(ln) and not looks_like_player_line_sofa(ln):
+                j += 1
+                continue
+
+            if looks_like_player_line_sofa(ln) and len(candidates) < 2:
+                candidates.append(ln)
+
+            j += 1
+
+        if len(candidates) >= 2 and not invalid_match and not current_ignore_doubles:
+            p1_raw, p2_raw = candidates[0], candidates[1]
+
+            p1_sets = p2_sets = None
+            winner_side = None
+            actual_total_games = None
+            score_games = ""
+
+            game_nums = []
+            if len(numbers) >= 6:
+                p1_sets = numbers[-4]
+                p2_sets = numbers[-2]
+                game_nums = numbers[:-4]
+            elif len(numbers) >= 4:
+                p1_sets = numbers[0]
+                p2_sets = numbers[2]
+                game_nums = []
+            elif len(numbers) >= 2:
+                p1_sets = numbers[0]
+                p2_sets = numbers[1]
+                game_nums = []
+
+            if p1_sets is not None and p2_sets is not None:
+                if p1_sets > p2_sets:
+                    winner_side = 1
+                elif p2_sets > p1_sets:
+                    winner_side = 2
+
+            if len(game_nums) >= 4 and len(game_nums) % 2 == 0:
+                pairs = [(game_nums[k], game_nums[k+1]) for k in range(0, len(game_nums), 2)]
+                actual_total_games = int(sum(a + b for a, b in pairs))
+                score_games = " ".join([f"{a}-{b}" for a, b in pairs])
+
+            matches.append({
+                "raw": f"{fecha} · {p1_raw} - {p2_raw}",
+                "date": fecha,
+                "time": "",
+                "status": status,
+                "p1_raw": p1_raw,
+                "p2_raw": p2_raw,
+                "p1_sets_real": p1_sets,
+                "p2_sets_real": p2_sets,
+                "actual_winner_side": winner_side,
+                "actual_total_games": actual_total_games,
+                "score_games": score_games,
+                "surface": current_surface,
+                "torneo": current_tournament,
+                "circuito_detectado": current_circuit,
+                "odd1": None,
+                "odd2": None,
+                "quoted_side": None,
+                "quoted_odd": None,
+                "quoted_text": None
+            })
+
+        # Si hemos parado porque empieza un torneo, no saltarlo; el bucle lo procesará.
+        i = max(j, i + 1)
+
+    return matches
+
 def find_player_in_db(name, db):
     if is_pending_opponent_name(name) or is_country_like_name(name):
         return None, 0.0
@@ -6140,7 +6297,7 @@ elif modo == "Analizador por lista":
         )
         formato_pegado = st.radio(
             "Formato pegado",
-            ["Casa/Winamax limpio", "Sofascore día", "Sofascore día auto ATP/WTA/Challenger", "Sofascore resultados"],
+            ["Casa/Winamax limpio", "Sofascore día", "Sofascore día auto ATP/WTA/Challenger", "Sofascore resultados", "Sofascore resultados auto ATP/WTA/Challenger"],
             index=0,
             help="Auto ATP/WTA/Challenger permite pegar todo el día junto y filtra según el circuito elegido en la barra lateral. Ignora dobles/cancelados/retirados."
         )
@@ -6188,6 +6345,10 @@ Sebastián Baez - Roberto Carballés Baena"""
                 preview = filtrar_matches_por_circuito_pegado(preview_all, circuito)
             elif formato_pegado == "Sofascore resultados":
                 preview = parse_sofascore_results_paste(raw_batch)
+            elif formato_pegado == "Sofascore resultados auto ATP/WTA/Challenger":
+                preview_all = parse_sofascore_results_grouped_paste(raw_batch)
+                st.caption(f"Auto resultados detectado total: {len(preview_all)} · Se analizarán solo {circuito} según el selector lateral.")
+                preview = filtrar_matches_por_circuito_pegado(preview_all, circuito)
             else:
                 preview = parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch)
                 # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Winamax.
@@ -6224,6 +6385,9 @@ Sebastián Baez - Roberto Carballés Baena"""
             parsed = filtrar_matches_por_circuito_pegado(parsed_all, circuito)[:int(max_batch)]
         elif formato_pegado == "Sofascore resultados":
             parsed = parse_sofascore_results_paste(raw_batch)[:int(max_batch)]
+        elif formato_pegado == "Sofascore resultados auto ATP/WTA/Challenger":
+            parsed_all = parse_sofascore_results_grouped_paste(raw_batch)
+            parsed = filtrar_matches_por_circuito_pegado(parsed_all, circuito)[:int(max_batch)]
         else:
             parsed = (parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch))
             # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Winamax.
@@ -6239,7 +6403,7 @@ Sebastián Baez - Roberto Carballés Baena"""
             st.stop()
 
         if not parsed:
-            st.error("No he detectado partidos para el circuito seleccionado. Si pegaste todo el día, usa Formato pegado → Sofascore día auto ATP/WTA/Challenger y revisa si arriba tienes seleccionado ATP o WTA.")
+            st.error("No he detectado partidos para el circuito seleccionado. Si pegaste todo el día, usa Formato pegado → Sofascore día auto ATP/WTA/Challenger o Sofascore resultados auto ATP/WTA/Challenger, y revisa si arriba tienes seleccionado ATP o WTA.")
             st.stop()
 
         best_of = 5 if "5" in formato else 3
@@ -6301,7 +6465,7 @@ Sebastián Baez - Roberto Carballés Baena"""
             ok = ok.sort_values(["_rec_sort","_edge_sort"], ascending=[False, False]).drop(columns=["_edge_sort","_rec_sort"], errors="ignore")
 
             # v23.11: vista simple para backtest de resultados.
-            if formato_pegado == "Sofascore resultados" and vista_resultados_simple:
+            if formato_pegado in ["Sofascore resultados", "Sofascore resultados auto ATP/WTA/Challenger"] and vista_resultados_simple:
                 simple_cols = [
                     "Versión app",
                     "Fecha",
