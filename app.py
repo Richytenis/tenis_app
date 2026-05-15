@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.25.2 Over Focus Priority Fix", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.25.5 Resultados Games Parser Fix", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.25.2"
-QUALITY_ENGINE_VERSION = "v23.25.2-over-focus-priority-fix-2026-05-14"
+APP_VERSION = "v23.25.5"
+QUALITY_ENGINE_VERSION = "v23.25.5-resultados-games-parser-fix-2026-05-15"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 
@@ -5026,6 +5026,87 @@ def is_match_start_sofa_result(lines, idx):
     )
 
 
+def decodificar_games_sofascore(numbers):
+    """
+    v23.25.5: decodifica números copiados desde SofaScore en formato de tabla.
+
+    SofaScore suele copiar primero la fila de puntos/juegos del jugador 1,
+    después la fila del jugador 2, y al final los sets duplicados:
+      6 6 2 4 2 2 0 0  -> 6-2 6-4, sets 2-0
+      7 9 5 6 6 7 7 4 2 2 1 1 -> 7-6(9-7) 5-7 6-4, sets 2-1
+
+    Devuelve: p1_sets, p2_sets, actual_total_games, score_games, games_ok
+    """
+    p1_sets = p2_sets = None
+    actual_total_games = None
+    score_games = ""
+    games_ok = False
+
+    if not numbers:
+        return p1_sets, p2_sets, actual_total_games, score_games, games_ok
+
+    # Últimos 4 números = sets duplicados del marcador final: p1,p1,p2,p2.
+    if len(numbers) >= 4:
+        p1_sets = numbers[-4]
+        p2_sets = numbers[-2]
+        body = numbers[:-4]
+    elif len(numbers) >= 2:
+        p1_sets = numbers[0]
+        p2_sets = numbers[1]
+        body = []
+    else:
+        body = []
+
+    # Sin juegos, solo sets.
+    if not body or len(body) < 4:
+        return p1_sets, p2_sets, actual_total_games, score_games, games_ok
+
+    # El número de sets reales orienta cuántas columnas de juegos esperamos.
+    try:
+        sets_played = int((p1_sets or 0) + (p2_sets or 0))
+    except Exception:
+        sets_played = 0
+
+    # En SofaScore, body viene por filas: todos los valores visibles de J1 y luego todos los de J2.
+    # Puede incluir columnas extra de tie-break. Por eso el split correcto es por la mitad.
+    if len(body) % 2 != 0:
+        return p1_sets, p2_sets, actual_total_games, score_games, games_ok
+
+    mid = len(body) // 2
+    row1 = body[:mid]
+    row2 = body[mid:]
+
+    raw_pairs = list(zip(row1, row2))
+    set_pairs = []
+    annotated = []
+    last_set_index = None
+
+    for a, b in raw_pairs:
+        # Columna de puntos de tie-break: normalmente ambos > 6 y va justo después de un 7-6 / 6-7.
+        if a > 6 and b > 6 and last_set_index is not None:
+            pa, pb = set_pairs[last_set_index]
+            if sorted([pa, pb]) == [6, 7]:
+                annotated[last_set_index] = f"{pa}-{pb}({a}-{b})"
+                continue
+
+        # Columna normal de juegos de set.
+        set_pairs.append((a, b))
+        annotated.append(f"{a}-{b}")
+        last_set_index = len(set_pairs) - 1
+
+    # Seguridad: si detectamos más columnas que sets jugados, recortamos a los sets reales.
+    if sets_played > 0 and len(set_pairs) > sets_played:
+        set_pairs = set_pairs[:sets_played]
+        annotated = annotated[:sets_played]
+
+    if set_pairs:
+        actual_total_games = int(sum(a + b for a, b in set_pairs))
+        score_games = " ".join(annotated)
+        games_ok = True
+
+    return p1_sets, p2_sets, actual_total_games, score_games, games_ok
+
+
 def _parse_finished_result_from_position(lines, i, current_tournament="", current_surface="Clay", current_circuit="DESCONOCIDO", current_ignore_doubles=False):
     """
     Lee un resultado desde lines[i]. Acepta:
@@ -5092,32 +5173,13 @@ def _parse_finished_result_from_position(lines, i, current_tournament="", curren
     actual_total_games = None
     score_games = ""
 
-    game_nums = []
-    if len(numbers) >= 6:
-        # Formato con juegos por set + sets finales duplicados.
-        p1_sets = numbers[-4]
-        p2_sets = numbers[-2]
-        game_nums = numbers[:-4]
-    elif len(numbers) >= 4:
-        # Formato compacto: sets finales duplicados: 2 2 1 1.
-        p1_sets = numbers[0]
-        p2_sets = numbers[2]
-        game_nums = []
-    elif len(numbers) >= 2:
-        p1_sets = numbers[0]
-        p2_sets = numbers[1]
-        game_nums = []
+    p1_sets, p2_sets, actual_total_games, score_games, _games_ok = decodificar_games_sofascore(numbers)
 
     if p1_sets is not None and p2_sets is not None:
         if p1_sets > p2_sets:
             winner_side = 1
         elif p2_sets > p1_sets:
             winner_side = 2
-
-    if len(game_nums) >= 4 and len(game_nums) % 2 == 0:
-        pairs = [(game_nums[k], game_nums[k + 1]) for k in range(0, len(game_nums), 2)]
-        actual_total_games = int(sum(a + b for a, b in pairs))
-        score_games = " ".join([f"{a}-{b}" for a, b in pairs])
 
     raw_prefix = (f"{fecha} {hora}" if fecha and hora else (fecha or hora)).strip()
     match = {
@@ -5132,6 +5194,7 @@ def _parse_finished_result_from_position(lines, i, current_tournament="", curren
         "actual_winner_side": winner_side,
         "actual_total_games": actual_total_games,
         "score_games": score_games,
+        "games_leidos": bool(actual_total_games is not None),
         "surface": current_surface,
         "torneo": current_tournament,
         "circuito_detectado": current_circuit,
@@ -6610,8 +6673,29 @@ Sebastián Baez - Roberto Carballés Baena"""
     if preview:
         with st.expander("👀 Vista previa detectada", expanded=True):
             prev_df = pd.DataFrame(preview[:int(max_batch)])
-            show_cols = [c for c in ["date", "time", "circuito_detectado", "torneo", "surface", "p1_raw", "p2_raw", "p1_sets_real", "p2_sets_real"] if c in prev_df.columns]
+
+            # v23.25.4 Debug Games Preview:
+            # Solo añade visibilidad. No cambia cálculos, simulaciones ni filtros.
+            if "actual_total_games" in prev_df.columns:
+                prev_df["games_leidos"] = prev_df["actual_total_games"].apply(lambda x: "✅ Sí" if pd.notna(x) and str(x) != "" else "⚠️ No")
+            if "p1_sets_real" in prev_df.columns and "p2_sets_real" in prev_df.columns:
+                prev_df["sets_real"] = prev_df.apply(
+                    lambda r: f"{int(r['p1_sets_real'])}-{int(r['p2_sets_real'])}"
+                    if pd.notna(r.get('p1_sets_real')) and pd.notna(r.get('p2_sets_real')) else "",
+                    axis=1
+                )
+
+            show_cols = [c for c in [
+                "date", "time", "circuito_detectado", "torneo", "surface",
+                "p1_raw", "p2_raw", "sets_real", "score_games",
+                "actual_total_games", "games_leidos", "p1_sets_real", "p2_sets_real"
+            ] if c in prev_df.columns]
             st.dataframe(prev_df[show_cols] if show_cols else prev_df, width='stretch', hide_index=True)
+
+            if "actual_total_games" in prev_df.columns:
+                con_games = int(prev_df["actual_total_games"].notna().sum())
+                sin_games = int(len(prev_df) - con_games)
+                st.caption(f"Juegos reales detectados en {con_games}/{len(prev_df)} partidos. Sin juegos reales: {sin_games}.")
 
     if st.button("🚀 ANALIZAR LISTA", width='stretch'):
         # v23.10: liberar resultado anterior antes de un lote nuevo.
