@@ -4499,6 +4499,179 @@ def parse_sofascore_paste(raw_text):
     return matches
 
 
+
+def normalizar_superficie_pegada(x, default="Clay"):
+    """Normaliza superficies copiadas de Sofascore/Flashscore sin tocar cálculos."""
+    t = normalizar_texto(x).lower()
+    if any(k in t for k in ["tierra", "clay", "arcilla"]):
+        return "Clay"
+    if any(k in t for k in ["dura", "hard", "cemento"]):
+        return "Hard"
+    if any(k in t for k in ["hierba", "grass"]):
+        return "Grass"
+    return default
+
+
+def clasificar_bloque_torneo_pegado(tournament, meta_lines):
+    """Clasifica encabezados pegados: ATP/WTA/Challenger y dobles."""
+    txt = " ".join([str(tournament)] + [str(x) for x in meta_lines])
+    clean = normalizar_texto(txt).upper()
+
+    if "DOUBLES" in clean or "DOBLES" in clean:
+        return "IGNORAR_DOBLES"
+    if "WTA" in clean:
+        if "125" in clean:
+            return "WTA_125"
+        return "WTA"
+    if "CHALLENGER" in clean:
+        # En Sofascore, Challenger sin WTA suele ser masculino.
+        if "WOMEN" in clean or "MUJER" in clean or "WTA" in clean:
+            return "CHALLENGER_WTA"
+        return "CHALLENGER_ATP"
+    if "ATP" in clean:
+        return "ATP"
+    if "ITF" in clean:
+        if "WOMEN" in clean or "MUJER" in clean:
+            return "ITF_WTA"
+        return "ITF_ATP"
+    return "DESCONOCIDO"
+
+
+
+def es_rival_pendiente_pegado(line):
+    """Detecta placeholders tipo WQF1, WSF2, Qualifier, TBD."""
+    t = limpiar(line)
+    if not t:
+        return True
+    if is_pending_opponent_name(str(line)):
+        return True
+    if re.match(r"^(W|L)?(QF|SF|F|R\d|Q)\d*$", t):
+        return True
+    if re.match(r"^W(QF|SF|F)\d*$", t):
+        return True
+    if t in {"TBD", "BYE", "QUALIFIER", "LUCKYLOSER", "LL"}:
+        return True
+    return False
+
+
+def es_linea_torneo_pegado(line):
+    """Detecta títulos de torneo en pegados largos de Sofascore/Flashscore."""
+    t = normalizar_texto(line).strip()
+    u = t.upper()
+    if not t or is_date_line_sofa_result(t) or is_time_line_sofa(t):
+        return False
+    if is_country_line_sofa(t) or is_country_like_name(t):
+        return False
+    if any(k in u for k in ["ATP", "WTA", "CHALLENGER", "ITF"]):
+        return True
+    if "," in t and not looks_like_player_line_sofa(t):
+        return True
+    return False
+
+
+def filtrar_matches_por_circuito_pegado(matches, circuito):
+    """Si la app está en ATP, deja ATP+Challenger ATP. Si está en WTA, deja WTA/WTA125."""
+    circuito = str(circuito).upper()
+    if circuito == "ATP":
+        allowed = {"ATP", "CHALLENGER_ATP", "ITF_ATP"}
+    else:
+        allowed = {"WTA", "WTA_125", "CHALLENGER_WTA", "ITF_WTA"}
+    return [m for m in matches if m.get("circuito_detectado") in allowed]
+
+
+def parse_sofascore_day_grouped_paste(raw_text):
+    """
+    Parser para pegar TODO el día desde Sofascore/Flashscore.
+    Separa por encabezados ATP/WTA/Challenger, ignora dobles y descarta rivales pendientes.
+    No cambia cálculos: solo devuelve lista limpia de partidos con circuito/superficie detectados.
+    """
+    lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    matches = []
+    current_tournament = ""
+    current_meta = []
+    current_circuit = "DESCONOCIDO"
+    current_surface = "Clay"
+    current_ignore_doubles = False
+
+    def refresh_context():
+        nonlocal current_circuit, current_surface, current_ignore_doubles
+        current_circuit = clasificar_bloque_torneo_pegado(current_tournament, current_meta)
+        current_ignore_doubles = current_circuit == "IGNORAR_DOBLES"
+        for ml in current_meta:
+            surf = normalizar_superficie_pegada(ml, default="")
+            if surf in ["Hard", "Clay", "Grass"]:
+                current_surface = surf
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Nuevo bloque de torneo. Guardamos título y unas líneas meta posteriores.
+        if es_linea_torneo_pegado(line) and not es_rival_pendiente_pegado(line):
+            current_tournament = line
+            current_meta = []
+            j = i + 1
+            while j < len(lines) and len(current_meta) < 6 and not is_date_line_sofa_result(lines[j]) and not is_time_line_sofa(lines[j]):
+                # Si aparece otro título antes de fecha, seguimos usándolo como meta, porque Sofascore duplica nombres.
+                current_meta.append(lines[j])
+                j += 1
+            refresh_context()
+            i += 1
+            continue
+
+        # Partido: fecha / hora / país-jugador / país-jugador.
+        if is_date_line_sofa_result(line):
+            fecha = line
+            if i + 1 >= len(lines) or not is_time_line_sofa(lines[i + 1]):
+                i += 1
+                continue
+            hora = lines[i + 1]
+            j = i + 2
+            candidates = []
+            pending_or_doubles = False
+
+            while j < len(lines) and not is_date_line_sofa_result(lines[j]) and len(candidates) < 2:
+                ln = lines[j].strip()
+
+                # Si entra un nuevo torneo antes de completar 2 jugadores, el partido está incompleto.
+                if es_linea_torneo_pegado(ln) and len(candidates) < 2:
+                    pending_or_doubles = True
+                    break
+
+                if ln == "-" or is_country_line_sofa(ln) or is_country_like_name(ln) or is_sofa_meta_line(ln):
+                    j += 1
+                    continue
+                if "/" in ln or es_rival_pendiente_pegado(ln):
+                    pending_or_doubles = True
+                    break
+                if looks_like_player_line_sofa(ln) and not is_country_like_name(ln):
+                    candidates.append(ln)
+                j += 1
+
+            if len(candidates) >= 2 and not pending_or_doubles and not current_ignore_doubles:
+                matches.append({
+                    "raw": f"{fecha} {hora} · {candidates[0]} - {candidates[1]}",
+                    "date": fecha,
+                    "time": hora,
+                    "p1_raw": candidates[0],
+                    "p2_raw": candidates[1],
+                    "surface": current_surface,
+                    "torneo": current_tournament,
+                    "circuito_detectado": current_circuit,
+                    "odd1": None,
+                    "odd2": None,
+                    "quoted_side": None,
+                    "quoted_odd": None,
+                    "quoted_text": None
+                })
+            i = max(j, i + 1)
+            continue
+
+        i += 1
+
+    return matches
+
+
 def is_date_line_sofa_result(x):
     return bool(re.match(r"^\d{1,2}/\d{1,2}/\d{2,4}$", str(x).strip()))
 
@@ -4885,7 +5058,8 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             continue
 
         d1, d2 = db[p1_key], db[p2_key]
-        sim = sim_match(d1, d2, surface, circuito, best_of, sims, context_row={})
+        match_surface = m.get("surface", surface) if m.get("surface", surface) in ["Hard", "Clay", "Grass"] else surface
+        sim = sim_match(d1, d2, match_surface, circuito, best_of, sims, context_row={})
         games = sim.get("games", [])
         avg_games = float(np.mean(games)) if len(games) else 0.0
         games_p1 = sim.get("games_p1", [])
@@ -4898,7 +5072,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         over19_raw = sum(x > 19.5 for x in games)/sims if sims else 0
         over20_raw = sum(x > 20.5 for x in games)/sims if sims else 0
         over22_raw = sum(x > 22.5 for x in games)/sims if sims else 0
-        caps = aplicar_market_sanity_caps(sim, circuito, surface, over18_raw, over19_raw, over20_raw, over22_raw)
+        caps = aplicar_market_sanity_caps(sim, circuito, match_surface, over18_raw, over19_raw, over20_raw, over22_raw)
         over18, over19, over20, over22 = caps["over18"], caps["over19"], caps["over20"], caps["over22"]
         under22 = 1 - over22
         # Over 17.5 solo se usa como mercado operativo WTA. En ATP/Challenger queda calculado pero no se muestra como señal.
@@ -4915,10 +5089,10 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         fav_prob = max(p1c, p2c)
         dog_name = p2_key if p1c >= p2c else p1_key
 
-        best_label, best_prob = batch_pick_label(sim, over17, over18, over19, over20, over22, under22, p1_key, p2_key, circuito, surface)
-        wta_watchlist = wta_over_watchlist_reason(circuito, surface, fav_prob, over18, over17)
+        best_label, best_prob = batch_pick_label(sim, over17, over18, over19, over20, over22, under22, p1_key, p2_key, circuito, match_surface)
+        wta_watchlist = wta_over_watchlist_reason(circuito, match_surface, fav_prob, over18, over17)
 
-        filters = betting_filter_engine(circuito, surface, sim, p1_key, p2_key)
+        filters = betting_filter_engine(circuito, match_surface, sim, p1_key, p2_key)
         trust = filters.get("status", "")
         rationale = " · ".join(filters.get("reasons", [])[:2]) if isinstance(filters, dict) else ""
 
@@ -4946,6 +5120,9 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Versión app": APP_VERSION,
             "Fecha": m.get("date", ""),
             "Hora": m.get("time", ""),
+            "Circuito fuente": m.get("circuito_detectado", ""),
+            "Torneo": m.get("torneo", ""),
+            "Superficie": match_surface,
             "Partido": f"{p1_key} vs {p2_key}",
             "Estado": "OK",
             "Favorito modelo": fav_name,
@@ -5963,9 +6140,9 @@ elif modo == "Analizador por lista":
         )
         formato_pegado = st.radio(
             "Formato pegado",
-            ["Casa/Winamax limpio", "Sofascore día", "Sofascore resultados"],
+            ["Casa/Winamax limpio", "Sofascore día", "Sofascore día auto ATP/WTA/Challenger", "Sofascore resultados"],
             index=0,
-            help="Sofascore día detecta horarios. Sofascore resultados detecta fecha, FT y ganador real. Ignora dobles/cancelados/retirados."
+            help="Auto ATP/WTA/Challenger permite pegar todo el día junto y filtra según el circuito elegido en la barra lateral. Ignora dobles/cancelados/retirados."
         )
         usar_cuotas = st.toggle(
             "Leer cuotas pegadas",
@@ -6005,6 +6182,10 @@ Sebastián Baez - Roberto Carballés Baena"""
         if raw_batch.strip():
             if formato_pegado == "Sofascore día":
                 preview = parse_sofascore_paste(raw_batch)
+            elif formato_pegado == "Sofascore día auto ATP/WTA/Challenger":
+                preview_all = parse_sofascore_day_grouped_paste(raw_batch)
+                st.caption(f"Auto detectado total: {len(preview_all)} · Se analizarán solo {circuito} según el selector lateral.")
+                preview = filtrar_matches_por_circuito_pegado(preview_all, circuito)
             elif formato_pegado == "Sofascore resultados":
                 preview = parse_sofascore_results_paste(raw_batch)
             else:
@@ -6026,7 +6207,7 @@ Sebastián Baez - Roberto Carballés Baena"""
     if preview:
         with st.expander("👀 Vista previa detectada", expanded=True):
             prev_df = pd.DataFrame(preview[:int(max_batch)])
-            show_cols = [c for c in ["date", "time", "p1_raw", "p2_raw", "p1_sets_real", "p2_sets_real"] if c in prev_df.columns]
+            show_cols = [c for c in ["date", "time", "circuito_detectado", "torneo", "surface", "p1_raw", "p2_raw", "p1_sets_real", "p2_sets_real"] if c in prev_df.columns]
             st.dataframe(prev_df[show_cols] if show_cols else prev_df, width='stretch', hide_index=True)
 
     if st.button("🚀 ANALIZAR LISTA", width='stretch'):
@@ -6038,6 +6219,9 @@ Sebastián Baez - Roberto Carballés Baena"""
 
         if formato_pegado == "Sofascore día":
             parsed = parse_sofascore_paste(raw_batch)[:int(max_batch)]
+        elif formato_pegado == "Sofascore día auto ATP/WTA/Challenger":
+            parsed_all = parse_sofascore_day_grouped_paste(raw_batch)
+            parsed = filtrar_matches_por_circuito_pegado(parsed_all, circuito)[:int(max_batch)]
         elif formato_pegado == "Sofascore resultados":
             parsed = parse_sofascore_results_paste(raw_batch)[:int(max_batch)]
         else:
@@ -6055,7 +6239,7 @@ Sebastián Baez - Roberto Carballés Baena"""
             st.stop()
 
         if not parsed:
-            st.error("No he detectado partidos. Si pegaste Sofascore, selecciona Formato pegado → Sofascore día, o deja que lo autodetecte con líneas de hora tipo 16:20.")
+            st.error("No he detectado partidos para el circuito seleccionado. Si pegaste todo el día, usa Formato pegado → Sofascore día auto ATP/WTA/Challenger y revisa si arriba tienes seleccionado ATP o WTA.")
             st.stop()
 
         best_of = 5 if "5" in formato else 3
