@@ -6597,8 +6597,8 @@ elif modo == "Analizador por lista":
         )
         max_batch = st.number_input(
             "Máx partidos a analizar",
-            1, 30, 12, 1,
-            help="Streamlit Cloud tiene memoria limitada. Analiza resultados largos en bloques de 10-15 partidos."
+            1, 150, 60, 1,
+            help="Puedes subirlo para analizar el día completo en una sola hoja. Si va lento, baja simulaciones a 500/1000."
         )
         formato_pegado = st.radio(
             "Formato pegado",
