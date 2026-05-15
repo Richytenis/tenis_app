@@ -4607,7 +4607,7 @@ def parse_sofascore_day_grouped_paste(raw_text):
         line = lines[i]
 
         # Nuevo bloque de torneo. Guardamos título y unas líneas meta posteriores.
-        if es_linea_torneo_pegado(line) and not es_rival_pendiente_pegado(line):
+        if es_linea_torneo_principal_resultados(line) and not es_rival_pendiente_pegado(line):
             current_tournament = line
             current_meta = []
             j = i + 1
@@ -4977,6 +4977,248 @@ def parse_sofascore_results_grouped_paste(raw_text):
 
         # Si hemos parado porque empieza un torneo, no saltarlo; el bucle lo procesará.
         i = max(j, i + 1)
+
+    return matches
+
+
+# =========================================================
+# v23.25.3 Parser resultados Sofascore: hora + estado
+# =========================================================
+def is_live_or_nonfinal_status_sofa_result(x):
+    """Estados que NO se usan para backtest/resultados cerrados."""
+    t = normalizar_texto(x).lower().strip()
+    return (
+        t in {"-", "sin jugar", "suspendido", "interrumpido", "retirado", "cancelado", "aplazado", "postponed", "walkover", "wo"}
+        or "set" in t
+        or "retir" in t
+        or "suspend" in t
+        or "interrump" in t
+    )
+
+
+def is_final_status_sofa_result(x):
+    t = normalizar_texto(x).lower().strip()
+    return t in {"ft", "final"}
+
+
+def es_linea_torneo_principal_resultados(line):
+    """Título real de bloque, no metadatos sueltos tipo ATP/WTA/Challenger/ATP 1000."""
+    t = normalizar_texto(line).strip()
+    u = t.upper()
+    if not es_linea_torneo_pegado(t):
+        return False
+    meta_sueltos = {
+        "ATP", "WTA", "CHALLENGER", "ITF", "ATP 1000", "ATP 500", "ATP 250",
+        "WTA 1000", "WTA 500", "WTA 250", "WTA 125", "CHALLENGER 50",
+        "CHALLENGER 75", "CHALLENGER 100", "CHALLENGER 125", "CHALLENGER 175"
+    }
+    if u in meta_sueltos:
+        return False
+    return True
+
+
+def is_match_start_sofa_result(lines, idx):
+    """Inicio de partido de resultados: fecha+estado o hora+estado."""
+    if idx + 1 >= len(lines):
+        return False
+    return (is_date_line_sofa_result(lines[idx]) or is_time_line_sofa(lines[idx])) and (
+        is_final_status_sofa_result(lines[idx + 1]) or is_live_or_nonfinal_status_sofa_result(lines[idx + 1])
+    )
+
+
+def _parse_finished_result_from_position(lines, i, current_tournament="", current_surface="Clay", current_circuit="DESCONOCIDO", current_ignore_doubles=False):
+    """
+    Lee un resultado desde lines[i]. Acepta:
+      fecha / FT / pais / jugador / pais / jugador / números
+      hora  / FT / pais / jugador / pais / jugador / números
+    Devuelve (match_o_None, nuevo_indice).
+    """
+    start_line = lines[i]
+    is_date_start = is_date_line_sofa_result(start_line)
+    fecha = start_line if is_date_start else ""
+    hora = "" if is_date_start else start_line
+
+    if i + 1 >= len(lines):
+        return None, i + 1
+
+    status = normalizar_texto(lines[i + 1]).strip()
+    j = i + 2
+
+    # Solo analizamos partidos cerrados. Los live/sin jugar/suspendidos/retirados se saltan.
+    if not is_final_status_sofa_result(status):
+        while j < len(lines) and not is_match_start_sofa_result(lines, j) and not es_linea_torneo_principal_resultados(lines[j]):
+            j += 1
+        return None, max(j, i + 1)
+
+    candidates = []
+    numbers = []
+    invalid_match = False
+
+    while j < len(lines) and not is_match_start_sofa_result(lines, j) and not es_linea_torneo_principal_resultados(lines[j]):
+        ln = lines[j].strip()
+
+        if "/" in ln:
+            invalid_match = True
+            break
+
+        if re.match(r"^\d+$", ln):
+            numbers.append(int(ln))
+            j += 1
+            continue
+
+        if ln == "-" or is_country_line_sofa(ln) or is_country_like_name(ln):
+            j += 1
+            continue
+
+        if es_rival_pendiente_pegado(ln):
+            invalid_match = True
+            break
+
+        if len(candidates) < 2 and is_sofa_meta_line(ln) and not looks_like_player_line_sofa(ln):
+            j += 1
+            continue
+
+        if looks_like_player_line_sofa(ln) and len(candidates) < 2:
+            candidates.append(ln)
+
+        j += 1
+
+    if len(candidates) < 2 or invalid_match or current_ignore_doubles:
+        return None, max(j, i + 1)
+
+    p1_raw, p2_raw = candidates[0], candidates[1]
+    p1_sets = p2_sets = None
+    winner_side = None
+    actual_total_games = None
+    score_games = ""
+
+    game_nums = []
+    if len(numbers) >= 6:
+        # Formato con juegos por set + sets finales duplicados.
+        p1_sets = numbers[-4]
+        p2_sets = numbers[-2]
+        game_nums = numbers[:-4]
+    elif len(numbers) >= 4:
+        # Formato compacto: sets finales duplicados: 2 2 1 1.
+        p1_sets = numbers[0]
+        p2_sets = numbers[2]
+        game_nums = []
+    elif len(numbers) >= 2:
+        p1_sets = numbers[0]
+        p2_sets = numbers[1]
+        game_nums = []
+
+    if p1_sets is not None and p2_sets is not None:
+        if p1_sets > p2_sets:
+            winner_side = 1
+        elif p2_sets > p1_sets:
+            winner_side = 2
+
+    if len(game_nums) >= 4 and len(game_nums) % 2 == 0:
+        pairs = [(game_nums[k], game_nums[k + 1]) for k in range(0, len(game_nums), 2)]
+        actual_total_games = int(sum(a + b for a, b in pairs))
+        score_games = " ".join([f"{a}-{b}" for a, b in pairs])
+
+    raw_prefix = (f"{fecha} {hora}" if fecha and hora else (fecha or hora)).strip()
+    match = {
+        "raw": f"{raw_prefix} · {p1_raw} - {p2_raw}",
+        "date": fecha,
+        "time": hora,
+        "status": status,
+        "p1_raw": p1_raw,
+        "p2_raw": p2_raw,
+        "p1_sets_real": p1_sets,
+        "p2_sets_real": p2_sets,
+        "actual_winner_side": winner_side,
+        "actual_total_games": actual_total_games,
+        "score_games": score_games,
+        "surface": current_surface,
+        "torneo": current_tournament,
+        "circuito_detectado": current_circuit,
+        "odd1": None,
+        "odd2": None,
+        "quoted_side": None,
+        "quoted_odd": None,
+        "quoted_text": None
+    }
+    return match, max(j, i + 1)
+
+
+def parse_sofascore_results_paste(raw_text):
+    """
+    v23.25.3: parser resultados compatible con bloques que empiezan por fecha o por hora.
+    Ignora partidos live/sin jugar/suspendidos/retirados; solo devuelve FT/final.
+    """
+    lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    matches = []
+    i = 0
+    while i < len(lines):
+        if not is_match_start_sofa_result(lines, i):
+            i += 1
+            continue
+        match, ni = _parse_finished_result_from_position(lines, i)
+        if match:
+            matches.append(match)
+        i = max(ni, i + 1)
+    return matches
+
+
+def parse_sofascore_results_grouped_paste(raw_text):
+    """
+    v23.25.3: resultados completos del día desde Sofascore/Flashscore.
+    Acepta partidos cerrados con formato hora+FT o fecha+FT.
+    Ignora dobles, live, sin jugar, suspendidos y retirados. No toca cálculos.
+    """
+    lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    matches = []
+    current_tournament = ""
+    current_meta = []
+    current_circuit = "DESCONOCIDO"
+    current_surface = "Clay"
+    current_ignore_doubles = False
+
+    def refresh_context():
+        nonlocal current_circuit, current_surface, current_ignore_doubles
+        current_circuit = clasificar_bloque_torneo_pegado(current_tournament, current_meta)
+        current_ignore_doubles = current_circuit == "IGNORAR_DOBLES"
+        for ml in current_meta:
+            surf = normalizar_superficie_pegada(ml, default="")
+            if surf in ["Hard", "Clay", "Grass"]:
+                current_surface = surf
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        if es_linea_torneo_principal_resultados(line) and not es_rival_pendiente_pegado(line):
+            current_tournament = line
+            current_meta = []
+            j = i + 1
+            while j < len(lines) and len(current_meta) < 10 and not is_match_start_sofa_result(lines, j):
+                # Si ya viene otro título real, dejamos que el bucle principal lo procese como nuevo bloque.
+                # No cortamos por metadatos sueltos tipo ATP/WTA/Challenger/ATP 1000.
+                if j != i + 1 and es_linea_torneo_principal_resultados(lines[j]):
+                    break
+                current_meta.append(lines[j])
+                j += 1
+            refresh_context()
+            i += 1
+            continue
+
+        if not is_match_start_sofa_result(lines, i):
+            i += 1
+            continue
+
+        match, ni = _parse_finished_result_from_position(
+            lines, i,
+            current_tournament=current_tournament,
+            current_surface=current_surface,
+            current_circuit=current_circuit,
+            current_ignore_doubles=current_ignore_doubles
+        )
+        if match:
+            matches.append(match)
+        i = max(ni, i + 1)
 
     return matches
 
