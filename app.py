@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.25.5 Resultados Games Parser Fix", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.25.6 Schedule Parser Fix", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.25.5"
-QUALITY_ENGINE_VERSION = "v23.25.5-resultados-games-parser-fix-2026-05-15"
+APP_VERSION = "v23.25.6"
+QUALITY_ENGINE_VERSION = "v23.25.6-schedule-parser-fix-2026-05-17"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 
@@ -4253,10 +4253,10 @@ def is_country_line_sofa(x):
         "croatia","czechia","denmark","finland","france","georgia","germany","hungary","italy","kazakhstan",
         "latvia","lebanon","lithuania","luxembourg","netherlands","paraguay","peru","portugal","russia","serbia",
         "spain","switzerland","tunisia","united kingdom","uruguay","usa","ukraine","poland","slovakia",
-        "slovenia","romania","bulgaria","turkey","greece","norway","sweden","japan","india","south korea",
+        "slovenia","romania","bulgaria","turkey","turkiye","türkiye","greece","norway","sweden","japan","india","south korea",
         "latvia","belarus","cyprus","malta","albania","armenia","azerbaijan","montenegro","north macedonia",
         "macedonia","kosovo","iran","iraq","qatar","uae","united arab emirates","saudi arabia","vietnam",
-        "philippines","malaysia","singapore","uzbekistan","costa rica","puerto rico"
+        "philippines","malaysia","singapore","uzbekistan","costa rica","puerto rico","morocco","czech republic","great britain"
     }
     return normalizar_texto(x).lower().strip() in countries
 
@@ -4579,13 +4579,157 @@ def filtrar_matches_por_circuito_pegado(matches, circuito):
     return [m for m in matches if m.get("circuito_detectado") in allowed]
 
 
+def _is_schedule_header_candidate(line, following=None):
+    """v23.25.6: detecta cabeceras de torneos en pegados de horarios sin fecha."""
+    t = normalizar_texto(line).strip()
+    if not t or is_time_line_sofa(t) or t == "-":
+        return False
+    if is_country_line_sofa(t) or is_country_like_name(t):
+        return False
+    if is_number_line_sofa_schedule(t):
+        return False
+    u = t.upper()
+    if any(k in u for k in ["ATP", "WTA", "CHALLENGER", "ITF", "DOUBLES"]):
+        return True
+    if "," in t:
+        return True
+    following = following or []
+    ftxt = " ".join(normalizar_texto(x).upper() for x in following[:6])
+    if any(k in ftxt for k in ["ATP", "WTA", "CHALLENGER", "ITF", "TIERRA", "DURA", "HARD", "CLAY", "GRASS"]):
+        return True
+    return False
+
+
+def is_number_line_sofa_schedule(x):
+    return bool(re.match(r"^\d+$", str(x).strip()))
+
+
+def parse_sofascore_schedule_no_date_paste(raw_text):
+    """
+    v23.25.6 Schedule Parser Fix.
+    Lee pegados de Sofascore/Flashscore SIN fecha:
+      HORA / - / País / Jugador / País / Jugador
+    Mantiene contexto ATP/WTA/Challenger, superficie y torneo.
+    Ignora cabeceras vacías, dobles, números sueltos y partidos incompletos.
+    """
+    lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    matches = []
+
+    current_tournament = ""
+    current_meta = []
+    current_circuit = "DESCONOCIDO"
+    current_surface = "Clay"
+    current_ignore_doubles = False
+
+    def refresh_context():
+        nonlocal current_circuit, current_surface, current_ignore_doubles
+        current_circuit = clasificar_bloque_torneo_pegado(current_tournament, current_meta)
+        current_ignore_doubles = current_circuit == "IGNORAR_DOBLES"
+        for ml in current_meta + [current_tournament]:
+            surf = normalizar_superficie_pegada(ml, default="")
+            if surf in ["Hard", "Clay", "Grass"]:
+                current_surface = surf
+
+    def add_meta(ln):
+        nonlocal current_meta
+        if ln not in current_meta:
+            current_meta.append(ln)
+        if len(current_meta) > 8:
+            current_meta = current_meta[-8:]
+        refresh_context()
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Partido estricto: hora, -, país, jugador, país, jugador.
+        if is_time_line_sofa(line):
+            j = i + 1
+            if j < len(lines) and lines[j].strip() == "-":
+                j += 1
+
+            if j + 3 < len(lines):
+                pais1 = lines[j].strip()
+                jugador1 = lines[j + 1].strip()
+                pais2 = lines[j + 2].strip()
+                jugador2 = lines[j + 3].strip()
+
+                valid_country_pair = (
+                    (is_country_line_sofa(pais1) or is_country_like_name(pais1)) and
+                    (is_country_line_sofa(pais2) or is_country_like_name(pais2))
+                )
+                valid_players = (
+                    looks_like_player_line_sofa(jugador1) and looks_like_player_line_sofa(jugador2) and
+                    not is_country_like_name(jugador1) and not is_country_like_name(jugador2) and
+                    not es_rival_pendiente_pegado(jugador1) and not es_rival_pendiente_pegado(jugador2) and
+                    "/" not in jugador1 and "/" not in jugador2
+                )
+
+                if valid_country_pair and valid_players and not current_ignore_doubles:
+                    matches.append({
+                        "raw": f"{line} · {jugador1} - {jugador2}",
+                        "time": line,
+                        "p1_raw": jugador1,
+                        "p2_raw": jugador2,
+                        "surface": current_surface,
+                        "torneo": current_tournament,
+                        "circuito_detectado": current_circuit,
+                        "odd1": None,
+                        "odd2": None,
+                        "quoted_side": None,
+                        "quoted_odd": None,
+                        "quoted_text": None
+                    })
+                    i = j + 4
+                    continue
+
+            # Si no encaja, avanzamos sin romper el parser completo.
+            i += 1
+            continue
+
+        # Metadatos de circuito/categoría/superficie/números.
+        low = normalizar_texto(line).lower().strip()
+        up = normalizar_texto(line).upper().strip()
+        is_circuit_or_category = (
+            up in {"ATP", "WTA", "CHALLENGER", "ITF"} or
+            any(k in up for k in ["ATP 1000", "ATP 500", "ATP 250", "WTA 1000", "WTA 500", "WTA 250", "WTA 125", "CHALLENGER 50", "CHALLENGER 75", "CHALLENGER 100", "CHALLENGER 125", "CHALLENGER 175"])
+        )
+        is_surface = normalizar_superficie_pegada(line, default="") in ["Hard", "Clay", "Grass"]
+
+        if is_circuit_or_category or is_surface or is_number_line_sofa_schedule(line):
+            add_meta(line)
+            i += 1
+            continue
+
+        # Cabecera/título de torneo. Importante para Hamburg/Geneva/Rome/Valencia/Istanbul.
+        if _is_schedule_header_candidate(line, lines[i + 1:i + 7]):
+            current_tournament = line
+            # Subcabeceras tipo "Hamburg, Germany, Qualifying" o "Istanbul, Türkiye"
+            # pueden venir justo antes de la hora y deben HEREDAR ATP/WTA/Challenger/superficie
+            # del bloque padre. Si después vienen metadatos nuevos, sí empezamos bloque nuevo.
+            if not (i + 1 < len(lines) and is_time_line_sofa(lines[i + 1])):
+                current_meta = []
+            refresh_context()
+            i += 1
+            continue
+
+        i += 1
+
+    return matches
+
+
 def parse_sofascore_day_grouped_paste(raw_text):
     """
     Parser para pegar TODO el día desde Sofascore/Flashscore.
     Separa por encabezados ATP/WTA/Challenger, ignora dobles y descarta rivales pendientes.
     No cambia cálculos: solo devuelve lista limpia de partidos con circuito/superficie detectados.
+
+    v23.25.6: si el pegado viene como horarios sin fecha, usa parser específico
+    HORA / - / País / Jugador / País / Jugador para no romperse con cabeceras vacías.
     """
     lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    if lines and not any(is_date_line_sofa_result(x) for x in lines) and any(is_time_line_sofa(x) for x in lines):
+        return parse_sofascore_schedule_no_date_paste(raw_text)
     matches = []
     current_tournament = ""
     current_meta = []
