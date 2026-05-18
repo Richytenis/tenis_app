@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.26.8"
+APP_VERSION = "v23.26.9"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4805,6 +4805,163 @@ def parse_sofascore_schedule_no_date_paste(raw_text):
 
     return matches
 
+
+
+# =========================================================
+# v23.26.9 DIRECT SCHEDULE PARSER FIX
+# =========================================================
+def parse_sofascore_schedule_direct_pattern_v23269(raw_text):
+    """
+    Parser directo para horarios Sofascore/Flashscore:
+      HORA / - / PAIS / JUGADOR / PAIS / JUGADOR
+    Diseñado para Roland Garros/French Open Qualifying con bloques ATP+WTA mezclados.
+    No depende de que el encabezado sea reconocido como torneo; mantiene el último ATP/WTA visto.
+    """
+    lines = [ln.strip() for ln in str(raw_text).splitlines() if ln and ln.strip()]
+    matches = []
+
+    current_tournament = ""
+    current_circuit = "DESCONOCIDO"
+    current_surface = "Clay"
+    current_meta = []
+    current_ignore_doubles = False
+
+    def push_meta(x):
+        nonlocal current_meta
+        x = normalizar_texto(x).strip()
+        if x and x not in current_meta:
+            current_meta.append(x)
+        if len(current_meta) > 10:
+            current_meta = current_meta[-10:]
+
+    def is_direct_meta_or_header(x, nxt=None):
+        t = normalizar_texto(x).strip()
+        if not t or t == "-" or is_time_line_sofa(t):
+            return False
+        if is_country_line_sofa(t) or is_country_like_name(t):
+            return False
+        if is_number_line_sofa_schedule(t):
+            return True
+        u = t.upper()
+        if u in {"ATP", "WTA", "ITF", "CHALLENGER", "GRAND SLAM", "QUALIFYING", "QUALIFICATION"}:
+            return True
+        if normalizar_superficie_pegada(t, default="") in ["Hard", "Clay", "Grass"]:
+            return True
+        if any(k in u for k in ["ATP ", "WTA ", "CHALLENGER", "GRAND SLAM", "QUALIFYING", "QUALIFICATION", "DOUBLES", "DOBLES"]):
+            return True
+        if "," in t:
+            return True
+        # Cabecera suelta tipo Roland Garros, Hamburg, Geneva justo antes de otro encabezado.
+        nxt_txt = " ".join(normalizar_texto(z).upper() for z in (nxt or [])[:5])
+        if any(k in nxt_txt for k in ["ATP", "WTA", "GRAND SLAM", "TIERRA", "CLAY", "HARD", "GRASS", "QUALIFYING"]):
+            return True
+        return False
+
+    i = 0
+    while i < len(lines):
+        line = normalizar_texto(lines[i]).strip()
+        up = line.upper()
+
+        # 1) Partido por patrón estricto.
+        if is_time_line_sofa(line):
+            j = i + 1
+            if j < len(lines) and normalizar_texto(lines[j]).strip() == "-":
+                j += 1
+            if j + 3 < len(lines):
+                pais1 = normalizar_texto(lines[j]).strip()
+                jugador1 = normalizar_texto(lines[j + 1]).strip()
+                pais2 = normalizar_texto(lines[j + 2]).strip()
+                jugador2 = normalizar_texto(lines[j + 3]).strip()
+
+                valid_country_pair = (
+                    (is_country_line_sofa(pais1) or is_country_like_name(pais1)) and
+                    (is_country_line_sofa(pais2) or is_country_like_name(pais2))
+                )
+                valid_players = (
+                    looks_like_player_line_sofa(jugador1) and looks_like_player_line_sofa(jugador2) and
+                    not is_country_like_name(jugador1) and not is_country_like_name(jugador2) and
+                    not es_rival_pendiente_pegado(jugador1) and not es_rival_pendiente_pegado(jugador2) and
+                    "/" not in jugador1 and "/" not in jugador2
+                )
+                if valid_country_pair and valid_players and not current_ignore_doubles:
+                    # Grand Slam Qualifying debe quedar como Qualy BO3, pero con circuito ATP/WTA correcto.
+                    source = " ".join([current_tournament] + current_meta)
+                    matches.append({
+                        "raw": f"{line} · {jugador1} - {jugador2}",
+                        "time": line,
+                        "p1_raw": jugador1,
+                        "p2_raw": jugador2,
+                        "surface": current_surface,
+                        "torneo": current_tournament,
+                        "raw_block": source,
+                        "source_text": source,
+                        "circuito_detectado": current_circuit,
+                        "odd1": None,
+                        "odd2": None,
+                        "quoted_side": None,
+                        "quoted_odd": None,
+                        "quoted_text": None
+                    })
+                    i = j + 4
+                    continue
+            i += 1
+            continue
+
+        # 2) Contexto.
+        if up == "ATP":
+            current_circuit = "ATP"
+            push_meta(line)
+            i += 1
+            continue
+        if up == "WTA":
+            current_circuit = "WTA"
+            push_meta(line)
+            i += 1
+            continue
+        if "DOUBLES" in up or "DOBLES" in up:
+            current_ignore_doubles = True
+            push_meta(line)
+            i += 1
+            continue
+        if up in {"CHALLENGER", "ITF"}:
+            # Si no aparece WTA, Challenger/ITF por defecto lo tratamos como masculino.
+            current_circuit = "CHALLENGER_ATP" if up == "CHALLENGER" else "ITF_ATP"
+            push_meta(line)
+            i += 1
+            continue
+        surf = normalizar_superficie_pegada(line, default="")
+        if surf in ["Hard", "Clay", "Grass"]:
+            current_surface = surf
+            push_meta(line)
+            i += 1
+            continue
+        if up in {"GRAND SLAM", "QUALIFYING", "QUALIFICATION"} or "QUALIFYING" in up or "GRAND SLAM" in up:
+            push_meta(line)
+            i += 1
+            continue
+        if is_number_line_sofa_schedule(line):
+            push_meta(line)
+            i += 1
+            continue
+
+        # 3) Cabecera de torneo. No borra ATP/WTA ya detectado; solo cambia el nombre del torneo.
+        if is_direct_meta_or_header(line, lines[i + 1:i + 6]):
+            current_tournament = line
+            current_ignore_doubles = False
+            push_meta(line)
+            if "QUALIFYING" in up or "QUALIFICATION" in up:
+                push_meta("Qualifying")
+            i += 1
+            continue
+
+        i += 1
+
+    return matches
+
+
+# Sobrescribe el parser de horarios sin fecha con el parser directo robusto.
+def parse_sofascore_schedule_no_date_paste(raw_text):
+    return parse_sofascore_schedule_direct_pattern_v23269(raw_text)
 
 def parse_sofascore_day_grouped_paste(raw_text):
     """
