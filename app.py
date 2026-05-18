@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.26.3"
+APP_VERSION = "v23.26.4"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -6155,7 +6155,7 @@ def over_focus_label(circuito, best_label, best_prob, set3, over17, over18, over
 
 def market_selector_v23263(row):
     """
-    v23.26.3 Market Selector.
+    v23.26.4 Market Selector + Under 2.5.
     No fuerza siempre Over 18.5. Clasifica el perfil del partido y propone:
     - Over 18.5 / Over 19.5
     - +2.5 sets
@@ -6210,14 +6210,24 @@ def market_selector_v23263(row):
     zona_over_watch = 0.70 <= over18 < 0.76
 
     # 2) Partido dominado: mejor mirar 2-0/Under que Over.
-    if fav >= 0.68 and fav20 >= 0.55:
-        if under22 >= 0.55 or over18 < 0.76:
-            market = f"{favorito} 2-0 / UNDER 2.5 SETS"
-            motivo = "favorito con perfil de 2-0; evitar Over 18.5 por riesgo de marcador corto"
-            if partial:
+    # v23.26.4: hacemos este detector más útil porque los fallos de Over venían de 2-0 cortos.
+    perfil_2_0_fuerte = (fav >= 0.70 and fav20 >= 0.58 and (under22 >= 0.56 or over18 < 0.76))
+    perfil_2_0_moderado = (fav >= 0.64 and fav20 >= 0.52 and over18 < 0.76 and set3 <= 0.45)
+
+    if perfil_2_0_fuerte or perfil_2_0_moderado:
+        if perfil_2_0_fuerte:
+            market = f"✅ {favorito} 2-0 / UNDER 2.5 SETS"
+            motivo = "favorito con perfil claro de 2-0; evitar Over 18.5 por riesgo de marcador corto"
+        else:
+            market = f"👀 WATCH {favorito} 2-0 / UNDER 2.5 SETS"
+            motivo = "perfil moderado de 2-0; no forzar Over 18.5"
+
+        if partial:
+            market = market.replace("✅ ", "👀 OBSERVAR ")
+            if not market.startswith("👀"):
                 market = "👀 OBSERVAR " + market
-                motivo += " · datos parciales"
-            return out(market, fav20, motivo)
+            motivo += " · datos parciales"
+        return out(market, fav20, motivo)
 
     # 3) Partido realmente largo: Over solo si es elite o si Over 19.5 acompaña.
     if over18 >= 0.80 and fav20 <= 0.52:
@@ -6290,6 +6300,12 @@ def batch_recommendation(row):
             rec = _downgrade_strong_to_apto(rec, "datos parciales")
 
         if is_chall:
+            # v23.26.4: si el perfil apunta a 2-0/Under, no dejamos que la recomendación final sea Over.
+            if fav_prob >= 0.64 and fav20 >= 0.52 and over18 < 0.76:
+                if fav_prob >= 0.70 and fav20 >= 0.58:
+                    return "✅ MIRAR FAVORITO 2-0 / UNDER 2.5 SETS"
+                return "👀 WATCH FAVORITO 2-0 / UNDER 2.5 SETS"
+
             # v23.26.2: re-etiquetado final de Over Challenger por umbral real,
             # aunque llegue desde una etiqueta antigua ATP.
             if "OVER 18.5" in rec:
@@ -6519,6 +6535,8 @@ def batch_excel_bytes(df):
                 "✅ OVER 17.5 APTO": "D9EAD3",
                 "✅ OVER 19.5 APTO": "D9EAD3",
                 "🎯 3 SETS WATCH": "FFF2CC",
+                "✅ MIRAR FAVORITO 2-0 / UNDER 2.5 SETS": "D9EAD3",
+                "👀 WATCH FAVORITO 2-0 / UNDER 2.5 SETS": "FFF2CC",
                 "NO BET": "F4CCCC",
                 "VALUE NUMÉRICO PERO RIESGO": "FCE4D6",
             }
@@ -6578,7 +6596,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.26.3 Market Selector")
+    st.header("🎾 Tennis IA v23.26.4 Market Selector + Under 2.5")
     st.caption("ATP + Challenger ELO/Stats Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
@@ -7360,6 +7378,8 @@ Sebastián Baez - Roberto Carballés Baena"""
                 "DUDOSA CON VALUE": 3,
                 "DUDOSA": 2,
                 "VALUE NUMÉRICO PERO RIESGO": 1,
+                "MIRAR FAVORITO 2-0": 4,
+                "WATCH FAVORITO 2-0": 1,
                 "WATCHLIST OVER": 1,
                 "NO BET": 0,
             }
@@ -7390,6 +7410,10 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "WTA Watchlist",
                     "Signal Trust",
                     "Recomendación",
+                    "Mercado recomendado",
+                    "Prob mercado recomendado",
+                    "Motivo Market Selector",
+                    "Favorito 2-0",
                     "Riesgos"
                 ]
                 ok = ok[[c for c in simple_cols if c in ok.columns]]
