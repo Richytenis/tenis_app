@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.26.5"
+APP_VERSION = "v23.26.6"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -6155,7 +6155,7 @@ def over_focus_label(circuito, best_label, best_prob, set3, over17, over18, over
 
 def market_selector_v23263(row):
     """
-    v23.26.5 Market Selector + Signal Coherence.
+    v23.26.6 Market Selector + Visual Coherence.
     No fuerza siempre Over 18.5. Clasifica el perfil del partido y propone:
     - Over 18.5 / Over 19.5
     - +2.5 sets
@@ -6272,64 +6272,85 @@ def limpiar_signal_trust_v23263(row):
     return trust
 
 
-def alinear_market_selector_v23265(row):
+def alinear_market_selector_v23266(row):
     """
-    v23.26.5 Signal Coherence.
-    El selector puede detectar un mercado interesante, pero la recomendación final
-    manda. Si la recomendación final es NO BET / WATCH / contexto, el mercado
-    recomendado no puede aparecer como apuesta con ✅ o 🔥.
+    v23.26.6 Visual Coherence.
+    La recomendación final manda siempre. El mercado recomendado se reconstruye
+    desde la propia recomendación para evitar contradicciones tipo:
+      Recomendación = ✅ OVER 19.5 APTO
+      Mercado recomendado = +2.5 SETS
+    No modifica probabilidades ni filtros; solo limpia la señal visual/export.
     """
     rec = str(row.get("Recomendación", "")).strip()
     market = str(row.get("Mercado recomendado", "")).strip()
     prob = str(row.get("Prob mercado recomendado", "")).strip()
     motivo = str(row.get("Motivo Market Selector", "")).strip()
-
     rec_u = rec.upper()
-    market_u = market.upper()
 
-    def s(m, p=None, mot_extra=""):
-        out = {
+    def fmt_prob(col):
+        p = _row_pct(row, col, None)
+        try:
+            if p is None or pd.isna(p):
+                return prob
+            return f"{float(p):.1%}"
+        except Exception:
+            return prob
+
+    def out(m, p="", extra=""):
+        base = motivo
+        if extra:
+            base = (base + " · " if base else "") + extra
+        return pd.Series({
             "Mercado recomendado": m,
-            "Prob mercado recomendado": prob if p is None else p,
-            "Motivo Market Selector": motivo,
-        }
-        if mot_extra:
-            base = out["Motivo Market Selector"]
-            out["Motivo Market Selector"] = (base + " · " if base else "") + mot_extra
-        return pd.Series(out)
+            "Prob mercado recomendado": p,
+            "Motivo Market Selector": base,
+        })
 
-    # 1) Si la recomendación final prohíbe apostar, el selector debe quedar en NO BET.
+    # 1) Bloqueos finales: no puede aparecer ningún mercado con ✅/🔥.
     if "NO BET" in rec_u:
-        return s("❌ NO BET", "", "alineado con recomendación final")
+        return out("❌ NO BET", "", "alineado con recomendación final")
 
-    # 2) ML en Challenger/contexto no debe enseñar un mercado alternativo como apuesta.
     if "ML SOLO CONTEXTO" in rec_u or "SOLO CONTEXTO" in rec_u:
-        return s("👀 SOLO CONTEXTO / OBSERVAR", "", "alineado con recomendación final")
+        return out("👀 SOLO CONTEXTO / OBSERVAR", "", "alineado con recomendación final")
 
-    # 3) WATCH/OBSERVAR: permitimos el nombre del mercado, pero nunca con ✅/🔥.
+    # 2) WATCH/OBSERVAR: el mercado recomendado debe copiar el tipo de watch de la recomendación.
     if "WATCH" in rec_u or "OBSERVAR" in rec_u or rec.startswith("👀"):
-        clean_market = market
-        clean_market = clean_market.replace("🔥", "👀")
-        clean_market = clean_market.replace("✅", "👀")
-        if not clean_market.startswith("👀"):
-            if "OVER" in rec_u:
-                clean_market = "👀 " + rec
-            elif "2-0" in rec_u or "UNDER" in rec_u:
-                clean_market = clean_market if clean_market else "👀 WATCH FAVORITO 2-0 / UNDER 2.5 SETS"
-                if not clean_market.startswith("👀"):
-                    clean_market = "👀 " + clean_market
-            else:
-                clean_market = "👀 SOLO OBSERVAR"
-        return s(clean_market, None, "alineado como watch, no apuesta")
+        if "OVER 19.5" in rec_u:
+            return out("👀 WATCH OVER 19.5", fmt_prob("Over 19.5"), "alineado como watch, no apuesta")
+        if "OVER 18.5" in rec_u:
+            return out("👀 WATCH OVER 18.5", fmt_prob("Over 18.5"), "alineado como watch, no apuesta")
+        if "OVER 17.5" in rec_u:
+            return out("👀 WATCH OVER 17.5", fmt_prob("Over 17.5"), "alineado como watch, no apuesta")
+        if "2-0" in rec_u or "UNDER 2.5" in rec_u:
+            favorito = str(row.get("Favorito modelo", "Favorito")) or "Favorito"
+            return out(f"👀 WATCH {favorito} 2-0 / UNDER 2.5 SETS", fmt_prob("Favorito 2-0"), "alineado como watch, no apuesta")
+        if "3 SET" in rec_u or "3 SETS" in rec_u or "+2.5" in rec_u:
+            return out("👀 WATCH +2.5 SETS", fmt_prob("Partido a 3 sets"), "alineado como watch, no apuesta")
+        return out("👀 SOLO OBSERVAR", "", "alineado como watch, no apuesta")
 
-    # 4) Si la recomendación final sí es apuesta, el mercado debe reflejarla y no quedarse en NO BET.
-    if rec.startswith("✅") or rec.startswith("🔥") or "APTO" in rec_u or "FUERTE" in rec_u:
-        if (not market) or "NO BET" in market_u or "SOLO CONTEXTO" in market_u:
-            return s(rec, None, "mercado alineado con recomendación final")
-        # Si el selector propone apuesta, conservamos, pero quitamos contradicciones menores.
-        return s(market, None, "coherente con recomendación final")
+    # 3) Recomendaciones positivas: Mercado recomendado debe ser exactamente el mismo tipo de mercado.
+    emoji = "🔥" if (rec.startswith("🔥") or "FUERTE" in rec_u) else "✅"
 
-    return s(market, None, "revisión de coherencia v23.26.5")
+    if "OVER 19.5" in rec_u:
+        return out(f"{emoji} OVER 19.5", fmt_prob("Over 19.5"), "mercado alineado con recomendación final")
+
+    if "OVER 18.5" in rec_u:
+        return out(f"{emoji} OVER 18.5", fmt_prob("Over 18.5"), "mercado alineado con recomendación final")
+
+    if "OVER 17.5" in rec_u:
+        return out(f"{emoji} OVER 17.5", fmt_prob("Over 17.5"), "mercado alineado con recomendación final")
+
+    if "2-0" in rec_u or "UNDER 2.5" in rec_u:
+        favorito = str(row.get("Favorito modelo", "Favorito")) or "Favorito"
+        return out(f"{emoji} {favorito} 2-0 / UNDER 2.5 SETS", fmt_prob("Favorito 2-0"), "mercado alineado con recomendación final")
+
+    if "3 SET" in rec_u or "3 SETS" in rec_u or "+2.5" in rec_u:
+        return out(f"{emoji} +2.5 SETS", fmt_prob("Partido a 3 sets"), "mercado alineado con recomendación final")
+
+    # 4) Fallback: si no sabemos mapearlo, quitamos contradicciones obvias.
+    if not market:
+        market = rec if rec else "NO BET"
+    return out(market, prob, "revisión de coherencia v23.26.6")
 
 def batch_recommendation(row):
     trust = str(row.get("Signal Trust", "")).upper()
@@ -6461,8 +6482,8 @@ def prepare_batch_display_table(ok_df):
     selector_cols = df.apply(market_selector_v23263, axis=1)
     df = pd.concat([df, selector_cols], axis=1)
 
-    # v23.26.5: la recomendación final manda; el mercado recomendado no puede contradecirla.
-    aligned_selector_cols = df.apply(alinear_market_selector_v23265, axis=1)
+    # v23.26.6: la recomendación final manda; el mercado recomendado no puede contradecirla.
+    aligned_selector_cols = df.apply(alinear_market_selector_v23266, axis=1)
     for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector"]:
         df[_col] = aligned_selector_cols[_col]
 
@@ -6662,7 +6683,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.26.5 Market Selector + Signal Coherence")
+    st.header("🎾 Tennis IA v23.26.6 Market Selector + Visual Coherence")
     st.caption("ATP + Challenger ELO/Stats Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
