@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.26.4"
+APP_VERSION = "v23.26.5"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -6155,7 +6155,7 @@ def over_focus_label(circuito, best_label, best_prob, set3, over17, over18, over
 
 def market_selector_v23263(row):
     """
-    v23.26.4 Market Selector + Under 2.5.
+    v23.26.5 Market Selector + Signal Coherence.
     No fuerza siempre Over 18.5. Clasifica el perfil del partido y propone:
     - Over 18.5 / Over 19.5
     - +2.5 sets
@@ -6270,6 +6270,66 @@ def limpiar_signal_trust_v23263(row):
     if "🔥" in trust and not is_strong:
         return trust.replace("🔥", "👀").replace("SPOT FUERTE", "SPOT WATCH").replace("FUERTE", "WATCH")
     return trust
+
+
+def alinear_market_selector_v23265(row):
+    """
+    v23.26.5 Signal Coherence.
+    El selector puede detectar un mercado interesante, pero la recomendación final
+    manda. Si la recomendación final es NO BET / WATCH / contexto, el mercado
+    recomendado no puede aparecer como apuesta con ✅ o 🔥.
+    """
+    rec = str(row.get("Recomendación", "")).strip()
+    market = str(row.get("Mercado recomendado", "")).strip()
+    prob = str(row.get("Prob mercado recomendado", "")).strip()
+    motivo = str(row.get("Motivo Market Selector", "")).strip()
+
+    rec_u = rec.upper()
+    market_u = market.upper()
+
+    def s(m, p=None, mot_extra=""):
+        out = {
+            "Mercado recomendado": m,
+            "Prob mercado recomendado": prob if p is None else p,
+            "Motivo Market Selector": motivo,
+        }
+        if mot_extra:
+            base = out["Motivo Market Selector"]
+            out["Motivo Market Selector"] = (base + " · " if base else "") + mot_extra
+        return pd.Series(out)
+
+    # 1) Si la recomendación final prohíbe apostar, el selector debe quedar en NO BET.
+    if "NO BET" in rec_u:
+        return s("❌ NO BET", "", "alineado con recomendación final")
+
+    # 2) ML en Challenger/contexto no debe enseñar un mercado alternativo como apuesta.
+    if "ML SOLO CONTEXTO" in rec_u or "SOLO CONTEXTO" in rec_u:
+        return s("👀 SOLO CONTEXTO / OBSERVAR", "", "alineado con recomendación final")
+
+    # 3) WATCH/OBSERVAR: permitimos el nombre del mercado, pero nunca con ✅/🔥.
+    if "WATCH" in rec_u or "OBSERVAR" in rec_u or rec.startswith("👀"):
+        clean_market = market
+        clean_market = clean_market.replace("🔥", "👀")
+        clean_market = clean_market.replace("✅", "👀")
+        if not clean_market.startswith("👀"):
+            if "OVER" in rec_u:
+                clean_market = "👀 " + rec
+            elif "2-0" in rec_u or "UNDER" in rec_u:
+                clean_market = clean_market if clean_market else "👀 WATCH FAVORITO 2-0 / UNDER 2.5 SETS"
+                if not clean_market.startswith("👀"):
+                    clean_market = "👀 " + clean_market
+            else:
+                clean_market = "👀 SOLO OBSERVAR"
+        return s(clean_market, None, "alineado como watch, no apuesta")
+
+    # 4) Si la recomendación final sí es apuesta, el mercado debe reflejarla y no quedarse en NO BET.
+    if rec.startswith("✅") or rec.startswith("🔥") or "APTO" in rec_u or "FUERTE" in rec_u:
+        if (not market) or "NO BET" in market_u or "SOLO CONTEXTO" in market_u:
+            return s(rec, None, "mercado alineado con recomendación final")
+        # Si el selector propone apuesta, conservamos, pero quitamos contradicciones menores.
+        return s(market, None, "coherente con recomendación final")
+
+    return s(market, None, "revisión de coherencia v23.26.5")
 
 def batch_recommendation(row):
     trust = str(row.get("Signal Trust", "")).upper()
@@ -6400,6 +6460,12 @@ def prepare_batch_display_table(ok_df):
     df["Recomendación"] = df.apply(batch_recommendation, axis=1)
     selector_cols = df.apply(market_selector_v23263, axis=1)
     df = pd.concat([df, selector_cols], axis=1)
+
+    # v23.26.5: la recomendación final manda; el mercado recomendado no puede contradecirla.
+    aligned_selector_cols = df.apply(alinear_market_selector_v23265, axis=1)
+    for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector"]:
+        df[_col] = aligned_selector_cols[_col]
+
     df["Signal Trust"] = df.apply(limpiar_signal_trust_v23263, axis=1)
 
     preferred = [
@@ -6596,7 +6662,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.26.4 Market Selector + Under 2.5")
+    st.header("🎾 Tennis IA v23.26.5 Market Selector + Signal Coherence")
     st.caption("ATP + Challenger ELO/Stats Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
