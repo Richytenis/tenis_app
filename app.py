@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.25.8"
+APP_VERSION = "v23.26.1"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -5943,6 +5943,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Jugador gana set": dog_name,
             "Prob gana set": f"{sim.get('dog_wins_set', 0):.1%}",
             "Partido a 3 sets": f"{sim.get('set3', 0):.1%}",
+            "Favorito 2-0": f"{sim.get('fav_2_0', 0):.1%}",
             "Juegos J1": f"{avg_g1:.1f}",
             "Juegos J2": f"{avg_g2:.1f}",
             "Total games": f"{avg_games:.1f}",
@@ -6057,6 +6058,31 @@ def wta_over_watchlist_reason(circuito, surface, fav_prob, over18, over17=None):
     return ""
 
 
+
+def _is_challenger_context(value):
+    """Devuelve True para Challenger/Qualy aunque venga escrito de varias formas."""
+    c = str(value or "").upper().replace(" ", "_")
+    return any(x in c for x in ["CHALLENGER", "CHALL", "QUAL_CHALL"])
+
+
+def _row_pct(row, col, default=0.0):
+    """Lee porcentajes en formato 72.5%, 0.725 o vacío."""
+    try:
+        v = row.get(col, default)
+        if v is None or str(v).strip() == "":
+            return float(default)
+        s = str(v).replace("%", "").replace(",", ".").strip()
+        n = float(s)
+        return n / 100.0 if n > 1 else n
+    except Exception:
+        return float(default)
+
+
+def _downgrade_strong_to_apto(label, extra=""):
+    txt = str(label or "")
+    txt = txt.replace("🔥", "✅").replace("FUERTE", "APTO")
+    return (txt + (" · " + extra if extra else "")).strip()
+
 def over_focus_label(circuito, best_label, best_prob, set3, over17, over18, over19):
     """Etiqueta visual v23.25 para priorizar Over/3 sets sobre ML."""
     label = str(best_label or "")
@@ -6070,12 +6096,24 @@ def over_focus_label(circuito, best_label, best_prob, set3, over17, over18, over
         return ""
 
     c = str(circuito).upper().strip()
+    is_chall = _is_challenger_context(c)
     if "Over 17.5" in label:
         if c == "WTA" and over17 >= 0.78:
             return "🔥 OVER 17.5 FUERTE"
         return "✅ OVER 17.5 APTO"
     if "Over 18.5" in label:
-        if c in ["ATP", "CHALLENGER"] and over18 >= 0.73:
+        # v23.26.1: Challenger más prudente. Antes 73% ya era FUERTE; en el backtest salieron falsos fuertes.
+        if is_chall:
+            if over18 >= 0.80:
+                return "🔥 OVER 18.5 FUERTE"
+            if over18 >= 0.76:
+                return "✅ OVER 18.5 APTO FUERTE"
+            if over18 >= 0.70:
+                return "✅ OVER 18.5 APTO"
+            if over18 >= 0.65:
+                return "👀 OVER 18.5 WATCH"
+            return "ML SOLO CONTEXTO"
+        if c == "ATP" and over18 >= 0.73:
             return "🔥 OVER 18.5 FUERTE"
         if over18 >= 0.68:
             return "✅ OVER 18.5 APTO"
@@ -6100,15 +6138,51 @@ def batch_recommendation(row):
     watchlist = str(row.get("WTA Watchlist", "")).strip()
     risks = str(row.get("Riesgos", "")).lower()
 
+    circuito_txt = " ".join([
+        str(row.get("Circuito cálculo", "")),
+        str(row.get("Circuito datos", "")),
+        str(row.get("Circuito fuente", "")),
+    ])
+    is_chall = _is_challenger_context(circuito_txt)
+    estado = str(row.get("Estado", ""))
+    partial_data = ("estimado" in estado.lower()) or ("parcial" in trust.lower()) or ("fallback" in risks)
+    fav_prob = _row_pct(row, "ML favorito", 0.0)
+    fav20 = _row_pct(row, "Favorito 2-0", 0.0)
+    over18 = _row_pct(row, "Over 18.5", 0.0)
+
+    def apply_guards(rec):
+        rec = str(rec or "")
+
+        # v23.26.1: en Challenger ningún pick con datos parciales puede salir como FUERTE.
+        if partial_data and "FUERTE" in rec:
+            rec = _downgrade_strong_to_apto(rec, "datos parciales")
+
+        if is_chall:
+            # Challenger ML: nunca lo vendemos como apuesta fuerte desde el resumen automático.
+            if "ML" in rec and "SOLO CONTEXTO" not in rec:
+                if fav_prob < 0.77:
+                    return "ML SOLO CONTEXTO / NO BET CHALLENGER"
+                return "👀 ML OBSERVAR CHALLENGER"
+
+            # Filtro anti 2-0 corto: favorito claro + 2-0 alto + Over no elite.
+            if "OVER 18.5" in rec and fav_prob >= 0.72 and fav20 >= 0.55 and over18 < 0.80:
+                rec = _downgrade_strong_to_apto(rec, "riesgo 2-0 corto") if "FUERTE" in rec else rec + " · riesgo 2-0 corto"
+
+            # Si Challenger Over 18.5 no llega a 70%, no se etiqueta como apuesta.
+            if "OVER 18.5" in rec and over18 < 0.70:
+                return "👀 OVER 18.5 WATCH / NO BET"
+
+        return rec
+
     if focus:
         if "FUERTE" in trust and "OVER" in focus:
-            return focus
+            return apply_guards(focus)
         if "APTO" in trust and "OVER" in focus:
-            return focus
+            return apply_guards(focus)
         if "DUDOSO" in trust and "OVER" in focus:
-            return focus.replace("✅", "👀").replace("FUERTE", "WATCH")
+            return apply_guards(focus.replace("✅", "👀").replace("FUERTE", "WATCH"))
         if "3 SETS" in focus and ("DUDOSO" in trust or "APTO" in trust or "FUERTE" in trust):
-            return focus
+            return apply_guards(focus)
 
     if "NO BET" in trust:
         if watchlist:
@@ -6121,11 +6195,11 @@ def batch_recommendation(row):
 
     if "OVER" in signal.upper():
         if "FUERTE" in trust:
-            return "🔥 OVER FUERTE"
+            return apply_guards("🔥 OVER FUERTE")
         if "APTO" in trust:
-            return "✅ OVER APTO"
+            return apply_guards("✅ OVER APTO")
         if "DUDOSO" in trust:
-            return "👀 OVER WATCHLIST"
+            return apply_guards("👀 OVER WATCHLIST")
 
     if "3 SETS" in signal.upper() or "PARTIDO A 3" in signal.upper():
         return "🎯 3 SETS WATCH"
@@ -7091,6 +7165,14 @@ Sebastián Baez - Roberto Carballés Baena"""
                 parsed, db, circuito, surface, best_of, int(sims_batch),
                 progress_callback=update_batch
             )
+            # v23.26.1: eliminar duplicados reales antes de separar OK/KO y antes de exportar.
+            if isinstance(df_batch, pd.DataFrame) and not df_batch.empty and "Partido" in df_batch.columns:
+                dedupe_cols = [c for c in ["Fecha", "Hora", "Partido"] if c in df_batch.columns]
+                if dedupe_cols:
+                    before_dedup = len(df_batch)
+                    df_batch = df_batch.drop_duplicates(subset=dedupe_cols, keep="last").reset_index(drop=True)
+                    if before_dedup != len(df_batch):
+                        msg.caption(f"✅ Lista analizada. Duplicados eliminados: {before_dedup - len(df_batch)}")
             bar.progress(100, text=f"Análisis completado · {len(parsed)} partidos")
             msg.caption("✅ Lista analizada.")
 
