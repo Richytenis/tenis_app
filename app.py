@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.26.1"
+APP_VERSION = "v23.26.2"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -1174,12 +1174,12 @@ def cargar_datos_app(circuito, cache_version=QUALITY_ENGINE_VERSION):
 
 def circuito_lookup_para_match(m, circuito_ui):
     """Devuelve el circuito de datos para fallback/históricos.
-    En modo ATP, los bloques Challenger/ITF ATP usan datos/challenger.
+    En modo ATP, los bloques Challenger/ITF/Qualy usan datos/challenger.
     El motor de simulación sigue tratándolos como ATP para no romper guards ATP/WTA.
     """
     src = str((m or {}).get("circuito_detectado", "")).upper().strip()
     ui = str(circuito_ui).upper().strip()
-    if ui == "ATP" and src in {"CHALLENGER_ATP", "ITF_ATP"}:
+    if ui == "ATP" and (src in {"CHALLENGER_ATP", "ITF_ATP"} or _es_entorno_challenger_match(m, circuito_ui)):
         return "challenger"
     return circuito_ui
 
@@ -5931,7 +5931,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Mejor señal": best_label,
             "Prob señal": f"{best_prob:.1%}",
             "Mejor mercado Over Focus": best_label if any(x in str(best_label) for x in ["Over", "3 sets", "Partido"]) else "",
-            "Over Focus Label": over_focus_label(circuito_calc, best_label, best_prob, sim.get("set3", 0.0), over17, over18, over19),
+            "Over Focus Label": over_focus_label(lookup_circuit, best_label, best_prob, sim.get("set3", 0.0), over17, over18, over19),
             "WTA Watchlist": wta_watchlist,
             "Mejor mercado WTA": (best_label if circuito_calc == "WTA" else ""),
             "WTA Over17 Priority": ("Sí" if circuito_calc == "WTA" and best_label == "Over 17.5" and over17 >= 0.77 else ""),
@@ -6062,7 +6062,28 @@ def wta_over_watchlist_reason(circuito, surface, fav_prob, over18, over17=None):
 def _is_challenger_context(value):
     """Devuelve True para Challenger/Qualy aunque venga escrito de varias formas."""
     c = str(value or "").upper().replace(" ", "_")
-    return any(x in c for x in ["CHALLENGER", "CHALL", "QUAL_CHALL"])
+    return any(x in c for x in ["CHALLENGER", "CHALL", "QUAL_CHALL", "ITF_ATP", "QUALIFYING", "QUALY"])
+
+
+def _es_entorno_challenger_match(m, circuito_ui):
+    """v23.26.2: detector operativo de Challenger/Qualy.
+    En la prueba v23.26.1 algunos partidos Challenger entraban como ATP y
+    por eso un Over 18.5 de 73-75% todavía salía como FUERTE.
+    Aquí usamos fuente + torneo + texto bruto para activar filtros prudentes.
+    """
+    ui = str(circuito_ui or "").upper().strip()
+    if ui != "ATP":
+        return False
+    txt = " ".join([
+        str((m or {}).get("circuito_detectado", "")),
+        str((m or {}).get("torneo", "")),
+        str((m or {}).get("raw_block", "")),
+        str((m or {}).get("source_text", "")),
+    ]).upper()
+    # Challenger, ITF o previas: tratamos como entorno de alta varianza.
+    return any(x in txt for x in [
+        "CHALLENGER", "CHALL", " ITF", "ITF_", "QUALIFYING", "QUALY", " Q1", " Q2", " Q3"
+    ])
 
 
 def _row_pct(row, col, default=0.0):
@@ -6142,6 +6163,8 @@ def batch_recommendation(row):
         str(row.get("Circuito cálculo", "")),
         str(row.get("Circuito datos", "")),
         str(row.get("Circuito fuente", "")),
+        str(row.get("Torneo", "")),
+        str(row.get("Estado", "")),
     ])
     is_chall = _is_challenger_context(circuito_txt)
     estado = str(row.get("Estado", ""))
@@ -6158,6 +6181,20 @@ def batch_recommendation(row):
             rec = _downgrade_strong_to_apto(rec, "datos parciales")
 
         if is_chall:
+            # v23.26.2: re-etiquetado final de Over Challenger por umbral real,
+            # aunque llegue desde una etiqueta antigua ATP.
+            if "OVER 18.5" in rec:
+                if over18 >= 0.80:
+                    rec = "🔥 OVER 18.5 FUERTE"
+                elif over18 >= 0.76:
+                    rec = "✅ OVER 18.5 APTO FUERTE"
+                elif over18 >= 0.70:
+                    rec = "✅ OVER 18.5 APTO"
+                elif over18 >= 0.65:
+                    rec = "👀 OVER 18.5 WATCH"
+                else:
+                    rec = "ML SOLO CONTEXTO"
+
             # Challenger ML: nunca lo vendemos como apuesta fuerte desde el resumen automático.
             if "ML" in rec and "SOLO CONTEXTO" not in rec:
                 if fav_prob < 0.77:
