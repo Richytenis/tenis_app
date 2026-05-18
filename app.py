@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.26.7"
+APP_VERSION = "v23.26.8"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4320,7 +4320,7 @@ def is_time_line_sofa(x):
 def is_country_line_sofa(x):
     countries = {
         "andorra","argentina","australia","austria","belgium","bolivia","brazil","canada","chile","china","colombia",
-        "croatia","czechia","denmark","finland","france","georgia","germany","hungary","italy","kazakhstan",
+        "croatia","czechia","denmark","finland","france","chinese taipei","taiwan","georgia","germany","hungary","italy","kazakhstan",
         "latvia","lebanon","lithuania","luxembourg","netherlands","paraguay","peru","portugal","russia","serbia",
         "spain","switzerland","tunisia","united kingdom","uruguay","usa","ukraine","poland","slovakia",
         "slovenia","romania","bulgaria","turkey","turkiye","türkiye","greece","norway","sweden","japan","india","south korea",
@@ -4746,6 +4746,8 @@ def parse_sofascore_schedule_no_date_paste(raw_text):
                         "p2_raw": jugador2,
                         "surface": current_surface,
                         "torneo": current_tournament,
+                        "raw_block": " ".join([current_tournament] + current_meta),
+                        "source_text": " ".join([current_tournament] + current_meta),
                         "circuito_detectado": current_circuit,
                         "odd1": None,
                         "odd2": None,
@@ -5843,11 +5845,23 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             progress_callback(idx-1, total, f"Emparejando {m.get('p1_raw')} vs {m.get('p2_raw')}")
 
         match_surface = m.get("surface", surface) if m.get("surface", surface) in ["Hard", "Clay", "Grass"] else surface
-        lookup_circuit = circuito_lookup_para_match(m, circuito)
-        circuito_calc = circuito_sim_para_lookup(lookup_circuit, circuito)
 
-        p1_key, d1, p1_score, p1_status = resolver_player_batch(m["p1_raw"], db, lookup_circuit, match_surface, allow_fallback=True)
-        p2_key, d2, p2_score, p2_status = resolver_player_batch(m["p2_raw"], db, lookup_circuit, match_surface, allow_fallback=True)
+        # v23.26.8: modo auto real. Si el pegado trae ATP+WTA mezclado, cada partido
+        # carga su base correcta en vez de usar solo el circuito seleccionado en la barra lateral.
+        src_circuit = str(m.get("circuito_detectado", "")).upper()
+        if src_circuit in {"WTA", "WTA_125", "CHALLENGER_WTA", "ITF_WTA"}:
+            circuito_base_match = "WTA"
+        elif src_circuit in {"ATP", "CHALLENGER_ATP", "ITF_ATP"}:
+            circuito_base_match = "ATP"
+        else:
+            circuito_base_match = circuito
+
+        match_db = db if str(circuito_base_match).upper() == str(circuito).upper() else cargar_datos(circuito_base_match)
+        lookup_circuit = circuito_lookup_para_match(m, circuito_base_match)
+        circuito_calc = circuito_sim_para_lookup(lookup_circuit, circuito_base_match)
+
+        p1_key, d1, p1_score, p1_status = resolver_player_batch(m["p1_raw"], match_db, lookup_circuit, match_surface, allow_fallback=True)
+        p2_key, d2, p2_score, p2_status = resolver_player_batch(m["p2_raw"], match_db, lookup_circuit, match_surface, allow_fallback=True)
 
         # Solo queda como No encontrado si es rival pendiente/país/dobles o imposible de analizar.
         if d1 is None or d2 is None:
@@ -5862,7 +5876,10 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
                 "Score J2": f"{p2_score:.0%}",
             })
             continue
-        sim = sim_match(d1, d2, match_surface, circuito_calc, best_of, sims, context_row={})
+        # French Open/Roland Garros Qualifying: aunque sea Grand Slam, se juega al mejor de 3.
+        qualy_txt = " ".join([str(m.get("torneo", "")), str(m.get("raw", "")), str(m.get("source_text", ""))]).upper()
+        match_best_of = 3 if any(x in qualy_txt for x in ["QUALIFYING", "QUALIFICATION", "QUALY"]) else best_of
+        sim = sim_match(d1, d2, match_surface, circuito_calc, match_best_of, sims, context_row={})
         games = sim.get("games", [])
         avg_games = float(np.mean(games)) if len(games) else 0.0
         games_p1 = sim.get("games_p1", [])
@@ -7332,14 +7349,14 @@ Sebastián Baez - Roberto Carballés Baena"""
                 preview = parse_sofascore_paste(raw_batch)
             elif formato_pegado == "Sofascore día auto ATP/WTA/Challenger":
                 preview_all = parse_sofascore_day_grouped_paste(raw_batch)
-                st.caption(f"Auto detectado total: {len(preview_all)} · Se analizarán solo {circuito} según el selector lateral.")
-                preview = filtrar_matches_por_circuito_pegado(preview_all, circuito)
+                st.caption(f"Auto detectado total: {len(preview_all)} · Se analizarán ATP/WTA/Challenger separados automáticamente si aparecen mezclados.")
+                preview = preview_all
             elif formato_pegado == "Sofascore resultados":
                 preview = parse_sofascore_results_paste(raw_batch)
             elif formato_pegado == "Sofascore resultados auto ATP/WTA/Challenger":
                 preview_all = parse_sofascore_results_grouped_paste(raw_batch)
-                st.caption(f"Auto resultados detectado total: {len(preview_all)} · Se analizarán solo {circuito} según el selector lateral.")
-                preview = filtrar_matches_por_circuito_pegado(preview_all, circuito)
+                st.caption(f"Auto resultados detectado total: {len(preview_all)} · Se analizarán ATP/WTA/Challenger separados automáticamente si aparecen mezclados.")
+                preview = preview_all
             else:
                 preview = parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch)
                 # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Winamax.
@@ -7394,12 +7411,12 @@ Sebastián Baez - Roberto Carballés Baena"""
             parsed = parse_sofascore_paste(raw_batch)[:int(max_batch)]
         elif formato_pegado == "Sofascore día auto ATP/WTA/Challenger":
             parsed_all = parse_sofascore_day_grouped_paste(raw_batch)
-            parsed = filtrar_matches_por_circuito_pegado(parsed_all, circuito)[:int(max_batch)]
+            parsed = parsed_all[:int(max_batch)]
         elif formato_pegado == "Sofascore resultados":
             parsed = parse_sofascore_results_paste(raw_batch)[:int(max_batch)]
         elif formato_pegado == "Sofascore resultados auto ATP/WTA/Challenger":
             parsed_all = parse_sofascore_results_grouped_paste(raw_batch)
-            parsed = filtrar_matches_por_circuito_pegado(parsed_all, circuito)[:int(max_batch)]
+            parsed = parsed_all[:int(max_batch)]
         else:
             parsed = (parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch))
             # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Winamax.
@@ -7415,7 +7432,7 @@ Sebastián Baez - Roberto Carballés Baena"""
             st.stop()
 
         if not parsed:
-            st.error("No he detectado partidos para el circuito seleccionado. Si pegaste todo el día, usa Formato pegado → Sofascore día auto ATP/WTA/Challenger o Sofascore resultados auto ATP/WTA/Challenger, y revisa si arriba tienes seleccionado ATP o WTA.")
+            st.error("No he detectado partidos. Si pegaste Roland Garros/French Open Qualifying, usa Formato pegado → Sofascore día auto ATP/WTA/Challenger y borra texto anterior del cuadro antes de pegar.")
             st.stop()
 
         best_of = 5 if "5" in formato else 3
