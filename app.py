@@ -1119,7 +1119,77 @@ def cargar_datos(circuito, cache_version=QUALITY_ENGINE_VERSION):
             "Quality": buscar_quality(nombre, quality_map)
         }
 
+
     return players
+
+
+# =========================================================
+# v23.26 CHALLENGER DATA ENGINE
+# =========================================================
+# Si el usuario trabaja en modo ATP, la app carga ATP + Challenger.
+# - ATP conserva prioridad para jugadores que ya existen en atp_elo.xlsx.
+# - Challenger añade todos los jugadores que faltan desde datos/challenger/.
+# Esto evita que partidos Challenger/Qualy caigan como "No encontrados" cuando
+# el jugador no está en la base ATP principal.
+
+@st.cache_data(show_spinner=False)
+def cargar_datos_app(circuito, cache_version=QUALITY_ENGINE_VERSION):
+    circuito = str(circuito).upper().strip()
+
+    if circuito != "ATP":
+        return cargar_datos(circuito, cache_version=cache_version)
+
+    atp_db = cargar_datos("ATP", cache_version=cache_version)
+    challenger_dir = os.path.join("datos", "challenger")
+    challenger_elo = os.path.join(challenger_dir, "challenger_elo.xlsx")
+
+    if not os.path.exists(challenger_elo):
+        return atp_db
+
+    try:
+        challenger_db = cargar_datos("challenger", cache_version=cache_version)
+    except Exception:
+        challenger_db = {}
+
+    if not challenger_db:
+        return atp_db
+
+    merged = dict(atp_db)
+    existing_clean = {limpiar(k) for k in merged.keys()}
+
+    for name, data in challenger_db.items():
+        ck = limpiar(name)
+        if not ck or ck in existing_clean:
+            continue
+        try:
+            data = data.copy()
+            data["FuenteDB"] = "Challenger"
+        except Exception:
+            pass
+        merged[name] = data
+        existing_clean.add(ck)
+
+    return merged
+
+
+def circuito_lookup_para_match(m, circuito_ui):
+    """Devuelve el circuito de datos para fallback/históricos.
+    En modo ATP, los bloques Challenger/ITF ATP usan datos/challenger.
+    El motor de simulación sigue tratándolos como ATP para no romper guards ATP/WTA.
+    """
+    src = str((m or {}).get("circuito_detectado", "")).upper().strip()
+    ui = str(circuito_ui).upper().strip()
+    if ui == "ATP" and src in {"CHALLENGER_ATP", "ITF_ATP"}:
+        return "challenger"
+    return circuito_ui
+
+
+def circuito_sim_para_lookup(lookup_circuit, circuito_ui):
+    lk = str(lookup_circuit).upper().strip()
+    if lk == "CHALLENGER":
+        return "ATP"
+    return circuito_ui
+
 
 def get_stats_surface(player_data, surface):
     return player_data.get("StatsBySurface", {}).get(surface, player_data.get("Stats", {}))
@@ -5757,9 +5827,11 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             progress_callback(idx-1, total, f"Emparejando {m.get('p1_raw')} vs {m.get('p2_raw')}")
 
         match_surface = m.get("surface", surface) if m.get("surface", surface) in ["Hard", "Clay", "Grass"] else surface
+        lookup_circuit = circuito_lookup_para_match(m, circuito)
+        circuito_calc = circuito_sim_para_lookup(lookup_circuit, circuito)
 
-        p1_key, d1, p1_score, p1_status = resolver_player_batch(m["p1_raw"], db, circuito, match_surface, allow_fallback=True)
-        p2_key, d2, p2_score, p2_status = resolver_player_batch(m["p2_raw"], db, circuito, match_surface, allow_fallback=True)
+        p1_key, d1, p1_score, p1_status = resolver_player_batch(m["p1_raw"], db, lookup_circuit, match_surface, allow_fallback=True)
+        p2_key, d2, p2_score, p2_status = resolver_player_batch(m["p2_raw"], db, lookup_circuit, match_surface, allow_fallback=True)
 
         # Solo queda como No encontrado si es rival pendiente/país/dobles o imposible de analizar.
         if d1 is None or d2 is None:
@@ -5774,7 +5846,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
                 "Score J2": f"{p2_score:.0%}",
             })
             continue
-        sim = sim_match(d1, d2, match_surface, circuito, best_of, sims, context_row={})
+        sim = sim_match(d1, d2, match_surface, circuito_calc, best_of, sims, context_row={})
         games = sim.get("games", [])
         avg_games = float(np.mean(games)) if len(games) else 0.0
         games_p1 = sim.get("games_p1", [])
@@ -5787,11 +5859,11 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         over19_raw = sum(x > 19.5 for x in games)/sims if sims else 0
         over20_raw = sum(x > 20.5 for x in games)/sims if sims else 0
         over22_raw = sum(x > 22.5 for x in games)/sims if sims else 0
-        caps = aplicar_market_sanity_caps(sim, circuito, match_surface, over18_raw, over19_raw, over20_raw, over22_raw)
+        caps = aplicar_market_sanity_caps(sim, circuito_calc, match_surface, over18_raw, over19_raw, over20_raw, over22_raw)
         over18, over19, over20, over22 = caps["over18"], caps["over19"], caps["over20"], caps["over22"]
         under22 = 1 - over22
         # Over 17.5 solo se usa como mercado operativo WTA. En ATP/Challenger queda calculado pero no se muestra como señal.
-        over17 = over17_raw if circuito == "WTA" else 0.0
+        over17 = over17_raw if circuito_calc == "WTA" else 0.0
         sim["market_over17"] = over17
         sim["market_over18"] = over18
         sim["market_over19"] = over19
@@ -5804,10 +5876,10 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         fav_prob = max(p1c, p2c)
         dog_name = p2_key if p1c >= p2c else p1_key
 
-        best_label, best_prob = batch_pick_label(sim, over17, over18, over19, over20, over22, under22, p1_key, p2_key, circuito, match_surface)
-        wta_watchlist = wta_over_watchlist_reason(circuito, match_surface, fav_prob, over18, over17)
+        best_label, best_prob = batch_pick_label(sim, over17, over18, over19, over20, over22, under22, p1_key, p2_key, circuito_calc, match_surface)
+        wta_watchlist = wta_over_watchlist_reason(circuito_calc, match_surface, fav_prob, over18, over17)
 
-        filters = betting_filter_engine(circuito, match_surface, sim, p1_key, p2_key)
+        filters = betting_filter_engine(circuito_calc, match_surface, sim, p1_key, p2_key)
         trust = filters.get("status", "")
         rationale = " · ".join(filters.get("reasons", [])[:2]) if isinstance(filters, dict) else ""
         if p1_status != "OK" or p2_status != "OK":
@@ -5842,6 +5914,8 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Fecha": m.get("date", ""),
             "Hora": m.get("time", ""),
             "Circuito fuente": m.get("circuito_detectado", ""),
+            "Circuito datos": str(lookup_circuit).upper(),
+            "Circuito cálculo": str(circuito_calc).upper(),
             "Torneo": m.get("torneo", ""),
             "Superficie": match_surface,
             "Partido": f"{p1_key} vs {p2_key}",
@@ -5857,12 +5931,12 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Mejor señal": best_label,
             "Prob señal": f"{best_prob:.1%}",
             "Mejor mercado Over Focus": best_label if any(x in str(best_label) for x in ["Over", "3 sets", "Partido"]) else "",
-            "Over Focus Label": over_focus_label(circuito, best_label, best_prob, sim.get("set3", 0.0), over17, over18, over19),
+            "Over Focus Label": over_focus_label(circuito_calc, best_label, best_prob, sim.get("set3", 0.0), over17, over18, over19),
             "WTA Watchlist": wta_watchlist,
-            "Mejor mercado WTA": (best_label if circuito == "WTA" else ""),
-            "WTA Over17 Priority": ("Sí" if circuito == "WTA" and best_label == "Over 17.5" and over17 >= 0.77 else ""),
+            "Mejor mercado WTA": (best_label if circuito_calc == "WTA" else ""),
+            "WTA Over17 Priority": ("Sí" if circuito_calc == "WTA" and best_label == "Over 17.5" and over17 >= 0.77 else ""),
             "Signal Trust": trust,
-            "Over 17.5": f"{over17:.1%}" if circuito == "WTA" else "",
+            "Over 17.5": f"{over17:.1%}" if circuito_calc == "WTA" else "",
             "Over 18.5": f"{over18:.1%}",
             "Over 19.5": f"{over19:.1%}",
             "Under 22.5": f"{under22:.1%}",
@@ -5893,14 +5967,14 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
                 ) else "No" if m.get("actual_winner_side") in [1,2] else ""
             ),
             "Over 17.5 real": (
-                "Sí" if circuito == "WTA" and m.get("actual_total_games", None) is not None and float(m.get("actual_total_games")) > 17.5
-                else "No" if circuito == "WTA" and m.get("actual_total_games", None) is not None
-                else "N/D" if circuito == "WTA" else ""
+                "Sí" if circuito_calc == "WTA" and m.get("actual_total_games", None) is not None and float(m.get("actual_total_games")) > 17.5
+                else "No" if circuito_calc == "WTA" and m.get("actual_total_games", None) is not None
+                else "N/D" if circuito_calc == "WTA" else ""
             ),
             "Acierta Over 17.5": (
-                "Sí" if circuito == "WTA" and m.get("actual_total_games", None) is not None and ((over17 >= 0.50) == (float(m.get("actual_total_games")) > 17.5))
-                else "No" if circuito == "WTA" and m.get("actual_total_games", None) is not None and ((over17 >= 0.50) != (float(m.get("actual_total_games")) > 17.5))
-                else "N/D" if circuito == "WTA" else ""
+                "Sí" if circuito_calc == "WTA" and m.get("actual_total_games", None) is not None and ((over17 >= 0.50) == (float(m.get("actual_total_games")) > 17.5))
+                else "No" if circuito_calc == "WTA" and m.get("actual_total_games", None) is not None and ((over17 >= 0.50) != (float(m.get("actual_total_games")) > 17.5))
+                else "N/D" if circuito_calc == "WTA" else ""
             ),
             "Over 18.5 real": (
                 "Sí" if m.get("actual_total_games", None) is not None and float(m.get("actual_total_games")) > 18.5
@@ -6278,8 +6352,8 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.25 Fix Países + Watchlist Label")
-    st.caption("Favorite Identity Engine")
+    st.header("🎾 Tennis IA v23.26 Challenger Engine")
+    st.caption("ATP + Challenger ELO/Stats Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
@@ -6295,10 +6369,10 @@ load_status = st.status("🔄 Preparando datos del modelo...", expanded=False)
 with load_status:
     st.caption("Fase 1/3 · Leyendo jugadores, Elo, stats y fatiga. Si es la primera carga puede tardar.")
     load_bar = st.progress(5, text="Fase 1/3 · Cargando base de jugadores...")
-    db = cargar_datos(circuito)
+    db = cargar_datos_app(circuito)
 
     load_bar.progress(65, text="Fase 2/3 · Cargando Match Count / QualityMap...")
-    st.caption("Fase 2/3 · Integrando históricos ATP + Challenger/Qualy.")
+    st.caption("Fase 2/3 · Integrando ATP + Challenger/Qualy si existe datos/challenger.")
     try:
         qm_preview = crear_quality_map(circuito)
         q_players = qm_preview.get("_meta", {}).get("raw_player_count", "?") if isinstance(qm_preview, dict) else "?"
@@ -7025,8 +7099,13 @@ Sebastián Baez - Roberto Carballés Baena"""
         st.divider()
         st.subheader("🔥 Resumen ordenado")
         if "Estado" in df_batch.columns:
-            ok = df_batch[df_batch["Estado"] == "OK"].copy()
-            ko = df_batch[df_batch["Estado"] != "OK"].copy()
+            # v23.25.9: los partidos con fallback estimado SÍ están analizados.
+            # Antes caían en "No encontrados" porque el split usaba Estado == "OK" estricto.
+            # Ahora la tabla principal muestra OK + OK con jugador estimado;
+            # la pestaña "No encontrados" queda solo para no analizables reales.
+            estados_ok = ["OK", "OK con jugador estimado"]
+            ok = df_batch[df_batch["Estado"].isin(estados_ok)].copy()
+            ko = df_batch[~df_batch["Estado"].isin(estados_ok)].copy()
         else:
             ok, ko = df_batch, pd.DataFrame()
 
@@ -7107,7 +7186,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.download_button(
                     "⬇️ Descargar CSV",
                     data=ok_saved.to_csv(index=False).encode("utf-8-sig"),
-                    file_name="analisis_lista_tennis_ia_v23_25_2.csv",
+                    file_name="analisis_lista_tennis_ia_v23_26_0.csv",
                     mime="text/csv",
                     key="download_batch_csv"
                 )
@@ -7115,7 +7194,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.download_button(
                     "📊 Descargar Excel",
                     data=batch_excel_with_not_found_bytes(ok_saved, ko_saved, db),
-                    file_name="analisis_lista_tennis_ia_v23_25_2.xlsx",
+                    file_name="analisis_lista_tennis_ia_v23_26_0.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="download_batch_excel"
                 )
