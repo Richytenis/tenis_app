@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.25.7 Name Matcher Fix", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.25.7"
-QUALITY_ENGINE_VERSION = "v23.25.7-name-matcher-fix-2026-05-18"
+APP_VERSION = "v23.25.8"
+QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 
@@ -4336,97 +4336,22 @@ def name_words_keep_initials(name):
 
 
 def surname_tokens_for_match(name):
-    """
-    v23.25.7 Name Matcher Fix.
-    Devuelve posibles apellidos en varios formatos:
-    - "C. Ilkel" -> ["ilkel"]
-    - "Cem Ilkel" -> ["ilkel"]
-    - "Ilkel Cem" -> ["ilkel"] y ["cem"] como fallback, pero el matcher prioriza inicial compatible.
-    - "Van De Zandschulp B" -> ["van", "de", "zandschulp"]
-    """
     parts = name_words_keep_initials(name)
     if not parts:
         return []
-    if len(parts) == 1:
-        return parts
-    if len(parts[0]) == 1:
+    if len(parts[0]) == 1 and len(parts) >= 2:
         return parts[1:]
-    if len(parts[-1]) == 1:
-        return parts[:-1]
-    return [parts[-1]]
-
-
-def player_name_forms(name):
-    """
-    Genera formas probables de un jugador para comparar nombres abreviados.
-    Soporta First Last, Last First, Last F y F Last.
-    """
-    parts = name_words_keep_initials(name)
-    forms = []
-    if not parts:
-        return forms
-
-    def add(first_initial, surname_tokens, mode):
-        surname_tokens = [x for x in surname_tokens if x]
-        if first_initial and surname_tokens:
-            forms.append({
-                "initial": first_initial[0],
-                "surname_tokens": surname_tokens,
-                "surname": " ".join(surname_tokens),
-                "mode": mode,
-            })
-
-    if len(parts) == 1:
-        forms.append({"initial": "", "surname_tokens": parts, "surname": parts[0], "mode": "single"})
-        return forms
-
-    # F. Last / C Ruud
-    if len(parts[0]) == 1:
-        add(parts[0], parts[1:], "initial_surname")
-    # Last F. / Ruud C
-    if len(parts[-1]) == 1:
-        add(parts[-1], parts[:-1], "surname_initial")
-
-    # First Last / Matteo Arnaldi
-    add(parts[0], [parts[-1]], "first_last")
-    if len(parts) > 2:
-        add(parts[0], parts[1:], "first_compound_surname")
-
-    # Last First / Arnaldi Matteo. Muy común en algunas bases Excel.
-    add(parts[-1], [parts[0]], "last_first")
-    if len(parts) > 2:
-        add(parts[-1], parts[:-1], "compound_surname_first")
-
-    # quitar duplicados conservando orden
-    seen = set()
-    unique = []
-    for f in forms:
-        key = (f["initial"], f["surname"])
-        if key not in seen:
-            seen.add(key)
-            unique.append(f)
-    return unique
-
-
-def _surname_compatible(q_surname, f_surname):
-    q_surname = str(q_surname or "").strip()
-    f_surname = str(f_surname or "").strip()
-    if not q_surname or not f_surname:
-        return False
-    q_tokens = q_surname.split()
-    f_tokens = f_surname.split()
-    if len(q_tokens) == 1:
-        return q_tokens[0] in f_tokens
-    return q_surname == f_surname or q_surname in f_surname or f_surname in q_surname
+    if len(parts) >= 2:
+        return parts[1:]
+    return parts
 
 
 def strict_abbrev_surname_compatible(query, full_name):
     """
-    v23.25.7 Strict Surname Fix Pro.
-    Si la entrada viene como inicial + apellido, no aceptamos candidatos cuyo apellido no coincida.
-    A diferencia del v23.20, ahora también acepta bases en formato apellido-nombre:
-    - "C. Ilkel" puede casar con "Cem Ilkel" y con "Ilkel Cem".
-    - "A. Sanchez Quilez" no puede casar con "Alexander Zverev".
+    v23.20 Strict Surname Fix.
+    Si la entrada viene como inicial + apellido, por ejemplo "D. Chiesa",
+    solo se acepta un candidato cuyo apellido contenga exactamente Chiesa.
+    Esto bloquea falsos positivos como Danielle Collins aunque el fuzzy sea medio.
     """
     qparts = name_words_keep_initials(query)
     fparts = name_words_keep_initials(full_name)
@@ -4435,27 +4360,29 @@ def strict_abbrev_surname_compatible(query, full_name):
     if len(qparts[0]) != 1:
         return True
 
-    q_initial = qparts[0]
-    q_surname = " ".join(qparts[1:]).strip()
-    if not q_surname:
+    q_surname_tokens = qparts[1:]
+    f_surname_tokens = fparts[1:]
+    if not q_surname_tokens or not f_surname_tokens:
         return True
 
-    for form in player_name_forms(full_name):
-        if form.get("initial") == q_initial and _surname_compatible(q_surname, form.get("surname")):
-            return True
+    q_surname = " ".join(q_surname_tokens).strip()
+    f_surname = " ".join(f_surname_tokens).strip()
 
-    return False
+    # Apellido simple: Chiesa solo puede casar con Chiesa, no Collins.
+    if len(q_surname_tokens) == 1:
+        return q_surname_tokens[0] in f_surname_tokens
+
+    # Apellido compuesto: permitimos igualdad o contención de frase completa.
+    return q_surname == f_surname or q_surname in f_surname or f_surname in q_surname
 
 
 def abbreviation_player_score(query, full_name):
     """
-    v23.25.7 Name Matcher Fix.
-    Lee bien abreviaturas de SofaScore/Winamax y bases con orden cambiado:
-    - C. Ruud -> Casper Ruud
-    - C. Ilkel -> Cem Ilkel / Ilkel Cem
-    - T. Seyboth Wild -> Thiago Seyboth Wild
-    - A. Sanchez Quilez -> Alejandro Sanchez Quilez / Sanchez Quilez Alejandro
-    Y bloquea falsos positivos si el apellido no coincide.
+    v23.8:
+    C. Ruud -> Casper Ruud
+    B. Van de Zandschulp -> Botic Van De Zandschulp
+    T. Seyboth Wild -> Thiago Seyboth Wild
+    J. Pinnington Jones -> Jack Pinnington Jones
     """
     q_parts = name_words_keep_initials(query)
     f_parts = name_words_keep_initials(full_name)
@@ -4463,51 +4390,39 @@ def abbreviation_player_score(query, full_name):
         return 0.0
 
     # Inicial + apellido(s)
-    if len(q_parts[0]) == 1 and len(q_parts) >= 2:
-        q_initial = q_parts[0]
+    if len(q_parts[0]) == 1 and len(q_parts) >= 2 and len(f_parts) >= 2:
+        initial_ok = f_parts[0].startswith(q_parts[0])
         q_surname = " ".join(q_parts[1:])
+        f_surname = " ".join(f_parts[1:])
+        surname_score = SequenceMatcher(None, q_surname, f_surname).ratio()
+
         q_last = q_parts[-1]
-        best = 0.0
+        f_last = f_parts[-1]
+        last_score = SequenceMatcher(None, q_last, f_last).ratio()
 
-        for form in player_name_forms(full_name):
-            f_initial = form.get("initial", "")
-            f_surname = form.get("surname", "")
-            f_last = form.get("surname_tokens", [""])[-1]
-            initial_ok = bool(f_initial) and f_initial.startswith(q_initial)
-            surname_score = SequenceMatcher(None, q_surname, f_surname).ratio()
-            last_score = SequenceMatcher(None, q_last, f_last).ratio()
-            surname_ok = _surname_compatible(q_surname, f_surname)
+        # apellido compuesto exacto/contención
+        if initial_ok and q_surname == f_surname:
+            return 0.99
+        if initial_ok and q_surname and (q_surname in f_surname or f_surname in q_surname):
+            return 0.97
+        if initial_ok and q_last == f_last:
+            return max(0.94, 0.40 + 0.55 * surname_score)
+        if initial_ok:
+            return min(0.93, 0.38 + 0.55 * max(surname_score, last_score))
 
-            if initial_ok and q_surname == f_surname:
-                score = 0.995
-            elif initial_ok and surname_ok:
-                score = 0.975
-            elif initial_ok and q_last == f_last:
-                score = max(0.94, 0.40 + 0.55 * surname_score)
-            elif initial_ok:
-                score = min(0.91, 0.35 + 0.55 * max(surname_score, last_score))
-            else:
-                # Sin inicial compatible, nunca puede ser match fuerte.
-                score = min(0.62, 0.55 * max(surname_score, last_score))
-            best = max(best, score)
-
-        return float(best)
+        return 0.55 * max(surname_score, last_score)
 
     # Apellido solo o nombre parcial.
     q_surname_tokens = surname_tokens_for_match(query)
-    if q_surname_tokens:
+    f_surname_tokens = surname_tokens_for_match(full_name)
+    if q_surname_tokens and f_surname_tokens:
         qs = " ".join(q_surname_tokens)
-        best = 0.0
-        for form in player_name_forms(full_name):
-            fs = form.get("surname", "")
-            if qs == fs:
-                score = 0.94
-            elif _surname_compatible(qs, fs):
-                score = 0.88
-            else:
-                score = 0.70 * SequenceMatcher(None, qs, fs).ratio()
-            best = max(best, score)
-        return float(best)
+        fs = " ".join(f_surname_tokens)
+        if qs == fs:
+            return 0.94
+        if qs in fs or fs in qs:
+            return 0.88
+        return 0.70 * SequenceMatcher(None, qs, fs).ratio()
 
     return SequenceMatcher(None, " ".join(q_parts), " ".join(f_parts)).ratio() * 0.75
 
@@ -5533,19 +5448,26 @@ def find_player_in_db(name, db):
             abbreviation_player_score(name, key)
         )
 
-        # Bonus apellido+inicial robusto en ambos órdenes: First Last y Last First.
+        # Bonus apellido+inicial en ambos sentidos.
         tparts = name_words_keep_initials(name)
-        if len(tparts) >= 2:
-            t_is_abbrev = len(tparts[0]) == 1
-            t_initial = tparts[0] if t_is_abbrev else tparts[0][0]
-            t_surname = " ".join(tparts[1:]) if t_is_abbrev else " ".join(surname_tokens_for_match(name))
-            for form in player_name_forms(key):
-                if form.get("initial") == t_initial and _surname_compatible(t_surname, form.get("surname")):
-                    score = max(score, 0.985 if t_is_abbrev else 0.94)
-                elif not t_is_abbrev and _surname_compatible(t_surname, form.get("surname")):
-                    score = max(score, 0.88)
+        kparts = name_words_keep_initials(key)
+        if len(tparts) >= 2 and len(kparts) >= 2:
+            # "C Ruud" vs "Casper Ruud"
+            t_initial = len(tparts[0]) == 1 and kparts[0].startswith(tparts[0])
+            same_last = tparts[-1] == kparts[-1]
+            if t_initial and same_last:
+                score = max(score, 0.97)
+            elif same_last:
+                score = max(score, 0.88)
 
-        # Seguridad: si viene "D. Chiesa", no aceptar candidatos cuyo apellido no sea Chiesa.
+            # Apellidos compuestos.
+            t_surname = " ".join(tparts[1:]) if len(tparts[0]) == 1 else " ".join(tparts[1:])
+            k_surname = " ".join(kparts[1:])
+            if t_initial and t_surname and (t_surname in k_surname or k_surname in t_surname):
+                score = max(score, 0.96)
+
+        # v23.20 Fix nombres: si viene "D. Chiesa", no aceptar candidatos
+        # cuyo apellido no sea Chiesa aunque el fuzzy general sea alto.
         if not strict_abbrev_surname_compatible(name, key):
             score = min(score, 0.40)
 
@@ -5573,21 +5495,26 @@ def find_player_candidates_in_db(name, db, top_n=5):
         )
 
         tparts = name_words_keep_initials(name)
+        kparts = name_words_keep_initials(key)
 
         reason = "fuzzy"
-        if len(tparts) >= 2:
-            t_is_abbrev = len(tparts[0]) == 1
-            t_initial = tparts[0] if t_is_abbrev else tparts[0][0]
-            t_surname = " ".join(tparts[1:]) if t_is_abbrev else " ".join(surname_tokens_for_match(name))
-            for form in player_name_forms(key):
-                if form.get("initial") == t_initial and _surname_compatible(t_surname, form.get("surname")):
-                    score = max(score, 0.985 if t_is_abbrev else 0.94)
-                    reason = "inicial+apellido" if len(t_surname.split()) == 1 else "inicial+apellido compuesto"
-                elif not t_is_abbrev and _surname_compatible(t_surname, form.get("surname")):
-                    score = max(score, 0.88)
-                    reason = "apellido"
+        if len(tparts) >= 2 and len(kparts) >= 2:
+            t_initial = len(tparts[0]) == 1 and kparts[0].startswith(tparts[0])
+            same_last = tparts[-1] == kparts[-1]
+            t_surname = " ".join(tparts[1:]) if len(tparts[0]) == 1 else " ".join(tparts[1:])
+            k_surname = " ".join(kparts[1:])
 
-        # v23.25.7 Fix nombres: evita sugerencias falsas por fuzzy cuando
+            if t_initial and same_last:
+                score = max(score, 0.97)
+                reason = "inicial+apellido"
+            elif t_initial and t_surname and (t_surname in k_surname or k_surname in t_surname):
+                score = max(score, 0.96)
+                reason = "inicial+apellido compuesto"
+            elif same_last:
+                score = max(score, 0.88)
+                reason = "apellido"
+
+        # v23.20 Fix nombres: evita sugerencias falsas por fuzzy cuando
         # la consulta es inicial + apellido y el apellido no coincide.
         if not strict_abbrev_surname_compatible(name, key):
             score = min(score, 0.40)
@@ -5597,6 +5524,116 @@ def find_player_candidates_in_db(name, db, top_n=5):
 
     rows = sorted(rows, key=lambda x: x["score"], reverse=True)[:top_n]
     return rows
+
+
+# =========================================================
+# v23.25.8 FALLBACK DE LECTURA
+# =========================================================
+# Antes, si un jugador no estaba en el ELO principal, el partido completo caía
+# en "No encontrado". Esto era demasiado duro para Challenger/ITF/qualy.
+# Ahora: si el nombre no aparece en db, creamos un perfil estimado MUY prudente
+# y lo marcamos como baja confianza. Así el partido entra en la hoja, pero con
+# aviso claro de que NO debe tratarse como pick fuerte.
+
+
+def elo_estimado_por_quality(q, circuito="ATP"):
+    try:
+        total = int(q.get("matches_total", 0) or 0)
+        tq = float(q.get("tour_quality", 0.45) or 0.45)
+        levels = q.get("level_counts", {}) or {}
+        tour = int(levels.get("tour", 0) or 0)
+        chall = int(levels.get("challenger", 0) or 0)
+        itf = int(levels.get("itf", 0) or 0)
+    except Exception:
+        total, tq, tour, chall, itf = 0, 0.45, 0, 0, 0
+
+    # Base prudente. No queremos regalar Elo a un desconocido.
+    if circuito == "WTA":
+        elo = 1485
+    else:
+        elo = 1500
+
+    if total >= 80: elo += 55
+    elif total >= 40: elo += 35
+    elif total >= 20: elo += 20
+    elif total >= 8: elo += 8
+    elif total <= 2: elo -= 20
+
+    if tour >= 10: elo += 35
+    elif tour >= 3: elo += 18
+    if chall >= 15: elo += 14
+    if itf >= max(3, total * 0.45): elo -= 22
+
+    elo += int((tq - 0.45) * 80)
+    return float(np.clip(elo, 1360, 1625))
+
+
+def crear_jugador_estimado(nombre, circuito="ATP", surface="Clay"):
+    raw = normalizar_texto(nombre)
+    # Intentamos sacar match count real desde históricos. Si no existe, perfil neutro.
+    try:
+        q = buscar_quality_directo_historicos(raw, circuito)
+    except Exception:
+        q = {}
+
+    if not isinstance(q, dict):
+        q = {}
+
+    elo = elo_estimado_por_quality(q, circuito)
+    rank = 999
+    stats_by_surface = {}
+    for sf in ["Hard", "Clay", "Grass"]:
+        stats_by_surface[sf] = stats_default_por_elo(elo, rank, sf, circuito)
+        stats_by_surface[sf]["match_type"] = "fallback_estimado"
+        stats_by_surface[sf]["raw_name_stats"] = "ESTIMADO - sin ELO principal"
+
+    if not q or int(q.get("matches_total", 0) or 0) == 0:
+        q = {
+            "matches_total": 0,
+            "matches_surface": {"Hard": 0, "Clay": 0, "Grass": 0},
+            "level_counts": {"tour": 0, "challenger": 0, "itf": 0, "qualy": 0, "unknown": 0},
+            "tour_quality": 0.35,
+            "stability": {"Hard": 0.05, "Clay": 0.05, "Grass": 0.05},
+            "confidence": {"Hard": 0.28, "Clay": 0.28, "Grass": 0.28},
+            "raw_names": [raw],
+            "matched_name": "ESTIMADO SIN HISTÓRICO",
+            "match_score": 0.0,
+        }
+
+    return {
+        "Player": raw,
+        "Rank": rank,
+        "Hard": elo,
+        "Clay": elo,
+        "Grass": elo,
+        "Stats": stats_by_surface.get(surface, stats_by_surface["Clay"]),
+        "StatsBySurface": stats_by_surface,
+        "Fatigue": {},
+        "Quality": q,
+        "FallbackEstimado": True,
+    }
+
+
+def resolver_player_batch(raw_name, db, circuito="ATP", surface="Clay", allow_fallback=True):
+    key, score = find_player_in_db(raw_name, db)
+    if key and score >= 0.66:
+        d = db[key]
+        try:
+            d = d.copy()
+            d["FallbackEstimado"] = False
+        except Exception:
+            pass
+        return key, d, float(score), "OK"
+
+    if not allow_fallback:
+        return key, None, float(score), "NO_ENCONTRADO"
+
+    # No usar fallback para países, BYE, dobles o placeholders.
+    if is_pending_opponent_name(raw_name) or is_country_like_name(raw_name) or "/" in str(raw_name):
+        return key, None, float(score), "NO_ANALIZABLE"
+
+    fallback = crear_jugador_estimado(raw_name, circuito, surface)
+    return normalizar_texto(raw_name), fallback, max(float(score), 0.50), "ESTIMADO"
 
 def enrich_not_found_with_suggestions(ko_df, db):
     if ko_df is None or ko_df.empty:
@@ -5719,11 +5756,13 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         if progress_callback:
             progress_callback(idx-1, total, f"Emparejando {m.get('p1_raw')} vs {m.get('p2_raw')}")
 
-        p1_key, p1_score = find_player_in_db(m["p1_raw"], db)
-        p2_key, p2_score = find_player_in_db(m["p2_raw"], db)
+        match_surface = m.get("surface", surface) if m.get("surface", surface) in ["Hard", "Clay", "Grass"] else surface
 
-        # v23.7: aceptar inicial+apellido/apellidos compuestos desde Sofascore aunque el fuzzy bruto sea menor.
-        if not p1_key or not p2_key or p1_score < 0.66 or p2_score < 0.66:
+        p1_key, d1, p1_score, p1_status = resolver_player_batch(m["p1_raw"], db, circuito, match_surface, allow_fallback=True)
+        p2_key, d2, p2_score, p2_status = resolver_player_batch(m["p2_raw"], db, circuito, match_surface, allow_fallback=True)
+
+        # Solo queda como No encontrado si es rival pendiente/país/dobles o imposible de analizar.
+        if d1 is None or d2 is None:
             rows.append({
                 "Fecha": m.get("date", ""),
                 "Hora": m.get("time", ""),
@@ -5735,9 +5774,6 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
                 "Score J2": f"{p2_score:.0%}",
             })
             continue
-
-        d1, d2 = db[p1_key], db[p2_key]
-        match_surface = m.get("surface", surface) if m.get("surface", surface) in ["Hard", "Clay", "Grass"] else surface
         sim = sim_match(d1, d2, match_surface, circuito, best_of, sims, context_row={})
         games = sim.get("games", [])
         avg_games = float(np.mean(games)) if len(games) else 0.0
@@ -5774,6 +5810,12 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         filters = betting_filter_engine(circuito, match_surface, sim, p1_key, p2_key)
         trust = filters.get("status", "")
         rationale = " · ".join(filters.get("reasons", [])[:2]) if isinstance(filters, dict) else ""
+        if p1_status != "OK" or p2_status != "OK":
+            rationale = (rationale + " · " if rationale else "") + "fallback estimado: datos incompletos"
+            trust = "⚠️ DATOS PARCIALES"
+            # No permitimos que un partido con jugador estimado se vea como recomendación fuerte.
+            if best_prob >= 0.70:
+                best_label = f"OBSERVAR {best_label}"
 
         # Cuota pegada: puede ser de un jugador concreto.
         quoted_player = None
@@ -5803,7 +5845,13 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Torneo": m.get("torneo", ""),
             "Superficie": match_surface,
             "Partido": f"{p1_key} vs {p2_key}",
-            "Estado": "OK",
+            "Estado": "OK" if p1_status == "OK" and p2_status == "OK" else "OK con jugador estimado",
+            "Lectura J1": p1_status,
+            "Lectura J2": p2_status,
+            "Aviso datos": (
+                "⚠️ Fallback estimado: usar solo como lectura orientativa / NO pick fuerte"
+                if p1_status != "OK" or p2_status != "OK" else ""
+            ),
             "Favorito modelo": fav_name,
             "ML favorito": f"{fav_prob:.1%}",
             "Mejor señal": best_label,
