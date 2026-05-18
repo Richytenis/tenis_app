@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.26.2"
+APP_VERSION = "v23.26.3"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -6128,11 +6128,11 @@ def over_focus_label(circuito, best_label, best_prob, set3, over17, over18, over
             if over18 >= 0.80:
                 return "🔥 OVER 18.5 FUERTE"
             if over18 >= 0.76:
-                return "✅ OVER 18.5 APTO FUERTE"
-            if over18 >= 0.70:
                 return "✅ OVER 18.5 APTO"
-            if over18 >= 0.65:
+            if over18 >= 0.70:
                 return "👀 OVER 18.5 WATCH"
+            if over18 >= 0.65:
+                return "👀 OVER 18.5 WATCH / NO BET"
             return "ML SOLO CONTEXTO"
         if c == "ATP" and over18 >= 0.73:
             return "🔥 OVER 18.5 FUERTE"
@@ -6151,6 +6151,115 @@ def over_focus_label(circuito, best_label, best_prob, set3, over17, over18, over
         return "🎯 3 SETS WATCH"
     return "ML SOLO CONTEXTO" if "ML" in label else ""
 
+
+
+def market_selector_v23263(row):
+    """
+    v23.26.3 Market Selector.
+    No fuerza siempre Over 18.5. Clasifica el perfil del partido y propone:
+    - Over 18.5 / Over 19.5
+    - +2.5 sets
+    - Underdog gana set
+    - Favorito 2-0 / Under 2.5 sets
+    - NO BET
+    """
+    circuito_txt = " ".join([
+        str(row.get("Circuito cálculo", "")),
+        str(row.get("Circuito datos", "")),
+        str(row.get("Circuito fuente", "")),
+        str(row.get("Torneo", "")),
+        str(row.get("Estado", "")),
+    ])
+    is_chall = _is_challenger_context(circuito_txt)
+    estado = str(row.get("Estado", ""))
+    trust = str(row.get("Signal Trust", ""))
+    risks = str(row.get("Riesgos", "")).lower()
+    partial = ("estimado" in estado.lower()) or ("parcial" in trust.lower()) or ("fallback" in risks)
+
+    fav = _row_pct(row, "ML favorito", 0.0)
+    over18 = _row_pct(row, "Over 18.5", 0.0)
+    over19 = _row_pct(row, "Over 19.5", 0.0)
+    under22 = _row_pct(row, "Under 22.5", 0.0)
+    set3 = _row_pct(row, "Partido a 3 sets", 0.0)
+    dog_set = _row_pct(row, "Prob gana set", 0.0)
+    fav20 = _row_pct(row, "Favorito 2-0", 0.0)
+
+    favorito = str(row.get("Favorito modelo", "Favorito"))
+    dog = str(row.get("Jugador gana set", "Underdog"))
+
+    def out(market, prob, motivo):
+        try:
+            prob_txt = f"{float(prob):.1%}"
+        except Exception:
+            prob_txt = ""
+        return pd.Series({
+            "Mercado recomendado": market,
+            "Prob mercado recomendado": prob_txt,
+            "Motivo Market Selector": motivo,
+        })
+
+    # Fuera de Challenger, conservamos lógica prudente: el selector ayuda, no sustituye todo.
+    if not is_chall:
+        if over18 >= 0.78 and fav20 <= 0.54:
+            return out("OVER 18.5", over18, "Over alto sin riesgo fuerte de 2-0")
+        if set3 >= 0.46 and fav <= 0.64:
+            return out("+2.5 SETS", set3, "partido igualado con probabilidad alta de 3 sets")
+        return out("NO BET / ML SOLO CONTEXTO", fav, "sin patrón suficientemente claro")
+
+    # 1) Bloqueo de zona mala detectada en tus backtests: Over 70-75.9% no es apuesta automática.
+    zona_over_watch = 0.70 <= over18 < 0.76
+
+    # 2) Partido dominado: mejor mirar 2-0/Under que Over.
+    if fav >= 0.68 and fav20 >= 0.55:
+        if under22 >= 0.55 or over18 < 0.76:
+            market = f"{favorito} 2-0 / UNDER 2.5 SETS"
+            motivo = "favorito con perfil de 2-0; evitar Over 18.5 por riesgo de marcador corto"
+            if partial:
+                market = "👀 OBSERVAR " + market
+                motivo += " · datos parciales"
+            return out(market, fav20, motivo)
+
+    # 3) Partido realmente largo: Over solo si es elite o si Over 19.5 acompaña.
+    if over18 >= 0.80 and fav20 <= 0.52:
+        return out("🔥 OVER 18.5", over18, "Over elite y riesgo de 2-0 controlado")
+    if over18 >= 0.76 and over19 >= 0.62 and fav20 <= 0.54:
+        return out("✅ OVER 18.5 / OVER 19.5", min(over18, over19), "Over 18.5 apto con confirmación en línea 19.5")
+
+    # 4) Tres sets: mejor que ML si hay igualdad real.
+    if fav <= 0.64 and set3 >= 0.44 and over19 >= 0.58:
+        market = "+2.5 SETS"
+        motivo = "igualdad real: favorito no dominante, 3 sets y Over 19.5 acompañan"
+        if set3 < 0.48:
+            market = "👀 WATCH +2.5 SETS"
+        return out(market, set3, motivo)
+
+    # 5) Underdog gana set: cuando el modelo detecta resistencia pero no queremos dog ML.
+    if 0.38 <= (1 - fav) <= 0.48 and dog_set >= 0.46 and fav20 <= 0.52:
+        market = f"{dog} GANA AL MENOS 1 SET"
+        motivo = "underdog vivo: mejor buscar set ganado que ML"
+        if dog_set < 0.50 or partial:
+            market = "👀 WATCH " + market
+            if partial:
+                motivo += " · datos parciales"
+        return out(market, dog_set, motivo)
+
+    # 6) Zona Over watch: la dejamos como observación, no apuesta.
+    if zona_over_watch:
+        return out("👀 WATCH OVER 18.5 / NO BET", over18, "zona 70-75.9%: en tus tests falló mucho por 2-0 corto")
+
+    # 7) Si nada destaca, no forzar apuesta.
+    return out("NO BET", max(fav, over18, set3, dog_set, fav20), "sin mercado con ventaja clara según selector")
+
+
+def limpiar_signal_trust_v23263(row):
+    """Evita que Signal Trust muestre fuego cuando la recomendación final/selector no es fuerte."""
+    trust = str(row.get("Signal Trust", ""))
+    rec = str(row.get("Recomendación", ""))
+    market = str(row.get("Mercado recomendado", ""))
+    is_strong = ("🔥" in rec) or ("🔥" in market) or ("FUERTE" in rec.upper()) or ("FUERTE" in market.upper())
+    if "🔥" in trust and not is_strong:
+        return trust.replace("🔥", "👀").replace("SPOT FUERTE", "SPOT WATCH").replace("FUERTE", "WATCH")
+    return trust
 
 def batch_recommendation(row):
     trust = str(row.get("Signal Trust", "")).upper()
@@ -6187,11 +6296,11 @@ def batch_recommendation(row):
                 if over18 >= 0.80:
                     rec = "🔥 OVER 18.5 FUERTE"
                 elif over18 >= 0.76:
-                    rec = "✅ OVER 18.5 APTO FUERTE"
-                elif over18 >= 0.70:
                     rec = "✅ OVER 18.5 APTO"
-                elif over18 >= 0.65:
+                elif over18 >= 0.70:
                     rec = "👀 OVER 18.5 WATCH"
+                elif over18 >= 0.65:
+                    rec = "👀 OVER 18.5 WATCH / NO BET"
                 else:
                     rec = "ML SOLO CONTEXTO"
 
@@ -6273,10 +6382,16 @@ def prepare_batch_display_table(ok_df):
         df = df.drop(columns=set_cols, errors="ignore")
 
     df["Recomendación"] = df.apply(batch_recommendation, axis=1)
+    selector_cols = df.apply(market_selector_v23263, axis=1)
+    df = pd.concat([df, selector_cols], axis=1)
+    df["Signal Trust"] = df.apply(limpiar_signal_trust_v23263, axis=1)
 
     preferred = [
         "Versión app",
         "Recomendación",
+        "Mercado recomendado",
+        "Prob mercado recomendado",
+        "Motivo Market Selector",
         "Fecha",
         "Hora",
         "Partido",
@@ -6463,7 +6578,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.26 Challenger Engine")
+    st.header("🎾 Tennis IA v23.26.3 Market Selector")
     st.caption("ATP + Challenger ELO/Stats Engine")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
