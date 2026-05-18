@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.26.6"
+APP_VERSION = "v23.26.7"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4598,6 +4598,9 @@ def clasificar_bloque_torneo_pegado(tournament, meta_lines):
         if "WOMEN" in clean or "MUJER" in clean or "WTA" in clean:
             return "CHALLENGER_WTA"
         return "CHALLENGER_ATP"
+    # v23.26.7: Grand Slam/Qualifying es categoría, no circuito.
+    # Debe heredar ATP/WTA del bloque. Si solo aparece Grand Slam sin ATP/WTA,
+    # lo dejamos desconocido para no mezclar cuadros masculino/femenino.
     if "ATP" in clean:
         return "ATP"
     if "ITF" in clean:
@@ -4761,8 +4764,13 @@ def parse_sofascore_schedule_no_date_paste(raw_text):
         low = normalizar_texto(line).lower().strip()
         up = normalizar_texto(line).upper().strip()
         is_circuit_or_category = (
-            up in {"ATP", "WTA", "CHALLENGER", "ITF"} or
-            any(k in up for k in ["ATP 1000", "ATP 500", "ATP 250", "WTA 1000", "WTA 500", "WTA 250", "WTA 125", "CHALLENGER 50", "CHALLENGER 75", "CHALLENGER 100", "CHALLENGER 125", "CHALLENGER 175"])
+            up in {"ATP", "WTA", "CHALLENGER", "ITF", "GRAND SLAM", "QUALIFYING", "QUALIFICATION"} or
+            any(k in up for k in [
+                "ATP 1000", "ATP 500", "ATP 250",
+                "WTA 1000", "WTA 500", "WTA 250", "WTA 125",
+                "CHALLENGER 50", "CHALLENGER 75", "CHALLENGER 100", "CHALLENGER 125", "CHALLENGER 175",
+                "GRAND SLAM", "QUALIFYING", "QUALIFICATION"
+            ])
         )
         is_surface = normalizar_superficie_pegada(line, default="") in ["Hard", "Clay", "Grass"]
 
@@ -4773,6 +4781,14 @@ def parse_sofascore_schedule_no_date_paste(raw_text):
 
         # Cabecera/título de torneo. Importante para Hamburg/Geneva/Rome/Valencia/Istanbul.
         if _is_schedule_header_candidate(line, lines[i + 1:i + 7]):
+            # v23.26.7: líneas sueltas tipo "Grand Slam" / "Qualifying"
+            # son metadatos de categoría, no cabeceras de torneo. Si se trataban
+            # como torneo, borraban ATP/WTA y luego no se leía nada.
+            if up in {"GRAND SLAM", "QUALIFYING", "QUALIFICATION"}:
+                add_meta(line)
+                i += 1
+                continue
+
             current_tournament = line
             # Subcabeceras tipo "Hamburg, Germany, Qualifying" o "Istanbul, Türkiye"
             # pueden venir justo antes de la hora y deben HEREDAR ATP/WTA/Challenger/superficie
