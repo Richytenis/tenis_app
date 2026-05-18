@@ -5,10 +5,10 @@ import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
 from difflib import SequenceMatcher
 
-st.set_page_config(page_title="Tennis IA v23.25.6 Schedule Parser Fix", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.25.7 Name Matcher Fix", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.25.6"
-QUALITY_ENGINE_VERSION = "v23.25.6-schedule-parser-fix-2026-05-17"
+APP_VERSION = "v23.25.7"
+QUALITY_ENGINE_VERSION = "v23.25.7-name-matcher-fix-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 
@@ -4336,22 +4336,97 @@ def name_words_keep_initials(name):
 
 
 def surname_tokens_for_match(name):
+    """
+    v23.25.7 Name Matcher Fix.
+    Devuelve posibles apellidos en varios formatos:
+    - "C. Ilkel" -> ["ilkel"]
+    - "Cem Ilkel" -> ["ilkel"]
+    - "Ilkel Cem" -> ["ilkel"] y ["cem"] como fallback, pero el matcher prioriza inicial compatible.
+    - "Van De Zandschulp B" -> ["van", "de", "zandschulp"]
+    """
     parts = name_words_keep_initials(name)
     if not parts:
         return []
-    if len(parts[0]) == 1 and len(parts) >= 2:
+    if len(parts) == 1:
+        return parts
+    if len(parts[0]) == 1:
         return parts[1:]
-    if len(parts) >= 2:
-        return parts[1:]
-    return parts
+    if len(parts[-1]) == 1:
+        return parts[:-1]
+    return [parts[-1]]
+
+
+def player_name_forms(name):
+    """
+    Genera formas probables de un jugador para comparar nombres abreviados.
+    Soporta First Last, Last First, Last F y F Last.
+    """
+    parts = name_words_keep_initials(name)
+    forms = []
+    if not parts:
+        return forms
+
+    def add(first_initial, surname_tokens, mode):
+        surname_tokens = [x for x in surname_tokens if x]
+        if first_initial and surname_tokens:
+            forms.append({
+                "initial": first_initial[0],
+                "surname_tokens": surname_tokens,
+                "surname": " ".join(surname_tokens),
+                "mode": mode,
+            })
+
+    if len(parts) == 1:
+        forms.append({"initial": "", "surname_tokens": parts, "surname": parts[0], "mode": "single"})
+        return forms
+
+    # F. Last / C Ruud
+    if len(parts[0]) == 1:
+        add(parts[0], parts[1:], "initial_surname")
+    # Last F. / Ruud C
+    if len(parts[-1]) == 1:
+        add(parts[-1], parts[:-1], "surname_initial")
+
+    # First Last / Matteo Arnaldi
+    add(parts[0], [parts[-1]], "first_last")
+    if len(parts) > 2:
+        add(parts[0], parts[1:], "first_compound_surname")
+
+    # Last First / Arnaldi Matteo. Muy común en algunas bases Excel.
+    add(parts[-1], [parts[0]], "last_first")
+    if len(parts) > 2:
+        add(parts[-1], parts[:-1], "compound_surname_first")
+
+    # quitar duplicados conservando orden
+    seen = set()
+    unique = []
+    for f in forms:
+        key = (f["initial"], f["surname"])
+        if key not in seen:
+            seen.add(key)
+            unique.append(f)
+    return unique
+
+
+def _surname_compatible(q_surname, f_surname):
+    q_surname = str(q_surname or "").strip()
+    f_surname = str(f_surname or "").strip()
+    if not q_surname or not f_surname:
+        return False
+    q_tokens = q_surname.split()
+    f_tokens = f_surname.split()
+    if len(q_tokens) == 1:
+        return q_tokens[0] in f_tokens
+    return q_surname == f_surname or q_surname in f_surname or f_surname in q_surname
 
 
 def strict_abbrev_surname_compatible(query, full_name):
     """
-    v23.20 Strict Surname Fix.
-    Si la entrada viene como inicial + apellido, por ejemplo "D. Chiesa",
-    solo se acepta un candidato cuyo apellido contenga exactamente Chiesa.
-    Esto bloquea falsos positivos como Danielle Collins aunque el fuzzy sea medio.
+    v23.25.7 Strict Surname Fix Pro.
+    Si la entrada viene como inicial + apellido, no aceptamos candidatos cuyo apellido no coincida.
+    A diferencia del v23.20, ahora también acepta bases en formato apellido-nombre:
+    - "C. Ilkel" puede casar con "Cem Ilkel" y con "Ilkel Cem".
+    - "A. Sanchez Quilez" no puede casar con "Alexander Zverev".
     """
     qparts = name_words_keep_initials(query)
     fparts = name_words_keep_initials(full_name)
@@ -4360,29 +4435,27 @@ def strict_abbrev_surname_compatible(query, full_name):
     if len(qparts[0]) != 1:
         return True
 
-    q_surname_tokens = qparts[1:]
-    f_surname_tokens = fparts[1:]
-    if not q_surname_tokens or not f_surname_tokens:
+    q_initial = qparts[0]
+    q_surname = " ".join(qparts[1:]).strip()
+    if not q_surname:
         return True
 
-    q_surname = " ".join(q_surname_tokens).strip()
-    f_surname = " ".join(f_surname_tokens).strip()
+    for form in player_name_forms(full_name):
+        if form.get("initial") == q_initial and _surname_compatible(q_surname, form.get("surname")):
+            return True
 
-    # Apellido simple: Chiesa solo puede casar con Chiesa, no Collins.
-    if len(q_surname_tokens) == 1:
-        return q_surname_tokens[0] in f_surname_tokens
-
-    # Apellido compuesto: permitimos igualdad o contención de frase completa.
-    return q_surname == f_surname or q_surname in f_surname or f_surname in q_surname
+    return False
 
 
 def abbreviation_player_score(query, full_name):
     """
-    v23.8:
-    C. Ruud -> Casper Ruud
-    B. Van de Zandschulp -> Botic Van De Zandschulp
-    T. Seyboth Wild -> Thiago Seyboth Wild
-    J. Pinnington Jones -> Jack Pinnington Jones
+    v23.25.7 Name Matcher Fix.
+    Lee bien abreviaturas de SofaScore/Winamax y bases con orden cambiado:
+    - C. Ruud -> Casper Ruud
+    - C. Ilkel -> Cem Ilkel / Ilkel Cem
+    - T. Seyboth Wild -> Thiago Seyboth Wild
+    - A. Sanchez Quilez -> Alejandro Sanchez Quilez / Sanchez Quilez Alejandro
+    Y bloquea falsos positivos si el apellido no coincide.
     """
     q_parts = name_words_keep_initials(query)
     f_parts = name_words_keep_initials(full_name)
@@ -4390,39 +4463,51 @@ def abbreviation_player_score(query, full_name):
         return 0.0
 
     # Inicial + apellido(s)
-    if len(q_parts[0]) == 1 and len(q_parts) >= 2 and len(f_parts) >= 2:
-        initial_ok = f_parts[0].startswith(q_parts[0])
+    if len(q_parts[0]) == 1 and len(q_parts) >= 2:
+        q_initial = q_parts[0]
         q_surname = " ".join(q_parts[1:])
-        f_surname = " ".join(f_parts[1:])
-        surname_score = SequenceMatcher(None, q_surname, f_surname).ratio()
-
         q_last = q_parts[-1]
-        f_last = f_parts[-1]
-        last_score = SequenceMatcher(None, q_last, f_last).ratio()
+        best = 0.0
 
-        # apellido compuesto exacto/contención
-        if initial_ok and q_surname == f_surname:
-            return 0.99
-        if initial_ok and q_surname and (q_surname in f_surname or f_surname in q_surname):
-            return 0.97
-        if initial_ok and q_last == f_last:
-            return max(0.94, 0.40 + 0.55 * surname_score)
-        if initial_ok:
-            return min(0.93, 0.38 + 0.55 * max(surname_score, last_score))
+        for form in player_name_forms(full_name):
+            f_initial = form.get("initial", "")
+            f_surname = form.get("surname", "")
+            f_last = form.get("surname_tokens", [""])[-1]
+            initial_ok = bool(f_initial) and f_initial.startswith(q_initial)
+            surname_score = SequenceMatcher(None, q_surname, f_surname).ratio()
+            last_score = SequenceMatcher(None, q_last, f_last).ratio()
+            surname_ok = _surname_compatible(q_surname, f_surname)
 
-        return 0.55 * max(surname_score, last_score)
+            if initial_ok and q_surname == f_surname:
+                score = 0.995
+            elif initial_ok and surname_ok:
+                score = 0.975
+            elif initial_ok and q_last == f_last:
+                score = max(0.94, 0.40 + 0.55 * surname_score)
+            elif initial_ok:
+                score = min(0.91, 0.35 + 0.55 * max(surname_score, last_score))
+            else:
+                # Sin inicial compatible, nunca puede ser match fuerte.
+                score = min(0.62, 0.55 * max(surname_score, last_score))
+            best = max(best, score)
+
+        return float(best)
 
     # Apellido solo o nombre parcial.
     q_surname_tokens = surname_tokens_for_match(query)
-    f_surname_tokens = surname_tokens_for_match(full_name)
-    if q_surname_tokens and f_surname_tokens:
+    if q_surname_tokens:
         qs = " ".join(q_surname_tokens)
-        fs = " ".join(f_surname_tokens)
-        if qs == fs:
-            return 0.94
-        if qs in fs or fs in qs:
-            return 0.88
-        return 0.70 * SequenceMatcher(None, qs, fs).ratio()
+        best = 0.0
+        for form in player_name_forms(full_name):
+            fs = form.get("surname", "")
+            if qs == fs:
+                score = 0.94
+            elif _surname_compatible(qs, fs):
+                score = 0.88
+            else:
+                score = 0.70 * SequenceMatcher(None, qs, fs).ratio()
+            best = max(best, score)
+        return float(best)
 
     return SequenceMatcher(None, " ".join(q_parts), " ".join(f_parts)).ratio() * 0.75
 
@@ -5448,26 +5533,19 @@ def find_player_in_db(name, db):
             abbreviation_player_score(name, key)
         )
 
-        # Bonus apellido+inicial en ambos sentidos.
+        # Bonus apellido+inicial robusto en ambos órdenes: First Last y Last First.
         tparts = name_words_keep_initials(name)
-        kparts = name_words_keep_initials(key)
-        if len(tparts) >= 2 and len(kparts) >= 2:
-            # "C Ruud" vs "Casper Ruud"
-            t_initial = len(tparts[0]) == 1 and kparts[0].startswith(tparts[0])
-            same_last = tparts[-1] == kparts[-1]
-            if t_initial and same_last:
-                score = max(score, 0.97)
-            elif same_last:
-                score = max(score, 0.88)
+        if len(tparts) >= 2:
+            t_is_abbrev = len(tparts[0]) == 1
+            t_initial = tparts[0] if t_is_abbrev else tparts[0][0]
+            t_surname = " ".join(tparts[1:]) if t_is_abbrev else " ".join(surname_tokens_for_match(name))
+            for form in player_name_forms(key):
+                if form.get("initial") == t_initial and _surname_compatible(t_surname, form.get("surname")):
+                    score = max(score, 0.985 if t_is_abbrev else 0.94)
+                elif not t_is_abbrev and _surname_compatible(t_surname, form.get("surname")):
+                    score = max(score, 0.88)
 
-            # Apellidos compuestos.
-            t_surname = " ".join(tparts[1:]) if len(tparts[0]) == 1 else " ".join(tparts[1:])
-            k_surname = " ".join(kparts[1:])
-            if t_initial and t_surname and (t_surname in k_surname or k_surname in t_surname):
-                score = max(score, 0.96)
-
-        # v23.20 Fix nombres: si viene "D. Chiesa", no aceptar candidatos
-        # cuyo apellido no sea Chiesa aunque el fuzzy general sea alto.
+        # Seguridad: si viene "D. Chiesa", no aceptar candidatos cuyo apellido no sea Chiesa.
         if not strict_abbrev_surname_compatible(name, key):
             score = min(score, 0.40)
 
@@ -5495,26 +5573,21 @@ def find_player_candidates_in_db(name, db, top_n=5):
         )
 
         tparts = name_words_keep_initials(name)
-        kparts = name_words_keep_initials(key)
 
         reason = "fuzzy"
-        if len(tparts) >= 2 and len(kparts) >= 2:
-            t_initial = len(tparts[0]) == 1 and kparts[0].startswith(tparts[0])
-            same_last = tparts[-1] == kparts[-1]
-            t_surname = " ".join(tparts[1:]) if len(tparts[0]) == 1 else " ".join(tparts[1:])
-            k_surname = " ".join(kparts[1:])
+        if len(tparts) >= 2:
+            t_is_abbrev = len(tparts[0]) == 1
+            t_initial = tparts[0] if t_is_abbrev else tparts[0][0]
+            t_surname = " ".join(tparts[1:]) if t_is_abbrev else " ".join(surname_tokens_for_match(name))
+            for form in player_name_forms(key):
+                if form.get("initial") == t_initial and _surname_compatible(t_surname, form.get("surname")):
+                    score = max(score, 0.985 if t_is_abbrev else 0.94)
+                    reason = "inicial+apellido" if len(t_surname.split()) == 1 else "inicial+apellido compuesto"
+                elif not t_is_abbrev and _surname_compatible(t_surname, form.get("surname")):
+                    score = max(score, 0.88)
+                    reason = "apellido"
 
-            if t_initial and same_last:
-                score = max(score, 0.97)
-                reason = "inicial+apellido"
-            elif t_initial and t_surname and (t_surname in k_surname or k_surname in t_surname):
-                score = max(score, 0.96)
-                reason = "inicial+apellido compuesto"
-            elif same_last:
-                score = max(score, 0.88)
-                reason = "apellido"
-
-        # v23.20 Fix nombres: evita sugerencias falsas por fuzzy cuando
+        # v23.25.7 Fix nombres: evita sugerencias falsas por fuzzy cuando
         # la consulta es inicial + apellido y el apellido no coincide.
         if not strict_abbrev_surname_compatible(name, key):
             score = min(score, 0.40)
