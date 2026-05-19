@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.30.4-sidebar-limpio"
+APP_VERSION = "v23.30.5-over-ml-2-0-guard"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -7302,9 +7302,10 @@ def aplicar_ml_quality_guard_v23300(row):
 
 def aplicar_max_acierto_v23294(row):
     """
-    v23.29.4 Máximo acierto tuned:
+    v23.30.5 Máximo acierto tuned:
     - Si Signal Trust es WATCH, ningún Over queda como pick oficial.
     - Over 19.5 oficial solo si probabilidad >=69%; 66%-68.9% pasa a watch/no combi.
+    - Si un Over oficial tiene Favorito 2-0 >=60% y no hay perfil largo fuerte, baja a WATCH.
     - Perfil 2-0 moderado con favorito >=64% y Fav 2-0 alto pasa a watch.
     - Under 2.5 nunca queda como ✅ oficial; solo watch hasta validar más muestras.
     """
@@ -7315,6 +7316,8 @@ def aplicar_max_acierto_v23294(row):
     fav20 = _row_pct(row, "Favorito 2-0", 0.0)
     over18 = _row_pct(row, "Over 18.5", 0.0)
     over19 = _row_pct(row, "Over 19.5", 0.0)
+    set3 = _row_pct(row, "Partido a 3 sets", 0.0)
+    dog_set = _row_pct(row, "Prob gana set", 0.0)
 
     def out(m, p=None, extra=""):
         prob_txt = str(row.get("Prob mercado recomendado", "") or "")
@@ -7348,6 +7351,16 @@ def aplicar_max_acierto_v23294(row):
     # como oficial. Para máximo acierto, 19.5 necesita al menos 69%.
     if "OVER 19.5" in mu and over19 < 0.69:
         return out("👀 WATCH OVER 19.5 / NO COMBI", over19, "v23.29.4: Over 19.5 <69%; baja a watch/no combi")
+
+    # v23.30.5: si el propio modelo da Favorito 2-0 >=60%, no dejamos que el Over
+    # sea pick oficial salvo que haya una señal larga muy clara. Esta regla nace del
+    # fallo Buse vs Gaston: Over 18.5 oficial con Fav 2-0 63.2% terminó corto.
+    official_over = ("OVER" in mu) and (market.strip().startswith("✅") or market.strip().startswith("🔥"))
+    perfil_largo_fuerte = (set3 >= 0.48) or (over19 >= 0.70 and dog_set >= 0.55)
+    if official_over and fav20 >= 0.60 and not perfil_largo_fuerte:
+        if "19.5" in mu:
+            return out("👀 WATCH OVER 19.5 / RIESGO 2-0", over19, "v23.30.5: Favorito 2-0 >=60%; no hay perfil largo fuerte")
+        return out("👀 WATCH OVER 18.5 / RIESGO 2-0", over18, "v23.30.5: Favorito 2-0 >=60%; no hay perfil largo fuerte")
 
     if "OVER" in mu and fav >= 0.64 and fav20 >= 0.48 and over18 < 0.78:
         return out("👀 WATCH OVER 18.5 / RIESGO 2-0", over18, "v23.29.4: favorito + 2-0 moderado; no apuesta oficial")
