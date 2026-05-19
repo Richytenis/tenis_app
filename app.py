@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.26.9"
+APP_VERSION = "v23.26.8-combi-safe"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4320,7 +4320,7 @@ def is_time_line_sofa(x):
 def is_country_line_sofa(x):
     countries = {
         "andorra","argentina","australia","austria","belgium","bolivia","brazil","canada","chile","china","colombia",
-        "croatia","czechia","denmark","finland","france","chinese taipei","taiwan","georgia","germany","hungary","italy","kazakhstan",
+        "croatia","czechia","denmark","finland","france","georgia","germany","hungary","italy","kazakhstan",
         "latvia","lebanon","lithuania","luxembourg","netherlands","paraguay","peru","portugal","russia","serbia",
         "spain","switzerland","tunisia","united kingdom","uruguay","usa","ukraine","poland","slovakia",
         "slovenia","romania","bulgaria","turkey","turkiye","türkiye","greece","norway","sweden","japan","india","south korea",
@@ -4746,8 +4746,6 @@ def parse_sofascore_schedule_no_date_paste(raw_text):
                         "p2_raw": jugador2,
                         "surface": current_surface,
                         "torneo": current_tournament,
-                        "raw_block": " ".join([current_tournament] + current_meta),
-                        "source_text": " ".join([current_tournament] + current_meta),
                         "circuito_detectado": current_circuit,
                         "odd1": None,
                         "odd2": None,
@@ -4805,163 +4803,6 @@ def parse_sofascore_schedule_no_date_paste(raw_text):
 
     return matches
 
-
-
-# =========================================================
-# v23.26.9 DIRECT SCHEDULE PARSER FIX
-# =========================================================
-def parse_sofascore_schedule_direct_pattern_v23269(raw_text):
-    """
-    Parser directo para horarios Sofascore/Flashscore:
-      HORA / - / PAIS / JUGADOR / PAIS / JUGADOR
-    Diseñado para Roland Garros/French Open Qualifying con bloques ATP+WTA mezclados.
-    No depende de que el encabezado sea reconocido como torneo; mantiene el último ATP/WTA visto.
-    """
-    lines = [ln.strip() for ln in str(raw_text).splitlines() if ln and ln.strip()]
-    matches = []
-
-    current_tournament = ""
-    current_circuit = "DESCONOCIDO"
-    current_surface = "Clay"
-    current_meta = []
-    current_ignore_doubles = False
-
-    def push_meta(x):
-        nonlocal current_meta
-        x = normalizar_texto(x).strip()
-        if x and x not in current_meta:
-            current_meta.append(x)
-        if len(current_meta) > 10:
-            current_meta = current_meta[-10:]
-
-    def is_direct_meta_or_header(x, nxt=None):
-        t = normalizar_texto(x).strip()
-        if not t or t == "-" or is_time_line_sofa(t):
-            return False
-        if is_country_line_sofa(t) or is_country_like_name(t):
-            return False
-        if is_number_line_sofa_schedule(t):
-            return True
-        u = t.upper()
-        if u in {"ATP", "WTA", "ITF", "CHALLENGER", "GRAND SLAM", "QUALIFYING", "QUALIFICATION"}:
-            return True
-        if normalizar_superficie_pegada(t, default="") in ["Hard", "Clay", "Grass"]:
-            return True
-        if any(k in u for k in ["ATP ", "WTA ", "CHALLENGER", "GRAND SLAM", "QUALIFYING", "QUALIFICATION", "DOUBLES", "DOBLES"]):
-            return True
-        if "," in t:
-            return True
-        # Cabecera suelta tipo Roland Garros, Hamburg, Geneva justo antes de otro encabezado.
-        nxt_txt = " ".join(normalizar_texto(z).upper() for z in (nxt or [])[:5])
-        if any(k in nxt_txt for k in ["ATP", "WTA", "GRAND SLAM", "TIERRA", "CLAY", "HARD", "GRASS", "QUALIFYING"]):
-            return True
-        return False
-
-    i = 0
-    while i < len(lines):
-        line = normalizar_texto(lines[i]).strip()
-        up = line.upper()
-
-        # 1) Partido por patrón estricto.
-        if is_time_line_sofa(line):
-            j = i + 1
-            if j < len(lines) and normalizar_texto(lines[j]).strip() == "-":
-                j += 1
-            if j + 3 < len(lines):
-                pais1 = normalizar_texto(lines[j]).strip()
-                jugador1 = normalizar_texto(lines[j + 1]).strip()
-                pais2 = normalizar_texto(lines[j + 2]).strip()
-                jugador2 = normalizar_texto(lines[j + 3]).strip()
-
-                valid_country_pair = (
-                    (is_country_line_sofa(pais1) or is_country_like_name(pais1)) and
-                    (is_country_line_sofa(pais2) or is_country_like_name(pais2))
-                )
-                valid_players = (
-                    looks_like_player_line_sofa(jugador1) and looks_like_player_line_sofa(jugador2) and
-                    not is_country_like_name(jugador1) and not is_country_like_name(jugador2) and
-                    not es_rival_pendiente_pegado(jugador1) and not es_rival_pendiente_pegado(jugador2) and
-                    "/" not in jugador1 and "/" not in jugador2
-                )
-                if valid_country_pair and valid_players and not current_ignore_doubles:
-                    # Grand Slam Qualifying debe quedar como Qualy BO3, pero con circuito ATP/WTA correcto.
-                    source = " ".join([current_tournament] + current_meta)
-                    matches.append({
-                        "raw": f"{line} · {jugador1} - {jugador2}",
-                        "time": line,
-                        "p1_raw": jugador1,
-                        "p2_raw": jugador2,
-                        "surface": current_surface,
-                        "torneo": current_tournament,
-                        "raw_block": source,
-                        "source_text": source,
-                        "circuito_detectado": current_circuit,
-                        "odd1": None,
-                        "odd2": None,
-                        "quoted_side": None,
-                        "quoted_odd": None,
-                        "quoted_text": None
-                    })
-                    i = j + 4
-                    continue
-            i += 1
-            continue
-
-        # 2) Contexto.
-        if up == "ATP":
-            current_circuit = "ATP"
-            push_meta(line)
-            i += 1
-            continue
-        if up == "WTA":
-            current_circuit = "WTA"
-            push_meta(line)
-            i += 1
-            continue
-        if "DOUBLES" in up or "DOBLES" in up:
-            current_ignore_doubles = True
-            push_meta(line)
-            i += 1
-            continue
-        if up in {"CHALLENGER", "ITF"}:
-            # Si no aparece WTA, Challenger/ITF por defecto lo tratamos como masculino.
-            current_circuit = "CHALLENGER_ATP" if up == "CHALLENGER" else "ITF_ATP"
-            push_meta(line)
-            i += 1
-            continue
-        surf = normalizar_superficie_pegada(line, default="")
-        if surf in ["Hard", "Clay", "Grass"]:
-            current_surface = surf
-            push_meta(line)
-            i += 1
-            continue
-        if up in {"GRAND SLAM", "QUALIFYING", "QUALIFICATION"} or "QUALIFYING" in up or "GRAND SLAM" in up:
-            push_meta(line)
-            i += 1
-            continue
-        if is_number_line_sofa_schedule(line):
-            push_meta(line)
-            i += 1
-            continue
-
-        # 3) Cabecera de torneo. No borra ATP/WTA ya detectado; solo cambia el nombre del torneo.
-        if is_direct_meta_or_header(line, lines[i + 1:i + 6]):
-            current_tournament = line
-            current_ignore_doubles = False
-            push_meta(line)
-            if "QUALIFYING" in up or "QUALIFICATION" in up:
-                push_meta("Qualifying")
-            i += 1
-            continue
-
-        i += 1
-
-    return matches
-
-
-# Sobrescribe el parser de horarios sin fecha con el parser directo robusto.
-def parse_sofascore_schedule_no_date_paste(raw_text):
-    return parse_sofascore_schedule_direct_pattern_v23269(raw_text)
 
 def parse_sofascore_day_grouped_paste(raw_text):
     """
@@ -6002,23 +5843,11 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             progress_callback(idx-1, total, f"Emparejando {m.get('p1_raw')} vs {m.get('p2_raw')}")
 
         match_surface = m.get("surface", surface) if m.get("surface", surface) in ["Hard", "Clay", "Grass"] else surface
+        lookup_circuit = circuito_lookup_para_match(m, circuito)
+        circuito_calc = circuito_sim_para_lookup(lookup_circuit, circuito)
 
-        # v23.26.8: modo auto real. Si el pegado trae ATP+WTA mezclado, cada partido
-        # carga su base correcta en vez de usar solo el circuito seleccionado en la barra lateral.
-        src_circuit = str(m.get("circuito_detectado", "")).upper()
-        if src_circuit in {"WTA", "WTA_125", "CHALLENGER_WTA", "ITF_WTA"}:
-            circuito_base_match = "WTA"
-        elif src_circuit in {"ATP", "CHALLENGER_ATP", "ITF_ATP"}:
-            circuito_base_match = "ATP"
-        else:
-            circuito_base_match = circuito
-
-        match_db = db if str(circuito_base_match).upper() == str(circuito).upper() else cargar_datos(circuito_base_match)
-        lookup_circuit = circuito_lookup_para_match(m, circuito_base_match)
-        circuito_calc = circuito_sim_para_lookup(lookup_circuit, circuito_base_match)
-
-        p1_key, d1, p1_score, p1_status = resolver_player_batch(m["p1_raw"], match_db, lookup_circuit, match_surface, allow_fallback=True)
-        p2_key, d2, p2_score, p2_status = resolver_player_batch(m["p2_raw"], match_db, lookup_circuit, match_surface, allow_fallback=True)
+        p1_key, d1, p1_score, p1_status = resolver_player_batch(m["p1_raw"], db, lookup_circuit, match_surface, allow_fallback=True)
+        p2_key, d2, p2_score, p2_status = resolver_player_batch(m["p2_raw"], db, lookup_circuit, match_surface, allow_fallback=True)
 
         # Solo queda como No encontrado si es rival pendiente/país/dobles o imposible de analizar.
         if d1 is None or d2 is None:
@@ -6033,10 +5862,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
                 "Score J2": f"{p2_score:.0%}",
             })
             continue
-        # French Open/Roland Garros Qualifying: aunque sea Grand Slam, se juega al mejor de 3.
-        qualy_txt = " ".join([str(m.get("torneo", "")), str(m.get("raw", "")), str(m.get("source_text", ""))]).upper()
-        match_best_of = 3 if any(x in qualy_txt for x in ["QUALIFYING", "QUALIFICATION", "QUALY"]) else best_of
-        sim = sim_match(d1, d2, match_surface, circuito_calc, match_best_of, sims, context_row={})
+        sim = sim_match(d1, d2, match_surface, circuito_calc, best_of, sims, context_row={})
         games = sim.get("games", [])
         avg_games = float(np.mean(games)) if len(games) else 0.0
         games_p1 = sim.get("games_p1", [])
@@ -6219,6 +6045,365 @@ def _pct_to_float(x):
         return float(s) / 100.0
     except Exception:
         return None
+
+
+# =========================================================
+# v23.26.8 COMBI SAFE ENGINE
+# Constructor de combinadas para evitar el "fallo por uno"
+# =========================================================
+
+def _combi_float(x, default=None):
+    try:
+        if x is None:
+            return default
+        s = str(x).replace("%", "").replace(",", ".").strip()
+        if s == "" or s.lower() in ["nan", "none", "n/d"]:
+            return default
+        return float(s)
+    except Exception:
+        return default
+
+
+def _combi_pct(x, default=0.0):
+    v = _combi_float(x, None)
+    if v is None:
+        return default
+    if v > 1:
+        v = v / 100.0
+    return float(np.clip(v, 0.0, 1.0))
+
+
+def _combi_tipo_mercado(market):
+    m = str(market or "").upper().replace(",", ".")
+    if "NO BET" in m:
+        return "no_bet"
+    if "OVER 17.5" in m:
+        return "over17"
+    if "OVER 18.5" in m:
+        return "over18"
+    if "OVER 19.5" in m:
+        return "over19"
+    if "OVER 20.5" in m:
+        return "over20"
+    if "UNDER 22.5" in m:
+        return "under22"
+    if "+2.5" in m or "3 SET" in m or "TRES SET" in m:
+        return "sets3"
+    if "2-0" in m or "UNDER 2.5 SET" in m:
+        return "fav20"
+    if "GANA AL MENOS 1 SET" in m or "GANA SET" in m:
+        return "dog_set"
+    if "ML" in m or "GANADOR" in m or "FAVORITO" in m:
+        return "ml"
+    return "otro"
+
+
+COMBI_SAFE_PROFILES_V23268 = {
+    "🔒 Conservador": {
+        "ml": 0.78, "over17": 0.82, "over18": 0.81, "over19": 0.78, "over20": 0.72,
+        "under22": 0.72, "sets3": 0.47, "fav20": 0.70, "dog_set": 0.54, "otro": 0.78,
+        "max_picks": 3,
+    },
+    "⚖️ Normal": {
+        "ml": 0.75, "over17": 0.79, "over18": 0.79, "over19": 0.76, "over20": 0.70,
+        "under22": 0.70, "sets3": 0.45, "fav20": 0.67, "dog_set": 0.51, "otro": 0.75,
+        "max_picks": 3,
+    },
+    "🔥 Agresivo": {
+        "ml": 0.72, "over17": 0.76, "over18": 0.76, "over19": 0.73, "over20": 0.67,
+        "under22": 0.67, "sets3": 0.42, "fav20": 0.64, "dog_set": 0.49, "otro": 0.72,
+        "max_picks": 4,
+    },
+}
+
+
+def _combi_prob_from_row(row, market):
+    """Usa Prob mercado recomendado y, si falta, busca la columna específica."""
+    p = _combi_pct(row.get("Prob mercado recomendado", ""), None)
+    if p is not None and p > 0:
+        return p
+
+    tipo = _combi_tipo_mercado(market)
+    col_map = {
+        "ml": "ML favorito",
+        "over17": "Over 17.5",
+        "over18": "Over 18.5",
+        "over19": "Over 19.5",
+        "over20": "Over 20.5",
+        "under22": "Under 22.5",
+        "sets3": "Partido a 3 sets",
+        "fav20": "Favorito 2-0",
+        "dog_set": "Prob gana set",
+    }
+    col = col_map.get(tipo)
+    if col and col in row.index:
+        return _combi_pct(row.get(col, ""), 0.0)
+    return _combi_pct(row.get("Prob señal", ""), 0.0)
+
+
+def _combi_cuota_from_row(row, prob):
+    """Prioriza cuota pegada. Si no existe, usa cuota justa/estimada para poder ordenar."""
+    q = _combi_float(row.get("Cuota pegada", ""), None)
+    if q is not None and q > 1.0:
+        return float(q), "pegada"
+
+    q = _combi_float(row.get("Cuota justa", ""), None)
+    if q is not None and q > 1.0:
+        return float(q), "justa ML"
+
+    if prob and prob > 0:
+        # Estimación conservadora de cuota posible. Solo orienta si no se han pegado cuotas.
+        return float(np.clip((1.0 / prob) * 0.94, 1.01, 3.50)), "estimada"
+    return 1.01, "estimada"
+
+
+def clasificar_combi_safe_row_v23268(row, profile_name="⚖️ Normal"):
+    profile = COMBI_SAFE_PROFILES_V23268.get(profile_name, COMBI_SAFE_PROFILES_V23268["⚖️ Normal"])
+
+    market = str(row.get("Mercado recomendado", "") or "").strip()
+    rec = str(row.get("Recomendación", "") or "").strip()
+    trust = str(row.get("Signal Trust", "") or "").strip()
+    risks = str(row.get("Riesgos", "") or "").strip()
+    estado = str(row.get("Estado", "") or "").strip()
+    circuito = " ".join([
+        str(row.get("Circuito fuente", "") or ""),
+        str(row.get("Circuito datos", "") or ""),
+        str(row.get("Circuito cálculo", "") or ""),
+        str(row.get("Torneo", "") or ""),
+    ]).upper()
+    surface = str(row.get("Superficie", "") or "")
+    partido = str(row.get("Partido", "") or "").strip()
+
+    tipo = _combi_tipo_mercado(market)
+    prob = _combi_prob_from_row(row, market)
+    cuota, cuota_tipo = _combi_cuota_from_row(row, prob)
+
+    reasons = []
+    min_prob = float(profile.get(tipo, profile.get("otro", 0.75)))
+
+    blocked_words = ["NO BET", "WATCH", "OBSERVAR", "SOLO CONTEXTO", "NO COMBI"]
+    all_signal = f"{market} {rec} {trust}".upper()
+    hard_block = any(w in all_signal for w in blocked_words)
+
+    if tipo == "no_bet" or hard_block:
+        return {
+            "Partido": partido, "Mercado": market, "Prob": prob, "Cuota": cuota,
+            "Cuota tipo": cuota_tipo, "Tipo": tipo, "Min": min_prob,
+            "Etiqueta": "❌ NO COMBI", "Combi Safe": False, "Score": 0.0,
+            "Motivos": "recomendación/watch/no bet: no entra en combinada",
+        }
+
+    if "CHALLENGER" in circuito or "CHALL" in circuito:
+        min_prob += 0.04
+        reasons.append("Challenger: sube exigencia")
+
+    if "QUAL" in circuito or "QUALY" in circuito or "PREVIA" in circuito:
+        min_prob += 0.03
+        reasons.append("Qualy/previa: sube exigencia")
+
+    if "WTA" in circuito and tipo == "ml":
+        min_prob += 0.03
+        reasons.append("WTA ML: sube exigencia")
+
+    if "OK CON JUGADOR ESTIMADO" in estado.upper() or "FALLBACK" in f"{risks} {row.get('Aviso datos','')}".upper():
+        min_prob += 0.05
+        reasons.append("Datos parciales/fallback: no forzar combinada")
+
+    if any(x in f"{risks} {trust}".upper() for x in ["UPSET", "VULNERABLE", "RIESGO", "PARCIALES"]):
+        min_prob += 0.02
+        reasons.append("Riesgo detectado por el analista")
+
+    if tipo in ["sets3", "dog_set"]:
+        reasons.append("Mercado de más varianza: mejor simple salvo probabilidad muy alta")
+
+    if tipo in ["over17", "over18"]:
+        reasons.append("Mercado prioritario para combinadas si supera umbral")
+
+    # Score interno para ordenar combinadas.
+    score = prob * 100.0
+    if prob >= 0.85:
+        score += 10
+    elif prob >= 0.80:
+        score += 7
+    elif prob >= 0.75:
+        score += 4
+    else:
+        score -= 8
+
+    if tipo in ["over17", "over18"]:
+        score += 5
+    elif tipo == "over19":
+        score += 3
+    elif tipo in ["sets3", "dog_set"]:
+        score -= 5
+    elif tipo == "ml":
+        score += 0
+    elif tipo in ["fav20", "under22"]:
+        score -= 1
+    else:
+        score -= 2
+
+    if "CHALLENGER" in circuito or "CHALL" in circuito:
+        score -= 6
+    if "QUAL" in circuito or "QUALY" in circuito:
+        score -= 5
+    if "WTA" in circuito and tipo == "ml":
+        score -= 5
+    if "FALLBACK" in f"{risks} {row.get('Aviso datos','')}".upper():
+        score -= 8
+
+    if prob >= min_prob:
+        etiqueta = "🧱 COMBI SAFE"
+        safe = True
+    elif prob >= min_prob - 0.04:
+        etiqueta = "🔥 FUERTE SIMPLE"
+        safe = False
+        reasons.append("bueno para simple, corto para combinada")
+    else:
+        etiqueta = "❌ NO COMBI"
+        safe = False
+        reasons.append("no supera el mínimo de combinada")
+
+    return {
+        "Partido": partido,
+        "Mercado": market,
+        "Prob": float(prob),
+        "Cuota": float(cuota),
+        "Cuota tipo": cuota_tipo,
+        "Tipo": tipo,
+        "Min": float(min_prob),
+        "Etiqueta": etiqueta,
+        "Combi Safe": bool(safe),
+        "Score": float(score),
+        "Motivos": " · ".join(reasons) if reasons else "sin alerta adicional",
+    }
+
+
+def construir_combinadas_v23268(ok_df, profile_name="⚖️ Normal", cuota_min=1.60, cuota_max=1.80, min_picks=2, max_picks=3):
+    if ok_df is None or ok_df.empty:
+        return pd.DataFrame(), []
+
+    picks = []
+    for _, row in ok_df.iterrows():
+        p = clasificar_combi_safe_row_v23268(row, profile_name=profile_name)
+        if p.get("Partido") and p.get("Mercado"):
+            picks.append(p)
+
+    safe_picks = [p for p in picks if p.get("Combi Safe")]
+    combos = []
+
+    for n in range(int(min_picks), int(max_picks) + 1):
+        for combo in combinations(safe_picks, n):
+            partidos = [p["Partido"] for p in combo]
+            if len(set(partidos)) != len(partidos):
+                continue
+
+            cuota_total = 1.0
+            confianza = 1.0
+            score_medio = 0.0
+            for p in combo:
+                cuota_total *= float(p["Cuota"])
+                confianza *= float(p["Prob"])
+                score_medio += float(p["Score"])
+            score_medio /= max(1, len(combo))
+
+            if float(cuota_min) <= cuota_total <= float(cuota_max):
+                weak = min(combo, key=lambda x: x["Prob"])
+                combos.append({
+                    "Nº picks": n,
+                    "Cuota total": cuota_total,
+                    "Confianza global": confianza,
+                    "Score medio": score_medio,
+                    "Pick más débil": f"{weak['Mercado']} — {weak['Partido']} ({weak['Prob']:.1%})",
+                    "Picks": list(combo),
+                })
+
+    combos = sorted(combos, key=lambda x: (x["Score medio"], x["Confianza global"], -x["Nº picks"]), reverse=True)
+    return pd.DataFrame(picks), combos
+
+
+def render_constructor_combinadas_v23268(ok_df):
+    st.divider()
+    st.subheader("🧱 Constructor de combinadas seguras")
+    st.caption("Usa el Mercado recomendado real de la tabla. Diferencia 🔥 fuerte simple de 🧱 apto para combinada.")
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        profile_name = st.selectbox("Modo combi", list(COMBI_SAFE_PROFILES_V23268.keys()), index=1, key="combi_profile_v23268")
+    with c2:
+        cuota_min = st.number_input("Cuota mínima", min_value=1.01, max_value=10.0, value=1.60, step=0.05, key="combi_cuota_min_v23268")
+    with c3:
+        cuota_max = st.number_input("Cuota máxima", min_value=1.01, max_value=10.0, value=1.80, step=0.05, key="combi_cuota_max_v23268")
+    with c4:
+        max_default = COMBI_SAFE_PROFILES_V23268.get(profile_name, {}).get("max_picks", 3)
+        max_picks = st.slider("Máx picks", 2, 5, int(max_default), key="combi_max_picks_v23268")
+
+    min_picks = 2
+    picks_df, combos = construir_combinadas_v23268(
+        ok_df,
+        profile_name=profile_name,
+        cuota_min=cuota_min,
+        cuota_max=cuota_max,
+        min_picks=min_picks,
+        max_picks=max_picks,
+    )
+
+    if picks_df.empty:
+        st.warning("No hay picks suficientes para construir combinadas.")
+        return
+
+    show = picks_df.copy()
+    show["Prob %"] = show["Prob"].apply(lambda x: round(float(x) * 100, 1))
+    show["Mínimo %"] = show["Min"].apply(lambda x: round(float(x) * 100, 1))
+    show["Cuota"] = show["Cuota"].apply(lambda x: round(float(x), 2))
+    show["Score"] = show["Score"].apply(lambda x: round(float(x), 1))
+    cols = ["Etiqueta", "Partido", "Mercado", "Prob %", "Mínimo %", "Cuota", "Cuota tipo", "Score", "Motivos"]
+
+    safe_count = int(picks_df["Combi Safe"].sum()) if "Combi Safe" in picks_df.columns else 0
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Picks analizados", len(picks_df))
+    m2.metric("🧱 Combi Safe", safe_count)
+    m3.metric("Combinadas encontradas", len(combos))
+
+    with st.expander("Ver clasificación combi de todos los picks", expanded=False):
+        st.dataframe(show[[c for c in cols if c in show.columns]], width='stretch', hide_index=True)
+
+    if not combos:
+        st.error("❌ No hay combinada segura dentro del rango de cuota objetivo.")
+        if safe_count == 0:
+            st.warning("Hoy no hay ningún pick 🧱 COMBI SAFE. Mejor no forzar.")
+        elif safe_count == 1:
+            st.warning("Solo hay 1 pick 🧱 COMBI SAFE. Mejor simple o esperar.")
+        else:
+            st.info("Hay picks seguros, pero no encajan en la cuota objetivo. Revisa si pegaste cuotas reales.")
+        return
+
+    st.success(f"✅ Combinadas recomendadas encontradas: {len(combos)}")
+
+    for i, combo in enumerate(combos[:5], start=1):
+        st.markdown(f"### 🧱 Combinada recomendada #{i}")
+        a, b, c, d = st.columns(4)
+        a.metric("Cuota total", f"{combo['Cuota total']:.2f}")
+        b.metric("Confianza global", f"{combo['Confianza global']:.1%}")
+        c.metric("Nº picks", combo["Nº picks"])
+        d.metric("Score medio", f"{combo['Score medio']:.1f}")
+
+        combo_df = pd.DataFrame(combo["Picks"]).copy()
+        combo_df["Prob %"] = combo_df["Prob"].apply(lambda x: round(float(x) * 100, 1))
+        combo_df["Cuota"] = combo_df["Cuota"].apply(lambda x: round(float(x), 2))
+        st.dataframe(
+            combo_df[["Partido", "Mercado", "Prob %", "Cuota", "Cuota tipo", "Etiqueta"]],
+            width='stretch',
+            hide_index=True
+        )
+        st.warning(f"⚠️ Pick más débil: {combo['Pick más débil']}")
+
+        if combo["Nº picks"] >= 4:
+            st.info("Para evitar el fallo por uno, intenta llegar a cuota parecida con 2-3 picks si es posible.")
+        elif combo["Confianza global"] >= 0.50:
+            st.success("Estructura limpia: pocos picks y todos superan filtro COMBI SAFE.")
+        else:
+            st.info("Apta, pero con riesgo acumulado. No subiría más picks.")
 
 
 def wta_over_watchlist_reason(circuito, surface, fav_prob, over18, over17=None):
@@ -7506,14 +7691,14 @@ Sebastián Baez - Roberto Carballés Baena"""
                 preview = parse_sofascore_paste(raw_batch)
             elif formato_pegado == "Sofascore día auto ATP/WTA/Challenger":
                 preview_all = parse_sofascore_day_grouped_paste(raw_batch)
-                st.caption(f"Auto detectado total: {len(preview_all)} · Se analizarán ATP/WTA/Challenger separados automáticamente si aparecen mezclados.")
-                preview = preview_all
+                st.caption(f"Auto detectado total: {len(preview_all)} · Se analizarán solo {circuito} según el selector lateral.")
+                preview = filtrar_matches_por_circuito_pegado(preview_all, circuito)
             elif formato_pegado == "Sofascore resultados":
                 preview = parse_sofascore_results_paste(raw_batch)
             elif formato_pegado == "Sofascore resultados auto ATP/WTA/Challenger":
                 preview_all = parse_sofascore_results_grouped_paste(raw_batch)
-                st.caption(f"Auto resultados detectado total: {len(preview_all)} · Se analizarán ATP/WTA/Challenger separados automáticamente si aparecen mezclados.")
-                preview = preview_all
+                st.caption(f"Auto resultados detectado total: {len(preview_all)} · Se analizarán solo {circuito} según el selector lateral.")
+                preview = filtrar_matches_por_circuito_pegado(preview_all, circuito)
             else:
                 preview = parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch)
                 # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Winamax.
@@ -7568,12 +7753,12 @@ Sebastián Baez - Roberto Carballés Baena"""
             parsed = parse_sofascore_paste(raw_batch)[:int(max_batch)]
         elif formato_pegado == "Sofascore día auto ATP/WTA/Challenger":
             parsed_all = parse_sofascore_day_grouped_paste(raw_batch)
-            parsed = parsed_all[:int(max_batch)]
+            parsed = filtrar_matches_por_circuito_pegado(parsed_all, circuito)[:int(max_batch)]
         elif formato_pegado == "Sofascore resultados":
             parsed = parse_sofascore_results_paste(raw_batch)[:int(max_batch)]
         elif formato_pegado == "Sofascore resultados auto ATP/WTA/Challenger":
             parsed_all = parse_sofascore_results_grouped_paste(raw_batch)
-            parsed = parsed_all[:int(max_batch)]
+            parsed = filtrar_matches_por_circuito_pegado(parsed_all, circuito)[:int(max_batch)]
         else:
             parsed = (parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch))
             # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Winamax.
@@ -7589,7 +7774,7 @@ Sebastián Baez - Roberto Carballés Baena"""
             st.stop()
 
         if not parsed:
-            st.error("No he detectado partidos. Si pegaste Roland Garros/French Open Qualifying, usa Formato pegado → Sofascore día auto ATP/WTA/Challenger y borra texto anterior del cuadro antes de pegar.")
+            st.error("No he detectado partidos para el circuito seleccionado. Si pegaste todo el día, usa Formato pegado → Sofascore día auto ATP/WTA/Challenger o Sofascore resultados auto ATP/WTA/Challenger, y revisa si arriba tienes seleccionado ATP o WTA.")
             st.stop()
 
         best_of = 5 if "5" in formato else 3
@@ -7715,6 +7900,9 @@ Sebastián Baez - Roberto Carballés Baena"""
             st.divider()
             st.subheader("🔥 Resumen ordenado")
             st.dataframe(ok_saved, width='stretch', hide_index=True)
+
+            # v23.26.8: constructor automático de combinadas sobre la tabla real.
+            render_constructor_combinadas_v23268(ok_saved)
 
             dl1, dl2 = st.columns(2)
             with dl1:
