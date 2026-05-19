@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.30.3-sin-combinadas-view"
+APP_VERSION = "v23.30.4-sidebar-limpio"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -8295,7 +8295,7 @@ if modo == "Predictor":
 
 elif modo == "Analizador por lista":
     st.subheader("📋 Analizador por lista pegada")
-    st.caption("Pega partidos de Winamax/casa, lista diaria de Sofascore o resultados Sofascore de ayer. Se ignoran dobles/cancelados/retirados.")
+    st.caption("Pega lista diaria o resultados de SofaScore. Se ignoran dobles/cancelados/retirados.")
     st.info("Nota: en Sofascore resultados, el ML se valida con ganador real. Si el pegado incluye juegos por set, también valida Over 18.5 y, solo en WTA, Over 17.5. En tie-breaks puede contar puntos extra si Sofascore los copia como números separados.")
 
     with st.sidebar:
@@ -8314,15 +8314,11 @@ elif modo == "Analizador por lista":
         )
         formato_pegado = st.radio(
             "Formato pegado",
-            ["Casa/Winamax limpio", "Sofascore día", "Sofascore día auto ATP/WTA/Challenger", "Sofascore resultados", "Sofascore resultados auto ATP/WTA/Challenger"],
+            ["Sofascore día auto ATP/WTA/Challenger", "Sofascore resultados auto ATP/WTA/Challenger"],
             index=0,
-            help="Auto ATP/WTA/Challenger permite pegar todo el día junto y filtra según el circuito elegido en la barra lateral. Ignora dobles/cancelados/retirados."
+            help="Pega todo el día junto y la app filtra según el circuito elegido en la barra lateral. Ignora dobles/cancelados/retirados."
         )
-        usar_cuotas = st.toggle(
-            "Leer cuotas pegadas",
-            value=False,
-            help="Desactivado = usa solo Jugador A - Jugador B. Más limpio y rápido."
-        )
+        usar_cuotas = False
         vista_resultados_simple = st.toggle(
             "Vista simple resultados",
             value=True,
@@ -8441,7 +8437,7 @@ Sebastián Baez - Roberto Carballés Baena"""
             st.stop()
 
         if not parsed:
-            st.error("No he detectado partidos para el circuito seleccionado. Si pegaste todo el día, usa Formato pegado → Sofascore día auto ATP/WTA/Challenger o Sofascore resultados auto ATP/WTA/Challenger, y revisa si arriba tienes seleccionado ATP o WTA.")
+            st.error("No he detectado partidos para el circuito seleccionado. Revisa que hayas elegido el formato correcto: SofaScore día auto o SofaScore resultados auto, y que arriba esté seleccionado ATP, WTA o Challenger correctamente.")
             st.stop()
 
         best_of = 5 if "5" in formato else 3
