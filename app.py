@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.30.5-over-ml-2-0-guard"
+APP_VERSION = "v23.31.0-wta-over17-oficial"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -7257,6 +7257,108 @@ def pick_oficial_v23301(row):
 
     return ""
 
+
+# =========================================================
+# v23.31 WTA OVER 17.5 OFFICIAL GUARD
+# Objetivo: WTA no usa ML ni Over 18.5 como mercado principal.
+# Si el Over 17.5 sale >=80% y no hay alerta fuerte de 2-0/datos,
+# lo convertimos en pick oficial específico WTA.
+# =========================================================
+
+def aplicar_wta_over17_oficial_v23310(row):
+    current_market = str(row.get("Mercado recomendado", "") or "")
+    current_prob = str(row.get("Prob mercado recomendado", "") or "")
+    current_motivo = str(row.get("Motivo Market Selector", "") or "")
+
+    circuito_txt = " ".join([
+        str(row.get("Circuito cálculo", "") or ""),
+        str(row.get("Circuito datos", "") or ""),
+        str(row.get("Circuito fuente", "") or ""),
+        str(row.get("Torneo", "") or ""),
+        str(row.get("Estado", "") or ""),
+    ]).upper()
+
+    is_wta = "WTA" in circuito_txt
+    over17 = _row_pct(row, "Over 17.5", 0.0)
+    over18 = _row_pct(row, "Over 18.5", 0.0)
+    fav = _row_pct(row, "ML favorito", 0.0)
+    fav20 = _row_pct(row, "Favorito 2-0", 0.0)
+    set3 = _row_pct(row, "Partido a 3 sets", 0.0)
+    dog_set = _row_pct(row, "Prob gana set", 0.0)
+    min_conf = _row_pct(row, "Confianza mínima", 0.0)
+    gap = _row_pct(row, "Gap Elo/modelo", 0.0)
+    try:
+        min_surface = int(float(str(row.get("Mín. partidos superficie", "0") or 0).replace(",", ".")))
+    except Exception:
+        min_surface = 0
+
+    trust = str(row.get("Signal Trust", "") or "").upper()
+    risks = str(row.get("Riesgos", "") or "").upper()
+    aviso = str(row.get("Aviso datos", "") or "").upper()
+    estado = str(row.get("Estado", "") or "").upper()
+
+    def out(market, prob=None, extra="", wta_label=""):
+        prob_txt = current_prob
+        if prob is not None:
+            try:
+                prob_txt = f"{float(prob):.1%}"
+            except Exception:
+                pass
+        motivo = current_motivo
+        if extra:
+            motivo = (motivo + " · " if motivo else "") + extra
+        return pd.Series({
+            "Mercado recomendado": market,
+            "Prob mercado recomendado": prob_txt,
+            "Motivo Market Selector": motivo,
+            "WTA Over17 Official Guard": wta_label,
+        })
+
+    if not is_wta:
+        return out(current_market, None, "", "")
+
+    # Si ya hay un Over oficial ATP/WTA muy claro, no lo pisamos salvo que sea WTA Over 18.5:
+    # en WTA preferimos la línea 17.5 como mercado principal cuando cumple filtro.
+    mu = current_market.upper()
+
+    # Bloqueos duros: si Over Guard está activo o hay datos claramente pobres, no oficializamos.
+    if _row_over_guard_active(row):
+        return out(current_market, None, "WTA v23.31: Over17 no oficial por Over Quality Guard", "🚫 WTA O17 BLOQUEADO")
+
+    datos_malos = (
+        min_conf < 0.55
+        or min_surface < 6
+        or gap >= 0.18
+        or "FALLBACK" in risks
+        or "FALLBACK" in aviso
+        or "DATOS PARCIALES" in trust
+        or "DATOS INCOMPLETOS" in risks
+        or "ESTIMADO" in estado
+    )
+    if datos_malos:
+        if over17 >= 0.77:
+            return out("👀 WATCH OVER 17.5", over17, "WTA v23.31: Over17 alto pero datos insuficientes", "👀 WTA O17 WATCH")
+        return out(current_market, None, "WTA v23.31: sin Over17 oficial por datos", "")
+
+    # Riesgo de 2-0 dominante: en WTA el 17.5 aguanta más que el 18.5, pero no queremos
+    # oficializar si el favorito tiene perfil de paseo y no hay apoyo de partido largo.
+    perfil_largo = (set3 >= 0.45) or (dog_set >= 0.50) or (over18 >= 0.66)
+    riesgo_2_0 = (fav >= 0.70 and fav20 >= 0.58 and not perfil_largo) or (fav20 >= 0.64 and set3 < 0.42)
+    if riesgo_2_0:
+        if over17 >= 0.80:
+            return out("👀 WATCH OVER 17.5 / RIESGO 2-0", over17, "WTA v23.31: Over17 alto pero riesgo de 2-0 dominante", "👀 WTA O17 WATCH")
+        return out(current_market, None, "WTA v23.31: riesgo 2-0, sin Over17 oficial", "")
+
+    # Regla oficial WTA tras validar dos días: Over 17.5 >=80%.
+    if over17 >= 0.82:
+        return out("🔥 OVER 17.5", over17, "WTA v23.31: Over 17.5 fuerte >=82%", "🔥 WTA O17 OFICIAL")
+    if over17 >= 0.80:
+        return out("✅ OVER 17.5", over17, "WTA v23.31: Over 17.5 oficial >=80%", "✅ WTA O17 OFICIAL")
+    if over17 >= 0.77:
+        return out("👀 WATCH OVER 17.5", over17, "WTA v23.31: Over17 watch 77%-79.9%", "👀 WTA O17 WATCH")
+
+    return out(current_market, None, "WTA v23.31: Over17 sin umbral oficial", "")
+
 def aplicar_ml_quality_guard_v23300(row):
     """Capa final: añade ML oficial/watch sin pisar Over oficial limpio."""
     current_market = str(row.get("Mercado recomendado", "") or "")
@@ -7526,6 +7628,12 @@ def prepare_batch_display_table(ok_df):
     for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector"]:
         df[_col] = final_prudence_cols[_col]
 
+    # v23.31: WTA Over 17.5 oficial específico. Se aplica antes del ML Guard
+    # para que el ML no pise un Over17 WTA oficial limpio.
+    wta_o17_cols = df.apply(aplicar_wta_over17_oficial_v23310, axis=1)
+    for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector", "WTA Over17 Official Guard"]:
+        df[_col] = wta_o17_cols[_col]
+
     # v23.30: ML Quality Guard. Añade ML oficial/watch solo si supera filtro duro.
     ml_guard_cols = df.apply(aplicar_ml_quality_guard_v23300, axis=1)
     for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector", "ML Quality Guard", "Motivos ML Guard"]:
@@ -7553,6 +7661,7 @@ def prepare_batch_display_table(ok_df):
         "WTA Watchlist",
         "Mejor mercado WTA",
         "WTA Over17 Priority",
+        "WTA Over17 Official Guard",
         "Signal Trust",
         "Over Quality Guard",
         "Motivos Over Guard",
@@ -8614,6 +8723,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                         "Mín. partidos superficie",
                         "Over Quality Guard",
                         "ML Quality Guard",
+                        "WTA Over17 Official Guard",
                         "Motivo Market Selector",
                     ]
                     _cols_oficiales = [c for c in _cols_oficiales_base if c in _oficiales.columns]
