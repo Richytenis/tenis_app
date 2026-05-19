@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.29.2-over-guard-prudente"
+APP_VERSION = "v23.29.3-over-guard-max-acierto"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -6881,11 +6881,9 @@ def market_selector_v23263(row):
     over_guard_active = _row_over_guard_active(row)
     under25_adj = _row_under25_adjusted(row, 1 - set3)
     if over_guard_active:
-        # v23.29.2: el Under 2.5 es alternativa de vigilancia, no pick fuerte automático.
-        if under25_adj >= 0.76 and fav20 >= 0.70 and over18 <= 0.68:
-            return out("✅ UNDER 2.5 SETS", under25_adj, "Over Quality Guard activo: Under solo por perfil 2-0 muy claro")
+        # v23.29.3: máximo acierto. Under 2.5 queda como WATCH hasta tener más validación.
         if under25_adj >= 0.63:
-            return out("👀 WATCH UNDER 2.5 SETS", under25_adj, "Over Quality Guard activo: estudiar Under 2.5, no Over")
+            return out("👀 WATCH UNDER 2.5 SETS", under25_adj, "Over Quality Guard activo: estudiar Under 2.5, no apuesta oficial")
         return out("❌ NO OVER / NO BET", over18, "Over Quality Guard activo: bloquear Over 18.5/19.5")
 
     # Fuera de Challenger, conservamos lógica prudente: el selector ayuda, no sustituye todo.
@@ -7007,12 +7005,9 @@ def alinear_market_selector_v23266(row):
     # v23.29: Over Guard manda también en coherencia visual.
     if _row_over_guard_active(row):
         under25_adj = _row_under25_adjusted(row, _row_pct(row, "Under 2.5 ajustado", 0.0))
-        fav20_guard = _row_pct(row, "Favorito 2-0", 0.0)
-        over18_guard = _row_pct(row, "Over 18.5", 0.0)
-        if under25_adj >= 0.76 and fav20_guard >= 0.70 and over18_guard <= 0.68:
-            return out("✅ UNDER 2.5 SETS", f"{under25_adj:.1%}", "Over Quality Guard activo: perfil 2-0 muy claro")
+        # v23.29.3: Under 2.5 no es pick oficial todavía.
         if under25_adj >= 0.63:
-            return out("👀 WATCH UNDER 2.5 SETS", f"{under25_adj:.1%}", "Over Quality Guard activo")
+            return out("👀 WATCH UNDER 2.5 SETS", f"{under25_adj:.1%}", "Over Quality Guard activo: watch, no apuesta oficial")
         return out("❌ NO OVER / NO BET", "", "Over Quality Guard activo")
 
     # 1) Bloqueos finales: no puede aparecer ningún mercado con ✅/🔥.
@@ -7069,6 +7064,63 @@ def alinear_market_selector_v23266(row):
         market = rec if rec else "NO BET"
     return out(market, prob, "revisión de coherencia v23.26.6")
 
+def aplicar_max_acierto_v23293(row):
+    """
+    v23.29.3 Máximo acierto:
+    - Si Signal Trust es WATCH, ningún Over queda como pick oficial.
+    - Over 19.5 con probabilidad <70% y sin patrón claro pasa a watch.
+    - Perfil 2-0 moderado con favorito >=64% y Fav 2-0 alto pasa a watch.
+    - Under 2.5 nunca queda como ✅ oficial; solo watch hasta validar más muestras.
+    """
+    market = str(row.get("Mercado recomendado", "") or "")
+    motivo = str(row.get("Motivo Market Selector", "") or "")
+    trust = str(row.get("Signal Trust", "") or "").upper()
+    fav = _row_pct(row, "ML favorito", 0.0)
+    fav20 = _row_pct(row, "Favorito 2-0", 0.0)
+    over18 = _row_pct(row, "Over 18.5", 0.0)
+    over19 = _row_pct(row, "Over 19.5", 0.0)
+
+    def out(m, p=None, extra=""):
+        prob_txt = str(row.get("Prob mercado recomendado", "") or "")
+        if p is not None:
+            try:
+                prob_txt = f"{float(p):.1%}"
+            except Exception:
+                pass
+        base = motivo
+        if extra:
+            base = (base + " · " if base else "") + extra
+        return pd.Series({
+            "Mercado recomendado": m,
+            "Prob mercado recomendado": prob_txt,
+            "Motivo Market Selector": base,
+        })
+
+    mu = market.upper()
+
+    if "UNDER 2.5" in mu and market.strip().startswith("✅"):
+        return out(market.replace("✅", "👀 WATCH"), None, "v23.29.3: Under 2.5 solo watch hasta validar")
+
+    if "OVER" in mu and ("SPOT WATCH" in trust or "WATCH" in trust):
+        if "19.5" in mu:
+            return out("👀 WATCH OVER 19.5", over19, "v23.29.3: Signal Trust en watch; no apuesta oficial")
+        if "18.5" in mu:
+            return out("👀 WATCH OVER 18.5", over18, "v23.29.3: Signal Trust en watch; no apuesta oficial")
+        return out("👀 WATCH OVER", None, "v23.29.3: Signal Trust en watch; no apuesta oficial")
+
+    if "OVER 19.5" in mu and over19 < 0.70 and "partido igualado" not in motivo.lower():
+        return out("👀 WATCH OVER 19.5 / NO COMBI", over19, "v23.29.3: Over 19.5 <70% sin patrón largo claro")
+
+    if "OVER" in mu and fav >= 0.64 and fav20 >= 0.48 and over18 < 0.78:
+        return out("👀 WATCH OVER 18.5 / RIESGO 2-0", over18, "v23.29.3: favorito + 2-0 moderado; no apuesta oficial")
+
+    return pd.Series({
+        "Mercado recomendado": row.get("Mercado recomendado", ""),
+        "Prob mercado recomendado": row.get("Prob mercado recomendado", ""),
+        "Motivo Market Selector": row.get("Motivo Market Selector", ""),
+    })
+
+
 def batch_recommendation(row):
     trust = str(row.get("Signal Trust", "")).upper()
     signal = str(row.get("Mejor señal", ""))
@@ -7096,11 +7148,14 @@ def batch_recommendation(row):
         # v23.29: Over Quality Guard manda por encima de señales antiguas.
         if _row_over_guard_active(row):
             under25_adj = _row_under25_adjusted(row, 1 - _row_pct(row, "Partido a 3 sets", 0.0))
-            if under25_adj >= 0.68:
-                return "✅ MIRAR UNDER 2.5 SETS"
+            # v23.29.3: no damos Under 2.5 como pick oficial; solo vigilancia.
             if under25_adj >= 0.63:
                 return "👀 WATCH UNDER 2.5 SETS"
             return "🚫 OVER BLOQUEADO / NO BET"
+
+        # v23.29.3: si Signal Trust está en WATCH, ningún Over puede ser apuesta oficial.
+        if "WATCH" in trust and "OVER" in rec.upper():
+            return rec.replace("🔥", "👀").replace("✅", "👀").replace("FUERTE", "WATCH").replace("APTO", "WATCH / NO COMBI")
 
         # v23.26.1: en Challenger ningún pick con datos parciales puede salir como FUERTE.
         if partial_data and "FUERTE" in rec:
@@ -7214,6 +7269,11 @@ def prepare_batch_display_table(ok_df):
         df[_col] = aligned_selector_cols[_col]
 
     df["Signal Trust"] = df.apply(limpiar_signal_trust_v23263, axis=1)
+
+    # v23.29.3: capa final de máximo acierto después de limpiar Signal Trust.
+    final_prudence_cols = df.apply(aplicar_max_acierto_v23293, axis=1)
+    for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector"]:
+        df[_col] = final_prudence_cols[_col]
 
     preferred = [
         "Versión app",
