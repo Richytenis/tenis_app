@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.29.4-over-guard-max-acierto-tuned"
+APP_VERSION = "v23.30.1-pick-oficial-screen"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -7064,6 +7064,242 @@ def alinear_market_selector_v23266(row):
         market = rec if rec else "NO BET"
     return out(market, prob, "revisión de coherencia v23.26.6")
 
+
+# =========================================================
+# v23.30 ML QUALITY GUARD
+# Objetivo: añadir ML solo cuando el favorito sea realmente fiable.
+# Mantiene Over Guard como prioridad: un Over oficial limpio no se sustituye.
+# =========================================================
+
+def _is_official_over_market_v23300(market):
+    mu = str(market or "").upper()
+    return (mu.strip().startswith("✅") or mu.strip().startswith("🔥")) and "OVER" in mu and "WATCH" not in mu and "NO COMBI" not in mu
+
+
+def ml_quality_guard_v23300(row):
+    fav = _row_pct(row, "ML favorito", 0.0)
+    fav20 = _row_pct(row, "Favorito 2-0", 0.0)
+    dog_set = _row_pct(row, "Prob gana set", 0.0)
+    set3 = _row_pct(row, "Partido a 3 sets", 0.0)
+    min_conf = _row_pct(row, "Confianza mínima", 0.0)
+    gap = _row_pct(row, "Gap Elo/modelo", 0.0)
+    try:
+        min_surface = int(float(str(row.get("Mín. partidos superficie", "0") or 0).replace(",", ".")))
+    except Exception:
+        min_surface = 0
+
+    favorito = str(row.get("Favorito modelo", "Favorito") or "Favorito").strip()
+    estado = str(row.get("Estado", "") or "")
+    trust = str(row.get("Signal Trust", "") or "").upper()
+    risks = str(row.get("Riesgos", "") or "").upper()
+    aviso = str(row.get("Aviso datos", "") or "").upper()
+    surface = str(row.get("Superficie", "") or "").upper()
+    circuito_txt = " ".join([
+        str(row.get("Circuito fuente", "") or ""),
+        str(row.get("Circuito datos", "") or ""),
+        str(row.get("Circuito cálculo", "") or ""),
+        str(row.get("Torneo", "") or ""),
+    ]).upper()
+
+    is_wta = "WTA" in circuito_txt
+    is_chall = "CHALL" in circuito_txt
+    is_qualy = "QUAL" in circuito_txt or "PREVIA" in circuito_txt
+    is_partial = (
+        "ESTIMADO" in estado.upper()
+        or "FALLBACK" in risks
+        or "FALLBACK" in aviso
+        or "DATOS PARCIALES" in trust
+        or "DATOS INCOMPLETOS" in risks
+    )
+
+    # Umbrales base. Son duros porque el ML entra para mejorar combinadas, no para generar volumen.
+    min_ml = 0.72
+    min_conf_req = 0.65
+    min_surface_req = 10
+
+    if is_wta:
+        min_ml = 0.76
+        min_conf_req = 0.68
+        min_surface_req = 12
+    if is_qualy:
+        min_ml = max(min_ml, 0.75)
+        min_conf_req = max(min_conf_req, 0.68)
+        min_surface_req = max(min_surface_req, 12)
+    if is_chall:
+        min_ml = max(min_ml, 0.78)
+        min_conf_req = max(min_conf_req, 0.70)
+        min_surface_req = max(min_surface_req, 15)
+
+    reasons = []
+    block = False
+    watch = False
+
+    if fav <= 0:
+        return {
+            "label": "",
+            "market": "",
+            "prob": fav,
+            "reasons": "sin probabilidad ML",
+            "official": False,
+            "watch": False,
+        }
+
+    if fav < min_ml:
+        watch = fav >= (min_ml - 0.04)
+        reasons.append(f"ML {fav:.1%} por debajo del mínimo {min_ml:.1%}")
+        if not watch:
+            block = True
+
+    if min_conf < min_conf_req:
+        reasons.append(f"confianza {min_conf:.0%} < {min_conf_req:.0%}")
+        if min_conf < 0.50:
+            block = True
+        else:
+            watch = True
+
+    if min_surface < min_surface_req:
+        reasons.append(f"muestra superficie {min_surface} < {min_surface_req}")
+        if min_surface < 5:
+            block = True
+        else:
+            watch = True
+
+    if gap >= 0.18:
+        reasons.append("gap Elo/modelo >=18%")
+        block = True
+    elif gap >= 0.12:
+        reasons.append("gap Elo/modelo elevado")
+        watch = True
+
+    if is_partial:
+        reasons.append("datos parciales/fallback")
+        block = True
+
+    # Rival con mucha probabilidad de set = favorito menos cómodo. No siempre bloquea, pero sí evita oficial si el ML no es alto.
+    if dog_set >= 0.65 and fav < 0.76:
+        reasons.append("underdog gana set alto")
+        watch = True
+    if set3 >= 0.48 and fav < 0.76:
+        reasons.append("partido a 3 sets elevado")
+        watch = True
+
+    # ML puede ser oficial si el favorito tiene perfil de 2-0 o control, pero no exigimos 2-0.
+    control_bonus = fav20 >= 0.58 or dog_set <= 0.38 or set3 <= 0.40
+    if control_bonus:
+        reasons.append("perfil de control del favorito")
+
+    if block:
+        return {
+            "label": "🚫 ML BLOQUEADO",
+            "market": f"🚫 NO ML {favorito}",
+            "prob": fav,
+            "reasons": " · ".join(reasons),
+            "official": False,
+            "watch": False,
+        }
+
+    if fav >= min_ml and not watch:
+        return {
+            "label": "✅ ML OFICIAL",
+            "market": f"✅ ML {favorito}",
+            "prob": fav,
+            "reasons": " · ".join(reasons) if reasons else "favorito fiable: probabilidad, datos y Elo coherentes",
+            "official": True,
+            "watch": False,
+        }
+
+    if fav >= (min_ml - 0.04):
+        return {
+            "label": "👀 WATCH ML",
+            "market": f"👀 WATCH ML {favorito}",
+            "prob": fav,
+            "reasons": " · ".join(reasons) if reasons else "cerca de ML oficial, pero no suficientemente limpio",
+            "official": False,
+            "watch": True,
+        }
+
+    return {
+        "label": "❌ NO ML",
+        "market": f"❌ NO ML {favorito}",
+        "prob": fav,
+        "reasons": " · ".join(reasons) if reasons else "ML insuficiente",
+        "official": False,
+        "watch": False,
+    }
+
+
+
+
+def pick_oficial_v23301(row):
+    """
+    v23.30.1: columna visual para pantalla/export.
+    Devuelve solo picks oficiales reales: Over oficial o ML oficial.
+    Los WATCH/NO BET/NO OVER/NO ML quedan en blanco para no confundir.
+    """
+    market = str(row.get("Mercado recomendado", "") or "").strip()
+    prob = str(row.get("Prob mercado recomendado", "") or "").strip()
+    if not market:
+        return ""
+
+    mu = market.upper()
+    bad_tokens = [
+        "WATCH", "NO BET", "NO OVER", "NO ML", "BLOQUEADO",
+        "SOLO CONTEXTO", "OBSERVAR", "REVISAR", "DUDOS"
+    ]
+    if any(tok in mu for tok in bad_tokens):
+        return ""
+
+    is_positive = market.startswith("✅") or market.startswith("🔥") or market.startswith("🧱")
+    is_supported_market = ("OVER" in mu) or ("ML" in mu) or ("GANADOR" in mu)
+
+    if is_positive and is_supported_market:
+        return f"{market} ({prob})" if prob else market
+
+    return ""
+
+def aplicar_ml_quality_guard_v23300(row):
+    """Capa final: añade ML oficial/watch sin pisar Over oficial limpio."""
+    current_market = str(row.get("Mercado recomendado", "") or "")
+    current_prob = str(row.get("Prob mercado recomendado", "") or "")
+    current_motivo = str(row.get("Motivo Market Selector", "") or "")
+    ml = ml_quality_guard_v23300(row)
+
+    def out(market, prob=None, motivo_extra=""):
+        prob_txt = current_prob
+        if prob is not None:
+            try:
+                prob_txt = f"{float(prob):.1%}"
+            except Exception:
+                pass
+        motivo = current_motivo
+        if motivo_extra:
+            motivo = (motivo + " · " if motivo else "") + motivo_extra
+        return pd.Series({
+            "Mercado recomendado": market,
+            "Prob mercado recomendado": prob_txt,
+            "Motivo Market Selector": motivo,
+            "ML Quality Guard": ml.get("label", ""),
+            "Motivos ML Guard": ml.get("reasons", ""),
+        })
+
+    # Si hay Over oficial limpio, lo mantenemos. El ML queda visible en sus columnas.
+    if _is_official_over_market_v23300(current_market):
+        return out(current_market, None, "ML guard evaluado; se mantiene Over oficial")
+
+    mu = current_market.upper()
+    current_is_official = (current_market.strip().startswith("✅") or current_market.strip().startswith("🔥")) and "WATCH" not in mu
+
+    # Si no hay pick oficial y el ML sí es oficial, lo proponemos.
+    if ml.get("official"):
+        return out(ml.get("market"), ml.get("prob"), "v23.30: ML oficial añadido por ML Quality Guard")
+
+    # Si la app no tiene apuesta clara, podemos enseñar Watch ML.
+    no_pick_context = any(x in mu for x in ["NO BET", "SOLO CONTEXTO", "OBSERVAR", "WATCH", "NO OVER"])
+    if ml.get("watch") and no_pick_context and not current_is_official:
+        return out(ml.get("market"), ml.get("prob"), "v23.30: ML solo watch, no combinada")
+
+    return out(current_market, None, "ML guard evaluado")
+
 def aplicar_max_acierto_v23294(row):
     """
     v23.29.4 Máximo acierto tuned:
@@ -7277,9 +7513,18 @@ def prepare_batch_display_table(ok_df):
     for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector"]:
         df[_col] = final_prudence_cols[_col]
 
+    # v23.30: ML Quality Guard. Añade ML oficial/watch solo si supera filtro duro.
+    ml_guard_cols = df.apply(aplicar_ml_quality_guard_v23300, axis=1)
+    for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector", "ML Quality Guard", "Motivos ML Guard"]:
+        df[_col] = ml_guard_cols[_col]
+
+    # v23.30.1: columna visible con el pick oficial real para revisar antes de descargar Excel.
+    df["Pick oficial"] = df.apply(pick_oficial_v23301, axis=1)
+
     preferred = [
         "Versión app",
         "Recomendación",
+        "Pick oficial",
         "Mercado recomendado",
         "Prob mercado recomendado",
         "Motivo Market Selector",
@@ -7300,6 +7545,8 @@ def prepare_batch_display_table(ok_df):
         "Motivos Over Guard",
         "Under 2.5 Rescue",
         "Under 2.5 ajustado",
+        "ML Quality Guard",
+        "Motivos ML Guard",
         "Confianza mínima",
         "Mín. partidos superficie",
         "Gap Elo/modelo",
@@ -8319,6 +8566,16 @@ Sebastián Baez - Roberto Carballés Baena"""
         if ok_saved is not None and not ok_saved.empty:
             st.divider()
             st.subheader("🔥 Resumen ordenado")
+
+            if "Pick oficial" in ok_saved.columns:
+                _oficiales = ok_saved[ok_saved["Pick oficial"].astype(str).str.strip() != ""].copy()
+                if not _oficiales.empty:
+                    st.success(f"🎯 Picks oficiales detectados: {len(_oficiales)}")
+                    _cols_oficiales = [c for c in ["Hora", "Partido", "Pick oficial", "Confianza mínima", "Mín. partidos superficie", "Over Quality Guard", "ML Quality Guard"] if c in _oficiales.columns]
+                    st.dataframe(_oficiales[_cols_oficiales], width='stretch', hide_index=True)
+                else:
+                    st.warning("🎯 Picks oficiales detectados: 0. No forzar combinada si solo hay WATCH/NO BET.")
+
             st.dataframe(ok_saved, width='stretch', hide_index=True)
 
             # v23.26.8: constructor automático de combinadas sobre la tabla real.
