@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.29.3-over-guard-max-acierto"
+APP_VERSION = "v23.29.4-over-guard-max-acierto-tuned"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -7064,11 +7064,11 @@ def alinear_market_selector_v23266(row):
         market = rec if rec else "NO BET"
     return out(market, prob, "revisión de coherencia v23.26.6")
 
-def aplicar_max_acierto_v23293(row):
+def aplicar_max_acierto_v23294(row):
     """
-    v23.29.3 Máximo acierto:
+    v23.29.4 Máximo acierto tuned:
     - Si Signal Trust es WATCH, ningún Over queda como pick oficial.
-    - Over 19.5 con probabilidad <70% y sin patrón claro pasa a watch.
+    - Over 19.5 oficial solo si probabilidad >=69%; 66%-68.9% pasa a watch/no combi.
     - Perfil 2-0 moderado con favorito >=64% y Fav 2-0 alto pasa a watch.
     - Under 2.5 nunca queda como ✅ oficial; solo watch hasta validar más muestras.
     """
@@ -7099,20 +7099,22 @@ def aplicar_max_acierto_v23293(row):
     mu = market.upper()
 
     if "UNDER 2.5" in mu and market.strip().startswith("✅"):
-        return out(market.replace("✅", "👀 WATCH"), None, "v23.29.3: Under 2.5 solo watch hasta validar")
+        return out(market.replace("✅", "👀 WATCH"), None, "v23.29.4: Under 2.5 solo watch hasta validar")
 
     if "OVER" in mu and ("SPOT WATCH" in trust or "WATCH" in trust):
         if "19.5" in mu:
-            return out("👀 WATCH OVER 19.5", over19, "v23.29.3: Signal Trust en watch; no apuesta oficial")
+            return out("👀 WATCH OVER 19.5", over19, "v23.29.4: Signal Trust en watch; no apuesta oficial")
         if "18.5" in mu:
-            return out("👀 WATCH OVER 18.5", over18, "v23.29.3: Signal Trust en watch; no apuesta oficial")
-        return out("👀 WATCH OVER", None, "v23.29.3: Signal Trust en watch; no apuesta oficial")
+            return out("👀 WATCH OVER 18.5", over18, "v23.29.4: Signal Trust en watch; no apuesta oficial")
+        return out("👀 WATCH OVER", None, "v23.29.4: Signal Trust en watch; no apuesta oficial")
 
-    if "OVER 19.5" in mu and over19 < 0.70 and "partido igualado" not in motivo.lower():
-        return out("👀 WATCH OVER 19.5 / NO COMBI", over19, "v23.29.3: Over 19.5 <70% sin patrón largo claro")
+    # v23.29.4: el último backtest mostró que Over 19.5 al 68% seguía colándose
+    # como oficial. Para máximo acierto, 19.5 necesita al menos 69%.
+    if "OVER 19.5" in mu and over19 < 0.69:
+        return out("👀 WATCH OVER 19.5 / NO COMBI", over19, "v23.29.4: Over 19.5 <69%; baja a watch/no combi")
 
     if "OVER" in mu and fav >= 0.64 and fav20 >= 0.48 and over18 < 0.78:
-        return out("👀 WATCH OVER 18.5 / RIESGO 2-0", over18, "v23.29.3: favorito + 2-0 moderado; no apuesta oficial")
+        return out("👀 WATCH OVER 18.5 / RIESGO 2-0", over18, "v23.29.4: favorito + 2-0 moderado; no apuesta oficial")
 
     return pd.Series({
         "Mercado recomendado": row.get("Mercado recomendado", ""),
@@ -7271,7 +7273,7 @@ def prepare_batch_display_table(ok_df):
     df["Signal Trust"] = df.apply(limpiar_signal_trust_v23263, axis=1)
 
     # v23.29.3: capa final de máximo acierto después de limpiar Signal Trust.
-    final_prudence_cols = df.apply(aplicar_max_acierto_v23293, axis=1)
+    final_prudence_cols = df.apply(aplicar_max_acierto_v23294, axis=1)
     for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector"]:
         df[_col] = final_prudence_cols[_col]
 
