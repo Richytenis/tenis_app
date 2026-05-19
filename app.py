@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.29.1-over-guard-tuned"
+APP_VERSION = "v23.29.2-over-guard-prudente"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -3861,7 +3861,7 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             over_quality_reasons.append("zona watch: Over 70-75%, revisar antes de combinar")
 
     # Ajuste simple para convertir 3 sets bruto en lectura Under 2.5.
-    # v23.29.1: Under Rescue más exigente; menos señales fuertes.
+    # v23.29.2: Under Rescue prudente; casi todo Under queda como WATCH hasta validar.
     under25_raw = 1.0 - float(set3 or 0.0)
     under25_boost = 0.0
     if over_quality_block:
@@ -3881,8 +3881,16 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     else:
         over_guard_label = ""
 
-    under25_strong_context = over_quality_block and (quality_block_hard or straight_sets_clear or elo_pure_gap >= 0.18)
-    if under25_adjusted >= 0.68 and under25_strong_context:
+    # v23.29.2: no convertimos el falso Over automáticamente en apuesta Under.
+    # Solo damos ✅ Under con perfil MUY claro; si no, queda como WATCH.
+    under25_strong_context = (
+        over_quality_block
+        and straight_sets_clear
+        and fav20 >= 0.70
+        and over18 <= 0.68
+        and under25_adjusted >= 0.76
+    )
+    if under25_strong_context:
         under25_label = "✅ MIRAR UNDER 2.5 SETS"
     elif under25_adjusted >= 0.63:
         under25_label = "👀 WATCH UNDER 2.5 SETS"
@@ -6873,8 +6881,9 @@ def market_selector_v23263(row):
     over_guard_active = _row_over_guard_active(row)
     under25_adj = _row_under25_adjusted(row, 1 - set3)
     if over_guard_active:
-        if under25_adj >= 0.68:
-            return out("✅ UNDER 2.5 SETS", under25_adj, "Over Quality Guard activo: falso Over detectado")
+        # v23.29.2: el Under 2.5 es alternativa de vigilancia, no pick fuerte automático.
+        if under25_adj >= 0.76 and fav20 >= 0.70 and over18 <= 0.68:
+            return out("✅ UNDER 2.5 SETS", under25_adj, "Over Quality Guard activo: Under solo por perfil 2-0 muy claro")
         if under25_adj >= 0.63:
             return out("👀 WATCH UNDER 2.5 SETS", under25_adj, "Over Quality Guard activo: estudiar Under 2.5, no Over")
         return out("❌ NO OVER / NO BET", over18, "Over Quality Guard activo: bloquear Over 18.5/19.5")
@@ -6967,6 +6976,14 @@ def alinear_market_selector_v23266(row):
     prob = str(row.get("Prob mercado recomendado", "")).strip()
     motivo = str(row.get("Motivo Market Selector", "")).strip()
     rec_u = rec.upper()
+    trust_u = str(row.get("Signal Trust", "")).upper()
+    risk_u = str(row.get("Riesgos", "")).upper()
+    force_watch_signal = (
+        "SPOT WATCH" in trust_u
+        or "DATOS PARCIALES" in trust_u
+        or "FALLBACK" in risk_u
+        or "DATOS INCOMPLETOS" in risk_u
+    )
 
     def fmt_prob(col):
         p = _row_pct(row, col, None)
@@ -6990,8 +7007,10 @@ def alinear_market_selector_v23266(row):
     # v23.29: Over Guard manda también en coherencia visual.
     if _row_over_guard_active(row):
         under25_adj = _row_under25_adjusted(row, _row_pct(row, "Under 2.5 ajustado", 0.0))
-        if under25_adj >= 0.68:
-            return out("✅ UNDER 2.5 SETS", f"{under25_adj:.1%}", "Over Quality Guard activo")
+        fav20_guard = _row_pct(row, "Favorito 2-0", 0.0)
+        over18_guard = _row_pct(row, "Over 18.5", 0.0)
+        if under25_adj >= 0.76 and fav20_guard >= 0.70 and over18_guard <= 0.68:
+            return out("✅ UNDER 2.5 SETS", f"{under25_adj:.1%}", "Over Quality Guard activo: perfil 2-0 muy claro")
         if under25_adj >= 0.63:
             return out("👀 WATCH UNDER 2.5 SETS", f"{under25_adj:.1%}", "Over Quality Guard activo")
         return out("❌ NO OVER / NO BET", "", "Over Quality Guard activo")
@@ -7022,9 +7041,13 @@ def alinear_market_selector_v23266(row):
     emoji = "🔥" if (rec.startswith("🔥") or "FUERTE" in rec_u) else "✅"
 
     if "OVER 19.5" in rec_u:
+        if force_watch_signal:
+            return out("👀 WATCH OVER 19.5", fmt_prob("Over 19.5"), "Signal Trust en watch/datos parciales: no apuesta fuerte")
         return out(f"{emoji} OVER 19.5", fmt_prob("Over 19.5"), "mercado alineado con recomendación final")
 
     if "OVER 18.5" in rec_u:
+        if force_watch_signal:
+            return out("👀 WATCH OVER 18.5", fmt_prob("Over 18.5"), "Signal Trust en watch/datos parciales: no apuesta fuerte")
         return out(f"{emoji} OVER 18.5", fmt_prob("Over 18.5"), "mercado alineado con recomendación final")
 
     if "OVER 17.5" in rec_u:
@@ -7032,7 +7055,11 @@ def alinear_market_selector_v23266(row):
 
     if "2-0" in rec_u or "UNDER 2.5" in rec_u:
         favorito = str(row.get("Favorito modelo", "Favorito")) or "Favorito"
-        return out(f"{emoji} {favorito} 2-0 / UNDER 2.5 SETS", fmt_prob("Favorito 2-0"), "mercado alineado con recomendación final")
+        fav20_now = _row_pct(row, "Favorito 2-0", 0.0)
+        over18_now = _row_pct(row, "Over 18.5", 0.0)
+        if fav20_now >= 0.70 and over18_now <= 0.68 and emoji == "🔥":
+            return out(f"{emoji} {favorito} 2-0 / UNDER 2.5 SETS", fmt_prob("Favorito 2-0"), "mercado alineado con recomendación final")
+        return out(f"👀 WATCH {favorito} 2-0 / UNDER 2.5 SETS", fmt_prob("Favorito 2-0"), "Under 2.5 prudente: watch hasta validar")
 
     if "3 SET" in rec_u or "3 SETS" in rec_u or "+2.5" in rec_u:
         return out(f"{emoji} +2.5 SETS", fmt_prob("Partido a 3 sets"), "mercado alineado con recomendación final")
