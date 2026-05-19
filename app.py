@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.28.0-value-engine"
+APP_VERSION = "v23.29.0-over-quality-guard-under25"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -3779,6 +3779,83 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     elo_pure_gap = abs(sim.get("fav_raw_est", 0.5) - fav_prob)
     upset_guard = sim.get("upset_risk_guard", {}) or {}
 
+    # =========================================================
+    # v23.29 OVER QUALITY GUARD + UNDER 2.5 RESCUE
+    # Objetivo: bloquear falsos Over 18.5/19.5 que salen altos por
+    # supuesta resistencia, pero con datos débiles o perfil de 2-0 corto.
+    # Patrones detectados en tus fallos: Over 72-74% clay + rating sanity +
+    # baja muestra/confianza, o favorito 64%+ con dog-set/3-sets bajos.
+    # =========================================================
+    rating_active = bool(rs.get("active", False))
+    over_quality_reasons = []
+    over_quality_block = False
+    over_quality_watch = False
+
+    # Bloque 1: falso over por calidad de datos.
+    if circuito == "ATP" and surface == "Clay":
+        if min_conf <= 0.35:
+            over_quality_block = True
+            over_quality_reasons.append("confianza mínima <=35%")
+        if min_surface_matches < 5:
+            over_quality_block = True
+            over_quality_reasons.append("menos de 5 partidos en superficie")
+        if rating_active and min_surface_matches < 10:
+            over_quality_block = True
+            over_quality_reasons.append("rating sanity activo + muestra <10")
+        if elo_pure_gap >= 0.18:
+            over_quality_block = True
+            over_quality_reasons.append("gap Elo puro/modelo >=18%")
+        elif elo_pure_gap >= 0.12:
+            over_quality_watch = True
+            over_quality_reasons.append("gap Elo puro/modelo elevado")
+
+    # Bloque 2: falso over por favorito 2-0 / marcador corto.
+    straight_sets_risk = (
+        fav_prob >= 0.64
+        and dogset <= 0.42
+        and set3 <= 0.45
+        and tb <= 0.28
+    )
+    if straight_sets_risk:
+        over_quality_watch = True
+        over_quality_reasons.append("favorito 2-0: dog set bajo + 3 sets bajo + tie-break bajo")
+        if fav_prob >= 0.66 and over18 < 0.76:
+            over_quality_block = True
+            over_quality_reasons.append("Over <76% con perfil de 2-0 cómodo")
+
+    # Bloque 3: zona roja observada en tus fallos.
+    if circuito == "ATP" and surface == "Clay" and 0.70 <= over18 <= 0.75:
+        if over_quality_block or (rating_active and (min_surface_matches < 12 or min_conf < 0.60)):
+            over_quality_block = True
+            over_quality_reasons.append("zona roja Over 70-75% en clay con fiabilidad insuficiente")
+
+    # Ajuste simple para convertir 3 sets bruto en lectura Under 2.5.
+    under25_raw = 1.0 - float(set3 or 0.0)
+    under25_boost = 0.0
+    if over_quality_block:
+        under25_boost += 0.10
+    elif over_quality_watch:
+        under25_boost += 0.06
+    if straight_sets_risk:
+        under25_boost += 0.06
+    if fav_prob >= 0.70 and dogset <= 0.42:
+        under25_boost += 0.04
+    under25_adjusted = float(np.clip(under25_raw + under25_boost, 0.0, 0.86))
+
+    if over_quality_block:
+        over_guard_label = "🚫 OVER BLOQUEADO"
+    elif over_quality_watch:
+        over_guard_label = "⚠️ OVER WATCH / NO COMBI"
+    else:
+        over_guard_label = ""
+
+    if under25_adjusted >= 0.66:
+        under25_label = "✅ MIRAR UNDER 2.5 SETS"
+    elif under25_adjusted >= 0.60:
+        under25_label = "👀 WATCH UNDER 2.5 SETS"
+    else:
+        under25_label = ""
+
     risk_notes = []
     if upset_guard.get("active", False):
         risk_notes.append("riesgo upset por favorito inflado")
@@ -3933,6 +4010,17 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             action = "Solo si acompaña lectura"
             reason = reason + " · degradado por riesgo upset"
 
+        # v23.29: Over Quality Guard. Si se activa, ningún Over/3 sets puede salir APTO.
+        if (over_quality_block or over_quality_watch) and market_type in ["over", "long", "set3"] and action in ["APTO fuerte", "APTO"]:
+            if over_quality_block:
+                grade = "⚠️ C"
+                action = "Evitar / observar"
+                reason = reason + " · v23.29 Over bloqueado: " + "; ".join(over_quality_reasons[:3])
+            else:
+                grade = "⚖️ B"
+                action = "Solo si acompaña lectura"
+                reason = reason + " · v23.29 Over watch: " + "; ".join(over_quality_reasons[:3])
+
         # Trust Gate final: con confianza muy baja, como máximo B.
         if min_conf < 0.35 and action in ["APTO fuerte", "APTO"]:
             grade = "⚖️ B"
@@ -4031,8 +4119,8 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
 
     priority_main = None
     circuito_norm = str(circuito).upper().strip()
-    if circuito_norm != "WTA":
-        # Over 18.5 alto sigue siendo la lectura conservadora principal.
+    if circuito_norm != "WTA" and not over_quality_block and not over_quality_watch:
+        # Over 18.5 alto sigue siendo lectura principal solo si v23.29 no detecta falso Over.
         if over18 >= 0.73:
             priority_main = _promote_signal(
                 _get_signal("Over 18.5"),
@@ -4094,6 +4182,12 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         if "ml favorito" in mt or "favorito 2-0" in mt:
             status = "⚠️ NO BET / RIESGO UPSET"
 
+    # v23.29: si bloqueamos Over y hay señal Under 2.5, mostrarlo como rescate.
+    if over_quality_block:
+        status = "🚫 OVER BLOQUEADO / MIRAR UNDER 2.5" if under25_label else "🚫 OVER BLOQUEADO / NO BET"
+    elif over_quality_watch and "OVER" in str(status).upper():
+        status = "⚠️ OVER WATCH / NO COMBI"
+
     return {
         "status": status,
         "main": main,
@@ -4103,7 +4197,15 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         "min_confidence": min_conf,
         "avg_confidence": avg_conf,
         "min_surface_matches": min_surface_matches,
-        "elo_pure_gap": elo_pure_gap
+        "elo_pure_gap": elo_pure_gap,
+        "over_quality_block": over_quality_block,
+        "over_quality_watch": over_quality_watch,
+        "over_quality_reasons": over_quality_reasons,
+        "over_guard_label": over_guard_label,
+        "under25_raw": under25_raw,
+        "under25_adjusted": under25_adjusted,
+        "under25_label": under25_label,
+        "straight_sets_risk": straight_sets_risk
     }
 
 
@@ -5953,6 +6055,13 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Mejor mercado WTA": (best_label if circuito_calc == "WTA" else ""),
             "WTA Over17 Priority": ("Sí" if circuito_calc == "WTA" and best_label == "Over 17.5" and over17 >= 0.77 else ""),
             "Signal Trust": trust,
+            "Over Quality Guard": filters.get("over_guard_label", ""),
+            "Motivos Over Guard": " · ".join(filters.get("over_quality_reasons", [])[:4]) if isinstance(filters, dict) else "",
+            "Under 2.5 Rescue": filters.get("under25_label", ""),
+            "Under 2.5 ajustado": f"{filters.get('under25_adjusted', 0.0):.1%}" if isinstance(filters, dict) else "",
+            "Confianza mínima": f"{filters.get('min_confidence', 1.0):.0%}" if isinstance(filters, dict) else "",
+            "Mín. partidos superficie": filters.get("min_surface_matches", "") if isinstance(filters, dict) else "",
+            "Gap Elo/modelo": f"{filters.get('elo_pure_gap', 0.0):.1%}" if isinstance(filters, dict) else "",
             "Over 17.5": f"{over17:.1%}" if circuito_calc == "WTA" else "",
             "Over 18.5": f"{over18:.1%}",
             "Over 19.5": f"{over19:.1%}",
@@ -6158,90 +6267,7 @@ def _combi_cuota_from_row(row, prob):
     return 1.01, "estimada"
 
 
-
-
-# =========================================================
-# v23.28 VALUE ENGINE
-# Rentabilidad real por cuota: implied probability, edge, EV y stake.
-# =========================================================
-
-VALUE_PROFILES_V23280 = {
-    "🔒 Conservador": {"min_edge": 0.05, "min_ev": 0.04, "kelly_fraction": 0.20, "max_stake_pct": 0.60},
-    "⚖️ Normal": {"min_edge": 0.03, "min_ev": 0.025, "kelly_fraction": 0.25, "max_stake_pct": 0.80},
-    "🔥 Agresivo": {"min_edge": 0.015, "min_ev": 0.010, "kelly_fraction": 0.30, "max_stake_pct": 1.00},
-}
-
-
-def calcular_value_metrics_v23280(prob, cuota, cuota_tipo="", profile_name="⚖️ Normal", bankroll=100.0):
-    """Calcula value real. Solo marca VALUE si la cuota es pegada/real."""
-    prob = float(np.clip(prob or 0.0, 0.0, 1.0))
-    cuota = float(cuota or 0.0)
-    profile = VALUE_PROFILES_V23280.get(profile_name, VALUE_PROFILES_V23280["⚖️ Normal"])
-    real_odds = str(cuota_tipo or "").lower().strip() == "pegada"
-
-    if cuota <= 1.0 or prob <= 0:
-        return {
-            "Prob implícita": 0.0, "Edge prob": 0.0, "EV": -1.0,
-            "Value OK": False, "Value label": "⚪ SIN CUOTA REAL",
-            "Stake %": 0.0, "Stake €": 0.0,
-            "Value motivos": "sin cuota válida",
-        }
-
-    implied = 1.0 / cuota
-    edge_prob = prob - implied
-    ev = (prob * cuota) - 1.0
-
-    # Kelly decimal para cuota europea: f = (bp - q) / b = EV / (cuota - 1)
-    kelly_full = ev / max(0.01, cuota - 1.0)
-    kelly_full = max(0.0, kelly_full)
-    stake_pct = min(profile["max_stake_pct"], kelly_full * profile["kelly_fraction"] * 100.0)
-    stake_eur = float(bankroll or 0.0) * stake_pct / 100.0
-
-    if not real_odds:
-        label = "⚪ SIN CUOTA REAL"
-        ok = False
-        motivos = "usa cuota justa/estimada; pega cuota real para evaluar rentabilidad"
-    elif edge_prob >= profile["min_edge"] and ev >= profile["min_ev"]:
-        label = "💰 VALUE"
-        ok = True
-        motivos = f"edge >= {profile['min_edge']:.1%} y EV >= {profile['min_ev']:.1%}"
-    elif ev > 0 and edge_prob > 0:
-        label = "🟡 VALUE JUSTO"
-        ok = False
-        motivos = "EV positivo, pero margen pequeño para apostar en combinada"
-    else:
-        label = "❌ SIN VALUE"
-        ok = False
-        motivos = "la cuota exige más probabilidad que la estimada por el modelo"
-
-    return {
-        "Prob implícita": float(implied),
-        "Edge prob": float(edge_prob),
-        "EV": float(ev),
-        "Value OK": bool(ok),
-        "Value label": label,
-        "Stake %": float(max(0.0, stake_pct if ok else 0.0)),
-        "Stake €": float(max(0.0, stake_eur if ok else 0.0)),
-        "Value motivos": motivos,
-    }
-
-
-def calcular_value_combo_v23280(combo, profile_name="⚖️ Normal", bankroll=100.0):
-    cuota_total = 1.0
-    prob_total = 1.0
-    all_real_odds = True
-    for p in combo:
-        cuota_total *= float(p.get("Cuota", 1.0) or 1.0)
-        prob_total *= float(p.get("Prob", 0.0) or 0.0)
-        if str(p.get("Cuota tipo", "")).lower().strip() != "pegada":
-            all_real_odds = False
-
-    m = calcular_value_metrics_v23280(prob_total, cuota_total, "pegada" if all_real_odds else "estimada", profile_name, bankroll)
-    m["Cuota total"] = float(cuota_total)
-    m["Prob total"] = float(prob_total)
-    return m
-
-def clasificar_combi_safe_row_v23268(row, profile_name="⚖️ Normal", bankroll=100.0):
+def clasificar_combi_safe_row_v23268(row, profile_name="⚖️ Normal"):
     profile = COMBI_SAFE_PROFILES_V23268.get(profile_name, COMBI_SAFE_PROFILES_V23268["⚖️ Normal"])
 
     market = str(row.get("Mercado recomendado", "") or "").strip()
@@ -6261,7 +6287,6 @@ def clasificar_combi_safe_row_v23268(row, profile_name="⚖️ Normal", bankroll
     tipo = _combi_tipo_mercado(market)
     prob = _combi_prob_from_row(row, market)
     cuota, cuota_tipo = _combi_cuota_from_row(row, prob)
-    value_metrics = calcular_value_metrics_v23280(prob, cuota, cuota_tipo, profile_name, bankroll=bankroll)
 
     reasons = []
     min_prob = float(profile.get(tipo, profile.get("otro", 0.75)))
@@ -6269,20 +6294,15 @@ def clasificar_combi_safe_row_v23268(row, profile_name="⚖️ Normal", bankroll
     blocked_words = ["NO BET", "WATCH", "OBSERVAR", "SOLO CONTEXTO", "NO COMBI"]
     all_signal = f"{market} {rec} {trust}".upper()
     hard_block = any(w in all_signal for w in blocked_words)
+    # v23.29: si el Over Guard bloqueó, no entra en combinada salvo que el mercado recomendado sea Under 2.5.
+    if _row_over_guard_active(row) and "UNDER 2.5" not in market.upper():
+        hard_block = True
 
     if tipo == "no_bet" or hard_block:
         return {
             "Partido": partido, "Mercado": market, "Prob": prob, "Cuota": cuota,
             "Cuota tipo": cuota_tipo, "Tipo": tipo, "Min": min_prob,
             "Etiqueta": "❌ NO COMBI", "Combi Safe": False, "Score": 0.0,
-            "Prob implícita": value_metrics["Prob implícita"],
-            "Edge prob": value_metrics["Edge prob"],
-            "EV": value_metrics["EV"],
-            "Value OK": value_metrics["Value OK"],
-            "Value label": value_metrics["Value label"],
-            "Stake %": value_metrics["Stake %"],
-            "Stake €": value_metrics["Stake €"],
-            "Value motivos": value_metrics["Value motivos"],
             "Motivos": "recomendación/watch/no bet: no entra en combinada",
         }
 
@@ -6368,32 +6388,21 @@ def clasificar_combi_safe_row_v23268(row, profile_name="⚖️ Normal", bankroll
         "Etiqueta": etiqueta,
         "Combi Safe": bool(safe),
         "Score": float(score),
-        "Prob implícita": value_metrics["Prob implícita"],
-        "Edge prob": value_metrics["Edge prob"],
-        "EV": value_metrics["EV"],
-        "Value OK": value_metrics["Value OK"],
-        "Value label": value_metrics["Value label"],
-        "Stake %": value_metrics["Stake %"],
-        "Stake €": value_metrics["Stake €"],
-        "Value motivos": value_metrics["Value motivos"],
         "Motivos": " · ".join(reasons) if reasons else "sin alerta adicional",
     }
 
 
-def construir_combinadas_v23268(ok_df, profile_name="⚖️ Normal", cuota_min=1.60, cuota_max=1.80, min_picks=2, max_picks=3, require_value=True, bankroll=100.0):
+def construir_combinadas_v23268(ok_df, profile_name="⚖️ Normal", cuota_min=1.60, cuota_max=1.80, min_picks=2, max_picks=3):
     if ok_df is None or ok_df.empty:
         return pd.DataFrame(), []
 
     picks = []
     for _, row in ok_df.iterrows():
-        p = clasificar_combi_safe_row_v23268(row, profile_name=profile_name, bankroll=bankroll)
+        p = clasificar_combi_safe_row_v23268(row, profile_name=profile_name)
         if p.get("Partido") and p.get("Mercado"):
             picks.append(p)
 
-    if require_value:
-        safe_picks = [p for p in picks if p.get("Combi Safe") and p.get("Value OK")]
-    else:
-        safe_picks = [p for p in picks if p.get("Combi Safe")]
+    safe_picks = [p for p in picks if p.get("Combi Safe")]
     combos = []
 
     for n in range(int(min_picks), int(max_picks) + 1):
@@ -6412,30 +6421,22 @@ def construir_combinadas_v23268(ok_df, profile_name="⚖️ Normal", cuota_min=1
             score_medio /= max(1, len(combo))
 
             if float(cuota_min) <= cuota_total <= float(cuota_max):
-                combo_value = calcular_value_combo_v23280(combo, profile_name=profile_name, bankroll=bankroll)
-                if require_value and not combo_value.get("Value OK", False):
-                    continue
                 weak = min(combo, key=lambda x: x["Prob"])
                 combos.append({
                     "Nº picks": n,
                     "Cuota total": cuota_total,
                     "Confianza global": confianza,
                     "Score medio": score_medio,
-                    "EV combo": combo_value.get("EV", 0.0),
-                    "Edge combo": combo_value.get("Edge prob", 0.0),
-                    "Value combo": combo_value.get("Value label", ""),
-                    "Stake % combo": combo_value.get("Stake %", 0.0),
-                    "Stake € combo": combo_value.get("Stake €", 0.0),
                     "Pick más débil": f"{weak['Mercado']} — {weak['Partido']} ({weak['Prob']:.1%})",
                     "Picks": list(combo),
                 })
 
-    combos = sorted(combos, key=lambda x: (x.get("EV combo", 0.0), x.get("Edge combo", 0.0), x["Score medio"], x["Confianza global"], -x["Nº picks"]), reverse=True)
+    combos = sorted(combos, key=lambda x: (x["Score medio"], x["Confianza global"], -x["Nº picks"]), reverse=True)
     return pd.DataFrame(picks), combos
 
 
 
-def construir_combinadas_plan_b_v23270(picks_df, cuota_min=1.60, cuota_max=1.80, min_picks=2, max_picks=3, require_value=True, profile_name="⚖️ Normal", bankroll=100.0):
+def construir_combinadas_plan_b_v23270(picks_df, cuota_min=1.60, cuota_max=1.80, min_picks=2, max_picks=3):
     """
     Plan B: NO marca como segura. Solo propone candidatas controladas si el modo normal/conservador
     no encuentra nada. Usa picks COMBI SAFE + FUERTE SIMPLE, excluye NO COMBI y mantiene partidos únicos.
@@ -6449,9 +6450,6 @@ def construir_combinadas_plan_b_v23270(picks_df, cuota_min=1.60, cuota_max=1.80,
 
     # Solo picks con cierta calidad. No rescatamos NO COMBI para no volver al fallo por uno.
     df = df[df["Etiqueta"].isin(["🧱 COMBI SAFE", "🔥 FUERTE SIMPLE"])].copy()
-    if require_value and "EV" in df.columns:
-        # Plan B con value: permitimos VALUE OK y VALUE JUSTO, pero no EV negativo.
-        df = df[(df["EV"].astype(float) > 0) & (df["Cuota tipo"].astype(str).str.lower().eq("pegada"))].copy()
     if df.empty:
         return []
 
@@ -6497,9 +6495,6 @@ def construir_combinadas_plan_b_v23270(picks_df, cuota_min=1.60, cuota_max=1.80,
             score_medio /= max(1, len(combo))
 
             if float(cuota_min) <= cuota_total <= float(cuota_max):
-                combo_value = calcular_value_combo_v23280(combo, profile_name=profile_name, bankroll=bankroll)
-                if require_value and combo_value.get("EV", 0.0) <= 0:
-                    continue
                 weak = min(combo, key=lambda x: float(x.get("Prob", 0.0) or 0.0))
                 safe_count = sum(1 for lab in labels if lab == "🧱 COMBI SAFE")
                 strong_simple_count = sum(1 for lab in labels if lab == "🔥 FUERTE SIMPLE")
@@ -6510,11 +6505,6 @@ def construir_combinadas_plan_b_v23270(picks_df, cuota_min=1.60, cuota_max=1.80,
                     "Cuota total": cuota_total,
                     "Confianza global": confianza,
                     "Score medio": score_medio,
-                    "EV combo": combo_value.get("EV", 0.0),
-                    "Edge combo": combo_value.get("Edge prob", 0.0),
-                    "Value combo": combo_value.get("Value label", ""),
-                    "Stake % combo": combo_value.get("Stake %", 0.0),
-                    "Stake € combo": combo_value.get("Stake €", 0.0),
                     "Pick más débil": f"{weak['Mercado']} — {weak['Partido']} ({float(weak['Prob']):.1%})",
                     "Picks": list(combo),
                     "Safe": safe_count,
@@ -6524,7 +6514,7 @@ def construir_combinadas_plan_b_v23270(picks_df, cuota_min=1.60, cuota_max=1.80,
 
     combos = sorted(
         combos,
-        key=lambda x: (x.get("EV combo", 0.0), x.get("Edge combo", 0.0), x["Safe"], x["Gap mínimo"], x["Score medio"], x["Confianza global"], -x["Nº picks"]),
+        key=lambda x: (x["Safe"], x["Gap mínimo"], x["Score medio"], x["Confianza global"], -x["Nº picks"]),
         reverse=True
     )
     return combos
@@ -6533,7 +6523,7 @@ def construir_combinadas_plan_b_v23270(picks_df, cuota_min=1.60, cuota_max=1.80,
 def render_constructor_combinadas_v23268(ok_df):
     st.divider()
     st.subheader("🧱 Constructor de combinadas seguras")
-    st.caption("Usa el Mercado recomendado real de la tabla. Ahora añade 💰 Value real: probabilidad implícita, edge, EV y stake recomendado.")
+    st.caption("Usa el Mercado recomendado real de la tabla. Diferencia 🔥 fuerte simple de 🧱 apto para combinada.")
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -6546,12 +6536,6 @@ def render_constructor_combinadas_v23268(ok_df):
         max_default = COMBI_SAFE_PROFILES_V23268.get(profile_name, {}).get("max_picks", 3)
         max_picks = st.slider("Máx picks", 2, 5, int(max_default), key="combi_max_picks_v23268")
 
-    v1, v2 = st.columns(2)
-    with v1:
-        require_value = st.toggle("Exigir 💰 VALUE real para combinada", value=True, key="combi_require_value_v23280")
-    with v2:
-        bankroll = st.number_input("Bankroll para stake (€)", min_value=10.0, max_value=100000.0, value=100.0, step=10.0, key="combi_bankroll_v23280")
-
     min_picks = 2
     picks_df, combos = construir_combinadas_v23268(
         ok_df,
@@ -6560,8 +6544,6 @@ def render_constructor_combinadas_v23268(ok_df):
         cuota_max=cuota_max,
         min_picks=min_picks,
         max_picks=max_picks,
-        require_value=require_value,
-        bankroll=bankroll,
     )
 
     if picks_df.empty:
@@ -6573,26 +6555,16 @@ def render_constructor_combinadas_v23268(ok_df):
     show["Mínimo %"] = show["Min"].apply(lambda x: round(float(x) * 100, 1))
     show["Cuota"] = show["Cuota"].apply(lambda x: round(float(x), 2))
     show["Score"] = show["Score"].apply(lambda x: round(float(x), 1))
-    show["Implícita %"] = show["Prob implícita"].apply(lambda x: round(float(x) * 100, 1))
-    show["Edge %"] = show["Edge prob"].apply(lambda x: round(float(x) * 100, 1))
-    show["EV %"] = show["EV"].apply(lambda x: round(float(x) * 100, 1))
-    show["Stake %"] = show["Stake %"].apply(lambda x: round(float(x), 2))
-    show["Stake €"] = show["Stake €"].apply(lambda x: round(float(x), 2))
-    cols = ["Etiqueta", "Value label", "Partido", "Mercado", "Prob %", "Implícita %", "Edge %", "EV %", "Mínimo %", "Cuota", "Cuota tipo", "Stake %", "Stake €", "Score", "Motivos", "Value motivos"]
+    cols = ["Etiqueta", "Partido", "Mercado", "Prob %", "Mínimo %", "Cuota", "Cuota tipo", "Score", "Motivos"]
 
     safe_count = int(picks_df["Combi Safe"].sum()) if "Combi Safe" in picks_df.columns else 0
-    value_count = int(picks_df["Value OK"].sum()) if "Value OK" in picks_df.columns else 0
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3 = st.columns(3)
     m1.metric("Picks analizados", len(picks_df))
     m2.metric("🧱 Combi Safe", safe_count)
-    m3.metric("💰 Value real", value_count)
-    m4.metric("Combinadas encontradas", len(combos))
+    m3.metric("Combinadas encontradas", len(combos))
 
-    with st.expander("Ver clasificación combi/value de todos los picks", expanded=False):
+    with st.expander("Ver clasificación combi de todos los picks", expanded=False):
         st.dataframe(show[[c for c in cols if c in show.columns]], width='stretch', hide_index=True)
-
-    if require_value and not picks_df["Cuota tipo"].astype(str).str.lower().eq("pegada").any():
-        st.warning("Para evaluar rentabilidad real necesitas activar 'Leer cuotas pegadas' y pegar cuotas reales. Con cuotas justas/estimadas no marco 💰 VALUE.")
 
     if not combos:
         st.error("❌ No hay combinada segura dentro del rango de cuota objetivo.")
@@ -6612,9 +6584,6 @@ def render_constructor_combinadas_v23268(ok_df):
             cuota_max=cuota_max,
             min_picks=2,
             max_picks=max_picks,
-            require_value=require_value,
-            profile_name=profile_name,
-            bankroll=bankroll,
         )
 
         if not plan_b:
@@ -6626,11 +6595,8 @@ def render_constructor_combinadas_v23268(ok_df):
                 top["Falta/sobra %"] = ((top["Prob"] - top["Min"]) * 100).round(1)
                 top["Cuota"] = top["Cuota"].apply(lambda x: round(float(x), 2))
                 st.markdown("#### Mejores picks sueltos para simple")
-                top["Implícita %"] = top["Prob implícita"].apply(lambda x: round(float(x) * 100, 1))
-                top["Edge %"] = top["Edge prob"].apply(lambda x: round(float(x) * 100, 1))
-                top["EV %"] = top["EV"].apply(lambda x: round(float(x) * 100, 1))
                 st.dataframe(
-                    top.sort_values(["Value OK", "Etiqueta", "Score"], ascending=[False, True, False])[["Etiqueta", "Value label", "Partido", "Mercado", "Prob %", "Implícita %", "Edge %", "EV %", "Mínimo %", "Falta/sobra %", "Cuota", "Cuota tipo", "Motivos"]].head(10),
+                    top.sort_values(["Etiqueta", "Score"], ascending=[True, False])[["Etiqueta", "Partido", "Mercado", "Prob %", "Mínimo %", "Falta/sobra %", "Cuota", "Cuota tipo", "Motivos"]].head(10),
                     width='stretch',
                     hide_index=True,
                 )
@@ -6642,19 +6608,16 @@ def render_constructor_combinadas_v23268(ok_df):
             a, b, c, d = st.columns(4)
             a.metric("Cuota total", f"{combo['Cuota total']:.2f}")
             b.metric("Confianza global", f"{combo['Confianza global']:.1%}")
-            c.metric("EV combo", f"{combo.get('EV combo', 0):.1%}")
-            d.metric("Stake", f"{combo.get('Stake € combo', 0):.2f} €")
+            c.metric("Nº picks", combo["Nº picks"])
+            d.metric("Fuerte simple", combo["Fuerte simple"])
 
             combo_df = pd.DataFrame(combo["Picks"]).copy()
             combo_df["Prob %"] = combo_df["Prob"].apply(lambda x: round(float(x) * 100, 1))
             combo_df["Mínimo %"] = combo_df["Min"].apply(lambda x: round(float(x) * 100, 1))
             combo_df["Falta/sobra %"] = ((combo_df["Prob"] - combo_df["Min"]) * 100).round(1)
             combo_df["Cuota"] = combo_df["Cuota"].apply(lambda x: round(float(x), 2))
-            combo_df["Implícita %"] = combo_df["Prob implícita"].apply(lambda x: round(float(x) * 100, 1))
-            combo_df["Edge %"] = combo_df["Edge prob"].apply(lambda x: round(float(x) * 100, 1))
-            combo_df["EV %"] = combo_df["EV"].apply(lambda x: round(float(x) * 100, 1))
             st.dataframe(
-                combo_df[["Etiqueta", "Value label", "Partido", "Mercado", "Prob %", "Implícita %", "Edge %", "EV %", "Mínimo %", "Falta/sobra %", "Cuota", "Cuota tipo"]],
+                combo_df[["Etiqueta", "Partido", "Mercado", "Prob %", "Mínimo %", "Falta/sobra %", "Cuota", "Cuota tipo"]],
                 width='stretch',
                 hide_index=True,
             )
@@ -6670,17 +6633,14 @@ def render_constructor_combinadas_v23268(ok_df):
         a, b, c, d = st.columns(4)
         a.metric("Cuota total", f"{combo['Cuota total']:.2f}")
         b.metric("Confianza global", f"{combo['Confianza global']:.1%}")
-        c.metric("EV combo", f"{combo.get('EV combo', 0):.1%}")
-        d.metric("Stake sugerido", f"{combo.get('Stake € combo', 0):.2f} €")
+        c.metric("Nº picks", combo["Nº picks"])
+        d.metric("Score medio", f"{combo['Score medio']:.1f}")
 
         combo_df = pd.DataFrame(combo["Picks"]).copy()
         combo_df["Prob %"] = combo_df["Prob"].apply(lambda x: round(float(x) * 100, 1))
         combo_df["Cuota"] = combo_df["Cuota"].apply(lambda x: round(float(x), 2))
-        combo_df["Implícita %"] = combo_df["Prob implícita"].apply(lambda x: round(float(x) * 100, 1))
-        combo_df["Edge %"] = combo_df["Edge prob"].apply(lambda x: round(float(x) * 100, 1))
-        combo_df["EV %"] = combo_df["EV"].apply(lambda x: round(float(x) * 100, 1))
         st.dataframe(
-            combo_df[["Value label", "Partido", "Mercado", "Prob %", "Implícita %", "Edge %", "EV %", "Cuota", "Cuota tipo", "Etiqueta"]],
+            combo_df[["Partido", "Mercado", "Prob %", "Cuota", "Cuota tipo", "Etiqueta"]],
             width='stretch',
             hide_index=True
         )
@@ -6689,7 +6649,7 @@ def render_constructor_combinadas_v23268(ok_df):
         if combo["Nº picks"] >= 4:
             st.info("Para evitar el fallo por uno, intenta llegar a cuota parecida con 2-3 picks si es posible.")
         elif combo["Confianza global"] >= 0.50:
-            st.success("Estructura limpia: pocos picks, COMBI SAFE y con value real positivo.")
+            st.success("Estructura limpia: pocos picks y todos superan filtro COMBI SAFE.")
         else:
             st.info("Apta, pero con riesgo acumulado. No subiría más picks.")
 
@@ -6760,6 +6720,15 @@ def _row_pct(row, col, default=0.0):
         return n / 100.0 if n > 1 else n
     except Exception:
         return float(default)
+
+
+def _row_over_guard_active(row):
+    label = str(row.get("Over Quality Guard", "") or "").upper()
+    reasons = str(row.get("Motivos Over Guard", "") or "").upper()
+    return ("BLOQUEADO" in label) or ("WATCH" in label) or ("OVER GUARD" in reasons)
+
+def _row_under25_adjusted(row, default=0.0):
+    return _row_pct(row, "Under 2.5 ajustado", default)
 
 
 def _downgrade_strong_to_apto(label, extra=""):
@@ -6860,6 +6829,16 @@ def market_selector_v23263(row):
             "Prob mercado recomendado": prob_txt,
             "Motivo Market Selector": motivo,
         })
+
+    # v23.29: si el Over Guard está activo, el selector no puede recomendar Over.
+    over_guard_active = _row_over_guard_active(row)
+    under25_adj = _row_under25_adjusted(row, 1 - set3)
+    if over_guard_active:
+        if under25_adj >= 0.66:
+            return out("✅ UNDER 2.5 SETS", under25_adj, "Over Quality Guard activo: falso Over detectado")
+        if under25_adj >= 0.60:
+            return out("👀 WATCH UNDER 2.5 SETS", under25_adj, "Over Quality Guard activo: estudiar Under 2.5, no Over")
+        return out("❌ NO OVER / NO BET", over18, "Over Quality Guard activo: bloquear Over 18.5/19.5")
 
     # Fuera de Challenger, conservamos lógica prudente: el selector ayuda, no sustituye todo.
     if not is_chall:
@@ -6969,6 +6948,15 @@ def alinear_market_selector_v23266(row):
             "Motivo Market Selector": base,
         })
 
+    # v23.29: Over Guard manda también en coherencia visual.
+    if _row_over_guard_active(row):
+        under25_adj = _row_under25_adjusted(row, _row_pct(row, "Under 2.5 ajustado", 0.0))
+        if under25_adj >= 0.66:
+            return out("✅ UNDER 2.5 SETS", f"{under25_adj:.1%}", "Over Quality Guard activo")
+        if under25_adj >= 0.60:
+            return out("👀 WATCH UNDER 2.5 SETS", f"{under25_adj:.1%}", "Over Quality Guard activo")
+        return out("❌ NO OVER / NO BET", "", "Over Quality Guard activo")
+
     # 1) Bloqueos finales: no puede aparecer ningún mercado con ✅/🔥.
     if "NO BET" in rec_u:
         return out("❌ NO BET", "", "alineado con recomendación final")
@@ -7038,6 +7026,15 @@ def batch_recommendation(row):
 
     def apply_guards(rec):
         rec = str(rec or "")
+
+        # v23.29: Over Quality Guard manda por encima de señales antiguas.
+        if _row_over_guard_active(row):
+            under25_adj = _row_under25_adjusted(row, 1 - _row_pct(row, "Partido a 3 sets", 0.0))
+            if under25_adj >= 0.66:
+                return "✅ MIRAR UNDER 2.5 SETS"
+            if under25_adj >= 0.60:
+                return "👀 WATCH UNDER 2.5 SETS"
+            return "🚫 OVER BLOQUEADO / NO BET"
 
         # v23.26.1: en Challenger ningún pick con datos parciales puede salir como FUERTE.
         if partial_data and "FUERTE" in rec:
@@ -7171,6 +7168,13 @@ def prepare_batch_display_table(ok_df):
         "Mejor mercado WTA",
         "WTA Over17 Priority",
         "Signal Trust",
+        "Over Quality Guard",
+        "Motivos Over Guard",
+        "Under 2.5 Rescue",
+        "Under 2.5 ajustado",
+        "Confianza mínima",
+        "Mín. partidos superficie",
+        "Gap Elo/modelo",
         "Cuota pegada",
         "Jugador cuota",
         "Cuota justa",
