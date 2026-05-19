@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.26.9-combi-safe-fix"
+APP_VERSION = "v23.27.0-combi-safe-plan-b"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -6323,6 +6323,91 @@ def construir_combinadas_v23268(ok_df, profile_name="⚖️ Normal", cuota_min=1
     return pd.DataFrame(picks), combos
 
 
+
+def construir_combinadas_plan_b_v23270(picks_df, cuota_min=1.60, cuota_max=1.80, min_picks=2, max_picks=3):
+    """
+    Plan B: NO marca como segura. Solo propone candidatas controladas si el modo normal/conservador
+    no encuentra nada. Usa picks COMBI SAFE + FUERTE SIMPLE, excluye NO COMBI y mantiene partidos únicos.
+    """
+    if picks_df is None or picks_df.empty:
+        return []
+
+    df = picks_df.copy()
+    if "Etiqueta" not in df.columns:
+        return []
+
+    # Solo picks con cierta calidad. No rescatamos NO COMBI para no volver al fallo por uno.
+    df = df[df["Etiqueta"].isin(["🧱 COMBI SAFE", "🔥 FUERTE SIMPLE"])].copy()
+    if df.empty:
+        return []
+
+    # Evita mercados de varianza si son solo fuertes simples.
+    def usable(row):
+        tipo = str(row.get("Tipo", ""))
+        etiqueta = str(row.get("Etiqueta", ""))
+        prob = float(row.get("Prob", 0.0) or 0.0)
+        min_req = float(row.get("Min", 0.0) or 0.0)
+        if etiqueta == "🧱 COMBI SAFE":
+            return True
+        if tipo in ["sets3", "dog_set"]:
+            return False
+        # Fuerte simple pero muy cerca del mínimo.
+        return prob >= (min_req - 0.055)
+
+    df = df[df.apply(usable, axis=1)].copy()
+    if df.empty:
+        return []
+
+    picks = df.to_dict(orient="records")
+    combos = []
+
+    for n in range(int(min_picks), int(max_picks) + 1):
+        for combo in combinations(picks, n):
+            partidos = [p.get("Partido", "") for p in combo]
+            if len(set(partidos)) != len(partidos):
+                continue
+
+            cuota_total = 1.0
+            confianza = 1.0
+            score_medio = 0.0
+            gaps = []
+            labels = []
+
+            for p in combo:
+                cuota_total *= float(p.get("Cuota", 1.0) or 1.0)
+                confianza *= float(p.get("Prob", 0.0) or 0.0)
+                score_medio += float(p.get("Score", 0.0) or 0.0)
+                gaps.append(float(p.get("Prob", 0.0) or 0.0) - float(p.get("Min", 0.0) or 0.0))
+                labels.append(str(p.get("Etiqueta", "")))
+
+            score_medio /= max(1, len(combo))
+
+            if float(cuota_min) <= cuota_total <= float(cuota_max):
+                weak = min(combo, key=lambda x: float(x.get("Prob", 0.0) or 0.0))
+                safe_count = sum(1 for lab in labels if lab == "🧱 COMBI SAFE")
+                strong_simple_count = sum(1 for lab in labels if lab == "🔥 FUERTE SIMPLE")
+                min_gap = min(gaps) if gaps else -1.0
+
+                combos.append({
+                    "Nº picks": n,
+                    "Cuota total": cuota_total,
+                    "Confianza global": confianza,
+                    "Score medio": score_medio,
+                    "Pick más débil": f"{weak['Mercado']} — {weak['Partido']} ({float(weak['Prob']):.1%})",
+                    "Picks": list(combo),
+                    "Safe": safe_count,
+                    "Fuerte simple": strong_simple_count,
+                    "Gap mínimo": min_gap,
+                })
+
+    combos = sorted(
+        combos,
+        key=lambda x: (x["Safe"], x["Gap mínimo"], x["Score medio"], x["Confianza global"], -x["Nº picks"]),
+        reverse=True
+    )
+    return combos
+
+
 def render_constructor_combinadas_v23268(ok_df):
     st.divider()
     st.subheader("🧱 Constructor de combinadas seguras")
@@ -6372,11 +6457,61 @@ def render_constructor_combinadas_v23268(ok_df):
     if not combos:
         st.error("❌ No hay combinada segura dentro del rango de cuota objetivo.")
         if safe_count == 0:
-            st.warning("Hoy no hay ningún pick 🧱 COMBI SAFE. Mejor no forzar.")
+            st.warning("Hoy no hay ningún pick 🧱 COMBI SAFE. Mejor no forzar como combinada oficial.")
         elif safe_count == 1:
             st.warning("Solo hay 1 pick 🧱 COMBI SAFE. Mejor simple o esperar.")
         else:
-            st.info("Hay picks seguros, pero no encajan en la cuota objetivo. Revisa si pegaste cuotas reales.")
+            st.info("Hay picks seguros, pero no encajan en la cuota objetivo. Revisa si pegaste cuotas reales o baja un poco la cuota mínima.")
+
+        st.markdown("### 🟡 Plan B: candidatas controladas, no oficiales")
+        st.caption("Este bloque NO sustituye al filtro seguro. Solo muestra combinadas con picks 🧱 COMBI SAFE + 🔥 FUERTE SIMPLE muy cercanos al mínimo, para que veas la opción menos mala sin forzar a ciegas.")
+
+        plan_b = construir_combinadas_plan_b_v23270(
+            picks_df,
+            cuota_min=cuota_min,
+            cuota_max=cuota_max,
+            min_picks=2,
+            max_picks=max_picks,
+        )
+
+        if not plan_b:
+            st.warning("Tampoco hay una candidata controlada dentro del rango. Señal fuerte de NO combinar hoy en este modo.")
+            top = picks_df[picks_df["Etiqueta"].isin(["🧱 COMBI SAFE", "🔥 FUERTE SIMPLE"])].copy()
+            if not top.empty:
+                top["Prob %"] = top["Prob"].apply(lambda x: round(float(x) * 100, 1))
+                top["Mínimo %"] = top["Min"].apply(lambda x: round(float(x) * 100, 1))
+                top["Falta/sobra %"] = ((top["Prob"] - top["Min"]) * 100).round(1)
+                top["Cuota"] = top["Cuota"].apply(lambda x: round(float(x), 2))
+                st.markdown("#### Mejores picks sueltos para simple")
+                st.dataframe(
+                    top.sort_values(["Etiqueta", "Score"], ascending=[True, False])[["Etiqueta", "Partido", "Mercado", "Prob %", "Mínimo %", "Falta/sobra %", "Cuota", "Cuota tipo", "Motivos"]].head(10),
+                    width='stretch',
+                    hide_index=True,
+                )
+            return
+
+        st.warning("Estas combinadas son PLAN B: se pueden estudiar, pero no son 🧱 COMBI SAFE puras.")
+        for i, combo in enumerate(plan_b[:3], start=1):
+            st.markdown(f"#### 🟡 Candidata controlada #{i}")
+            a, b, c, d = st.columns(4)
+            a.metric("Cuota total", f"{combo['Cuota total']:.2f}")
+            b.metric("Confianza global", f"{combo['Confianza global']:.1%}")
+            c.metric("Nº picks", combo["Nº picks"])
+            d.metric("Fuerte simple", combo["Fuerte simple"])
+
+            combo_df = pd.DataFrame(combo["Picks"]).copy()
+            combo_df["Prob %"] = combo_df["Prob"].apply(lambda x: round(float(x) * 100, 1))
+            combo_df["Mínimo %"] = combo_df["Min"].apply(lambda x: round(float(x) * 100, 1))
+            combo_df["Falta/sobra %"] = ((combo_df["Prob"] - combo_df["Min"]) * 100).round(1)
+            combo_df["Cuota"] = combo_df["Cuota"].apply(lambda x: round(float(x), 2))
+            st.dataframe(
+                combo_df[["Etiqueta", "Partido", "Mercado", "Prob %", "Mínimo %", "Falta/sobra %", "Cuota", "Cuota tipo"]],
+                width='stretch',
+                hide_index=True,
+            )
+            st.warning(f"⚠️ Pick más débil: {combo['Pick más débil']}")
+            st.info("Lectura: si quieres reducir el fallo por uno, esta candidata debería jugarse con stake menor o quedarse como referencia; la oficial sigue siendo NO COMBI SAFE.")
+            st.divider()
         return
 
     st.success(f"✅ Combinadas recomendadas encontradas: {len(combos)}")
