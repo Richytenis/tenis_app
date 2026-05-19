@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.30.2-picks-oficiales-panel"
+APP_VERSION = "v23.30.3-sin-combinadas-view"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -8627,8 +8627,8 @@ Sebastián Baez - Roberto Carballés Baena"""
             st.subheader("🔥 Resumen ordenado completo")
             st.dataframe(ok_saved, width='stretch', hide_index=True)
 
-            # v23.26.8: constructor automático de combinadas sobre la tabla real.
-            render_constructor_combinadas_v23268(ok_saved)
+            # v23.30.3: constructor de combinadas oculto de la vista por simplicidad.
+            # render_constructor_combinadas_v23268(ok_saved)
 
             dl1, dl2 = st.columns(2)
             with dl1:
