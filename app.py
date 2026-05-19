@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.29.0-over-quality-guard-under25"
+APP_VERSION = "v23.29.1-over-guard-tuned"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -3792,22 +3792,43 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     over_quality_watch = False
 
     # Bloque 1: falso over por calidad de datos.
+    # v23.29.1: menos agresivo. Ya NO bloquea solo por una alerta aislada.
+    # Bloquea únicamente cuando coinciden varias señales malas.
+    quality_block_hard = False
+    quality_watch = False
     if circuito == "ATP" and surface == "Clay":
-        if min_conf <= 0.35:
-            over_quality_block = True
-            over_quality_reasons.append("confianza mínima <=35%")
-        if min_surface_matches < 5:
-            over_quality_block = True
-            over_quality_reasons.append("menos de 5 partidos en superficie")
-        if rating_active and min_surface_matches < 10:
-            over_quality_block = True
-            over_quality_reasons.append("rating sanity activo + muestra <10")
-        if elo_pure_gap >= 0.18:
-            over_quality_block = True
-            over_quality_reasons.append("gap Elo puro/modelo >=18%")
-        elif elo_pure_gap >= 0.12:
-            over_quality_watch = True
-            over_quality_reasons.append("gap Elo puro/modelo elevado")
+        very_low_conf = min_conf <= 0.35
+        low_conf = min_conf <= 0.50
+        very_short_surface = min_surface_matches < 5
+        short_surface = min_surface_matches < 10
+        mid_gap = elo_pure_gap >= 0.12
+        high_gap = elo_pure_gap >= 0.18
+
+        if very_low_conf and very_short_surface:
+            quality_block_hard = True
+            over_quality_reasons.append("confianza <=35% + muestra <5")
+        if rating_active and very_short_surface and low_conf:
+            quality_block_hard = True
+            over_quality_reasons.append("rating sanity + muestra <5 + confianza baja")
+        if high_gap and (low_conf or short_surface):
+            quality_block_hard = True
+            over_quality_reasons.append("gap Elo/modelo >=18% con fiabilidad baja")
+
+        # Watch: alerta visual, pero no bloquea automáticamente el Over.
+        if rating_active and (short_surface or min_conf < 0.60):
+            quality_watch = True
+            over_quality_reasons.append("rating sanity + fiabilidad mejorable")
+        if mid_gap:
+            quality_watch = True
+            over_quality_reasons.append("gap Elo/modelo elevado")
+        if 0.70 <= over18 <= 0.75 and rating_active and (short_surface or min_conf < 0.55):
+            quality_watch = True
+            over_quality_reasons.append("zona vigilancia Over 70-75% en clay")
+
+    if quality_block_hard:
+        over_quality_block = True
+    elif quality_watch:
+        over_quality_watch = True
 
     # Bloque 2: falso over por favorito 2-0 / marcador corto.
     straight_sets_risk = (
@@ -3816,31 +3837,42 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         and set3 <= 0.45
         and tb <= 0.28
     )
+    straight_sets_clear = (
+        fav_prob >= 0.70
+        and dogset <= 0.38
+        and set3 <= 0.42
+        and tb <= 0.25
+    )
     if straight_sets_risk:
         over_quality_watch = True
         over_quality_reasons.append("favorito 2-0: dog set bajo + 3 sets bajo + tie-break bajo")
-        if fav_prob >= 0.66 and over18 < 0.76:
+        # v23.29.1: solo bloquea si el patrón 2-0 es muy claro.
+        if straight_sets_clear and over18 < 0.74:
             over_quality_block = True
-            over_quality_reasons.append("Over <76% con perfil de 2-0 cómodo")
+            over_quality_reasons.append("perfil 2-0 claro con Over insuficiente")
 
     # Bloque 3: zona roja observada en tus fallos.
+    # v23.29.1: ya no bloquea todos los Over 70-75%; solo si hay calidad dura mala.
     if circuito == "ATP" and surface == "Clay" and 0.70 <= over18 <= 0.75:
-        if over_quality_block or (rating_active and (min_surface_matches < 12 or min_conf < 0.60)):
+        if quality_block_hard:
             over_quality_block = True
-            over_quality_reasons.append("zona roja Over 70-75% en clay con fiabilidad insuficiente")
+            over_quality_reasons.append("zona roja Over 70-75% + calidad muy baja")
+        elif over_quality_watch:
+            over_quality_reasons.append("zona watch: Over 70-75%, revisar antes de combinar")
 
     # Ajuste simple para convertir 3 sets bruto en lectura Under 2.5.
+    # v23.29.1: Under Rescue más exigente; menos señales fuertes.
     under25_raw = 1.0 - float(set3 or 0.0)
     under25_boost = 0.0
     if over_quality_block:
-        under25_boost += 0.10
+        under25_boost += 0.08
     elif over_quality_watch:
-        under25_boost += 0.06
-    if straight_sets_risk:
-        under25_boost += 0.06
-    if fav_prob >= 0.70 and dogset <= 0.42:
         under25_boost += 0.04
-    under25_adjusted = float(np.clip(under25_raw + under25_boost, 0.0, 0.86))
+    if straight_sets_risk:
+        under25_boost += 0.05
+    if fav_prob >= 0.70 and dogset <= 0.38:
+        under25_boost += 0.03
+    under25_adjusted = float(np.clip(under25_raw + under25_boost, 0.0, 0.84))
 
     if over_quality_block:
         over_guard_label = "🚫 OVER BLOQUEADO"
@@ -3849,9 +3881,10 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     else:
         over_guard_label = ""
 
-    if under25_adjusted >= 0.66:
+    under25_strong_context = over_quality_block and (quality_block_hard or straight_sets_clear or elo_pure_gap >= 0.18)
+    if under25_adjusted >= 0.68 and under25_strong_context:
         under25_label = "✅ MIRAR UNDER 2.5 SETS"
-    elif under25_adjusted >= 0.60:
+    elif under25_adjusted >= 0.63:
         under25_label = "👀 WATCH UNDER 2.5 SETS"
     else:
         under25_label = ""
@@ -6723,9 +6756,15 @@ def _row_pct(row, col, default=0.0):
 
 
 def _row_over_guard_active(row):
+    """True solo cuando el Over está bloqueado.
+    v23.29.1: WATCH ya no bloquea automáticamente; solo avisa/no combi visual.
+    """
     label = str(row.get("Over Quality Guard", "") or "").upper()
-    reasons = str(row.get("Motivos Over Guard", "") or "").upper()
-    return ("BLOQUEADO" in label) or ("WATCH" in label) or ("OVER GUARD" in reasons)
+    return "BLOQUEADO" in label
+
+def _row_over_guard_watch(row):
+    label = str(row.get("Over Quality Guard", "") or "").upper()
+    return "WATCH" in label
 
 def _row_under25_adjusted(row, default=0.0):
     return _row_pct(row, "Under 2.5 ajustado", default)
@@ -6834,9 +6873,9 @@ def market_selector_v23263(row):
     over_guard_active = _row_over_guard_active(row)
     under25_adj = _row_under25_adjusted(row, 1 - set3)
     if over_guard_active:
-        if under25_adj >= 0.66:
+        if under25_adj >= 0.68:
             return out("✅ UNDER 2.5 SETS", under25_adj, "Over Quality Guard activo: falso Over detectado")
-        if under25_adj >= 0.60:
+        if under25_adj >= 0.63:
             return out("👀 WATCH UNDER 2.5 SETS", under25_adj, "Over Quality Guard activo: estudiar Under 2.5, no Over")
         return out("❌ NO OVER / NO BET", over18, "Over Quality Guard activo: bloquear Over 18.5/19.5")
 
@@ -6951,9 +6990,9 @@ def alinear_market_selector_v23266(row):
     # v23.29: Over Guard manda también en coherencia visual.
     if _row_over_guard_active(row):
         under25_adj = _row_under25_adjusted(row, _row_pct(row, "Under 2.5 ajustado", 0.0))
-        if under25_adj >= 0.66:
+        if under25_adj >= 0.68:
             return out("✅ UNDER 2.5 SETS", f"{under25_adj:.1%}", "Over Quality Guard activo")
-        if under25_adj >= 0.60:
+        if under25_adj >= 0.63:
             return out("👀 WATCH UNDER 2.5 SETS", f"{under25_adj:.1%}", "Over Quality Guard activo")
         return out("❌ NO OVER / NO BET", "", "Over Quality Guard activo")
 
@@ -7030,9 +7069,9 @@ def batch_recommendation(row):
         # v23.29: Over Quality Guard manda por encima de señales antiguas.
         if _row_over_guard_active(row):
             under25_adj = _row_under25_adjusted(row, 1 - _row_pct(row, "Partido a 3 sets", 0.0))
-            if under25_adj >= 0.66:
+            if under25_adj >= 0.68:
                 return "✅ MIRAR UNDER 2.5 SETS"
-            if under25_adj >= 0.60:
+            if under25_adj >= 0.63:
                 return "👀 WATCH UNDER 2.5 SETS"
             return "🚫 OVER BLOQUEADO / NO BET"
 
