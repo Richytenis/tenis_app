@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.31.1-wta-over17-prudente"
+APP_VERSION = "v23.31.2-wta-over17-premium-watch"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -7259,10 +7259,10 @@ def pick_oficial_v23301(row):
 
 
 # =========================================================
-# v23.31.1 WTA OVER 17.5 OFFICIAL GUARD PRUDENTE
+# v23.31.2 WTA OVER 17.5 PREMIUM WATCH GUARD
 # Objetivo: WTA no usa ML ni Over 18.5 como mercado principal.
-# Si el Over 17.5 sale >=80% y no hay alerta fuerte de 2-0/datos,
-# lo convertimos en pick oficial específico WTA.
+# El Over 17.5 puede subir a PREMIUM WATCH si es >=82% y limpio,
+# pero NO se convierte todavía en pick oficial.
 # =========================================================
 
 def aplicar_wta_over17_oficial_v23310(row):
@@ -7368,13 +7368,14 @@ def aplicar_wta_over17_oficial_v23310(row):
             return out("👀 WATCH OVER 17.5 / RIESGO 2-0", over17, "WTA v23.31: Over17 alto pero riesgo de 2-0 dominante", "👀 WTA O17 WATCH")
         return out(current_market, None, "WTA v23.31: riesgo 2-0, sin Over17 oficial", "")
 
-    # Regla oficial WTA tras validar dos días: Over 17.5 >=80%.
+    # v23.31.2: todavía no oficializamos WTA.
+    # Separación visual: Over17 limpio >=82% pasa a PREMIUM WATCH.
     if over17 >= 0.82:
-        return out("🔥 OVER 17.5", over17, "WTA v23.31.1: Over 17.5 fuerte >=82% sin señal dudosa", "🔥 WTA O17 OFICIAL")
+        return out("🟢 PREMIUM WATCH OVER 17.5", over17, "WTA v23.31.2: Over17 >=82% con datos limpios; premium watch, no oficial", "🟢 WTA O17 PREMIUM WATCH")
     if over17 >= 0.80:
-        return out("✅ OVER 17.5", over17, "WTA v23.31.1: Over 17.5 oficial >=80% sin señal dudosa", "✅ WTA O17 OFICIAL")
+        return out("👀 WATCH OVER 17.5", over17, "WTA v23.31.2: Over17 80%-81.9%; watch normal, no oficial", "👀 WTA O17 WATCH")
     if over17 >= 0.77:
-        return out("👀 WATCH OVER 17.5", over17, "WTA v23.31: Over17 watch 77%-79.9%", "👀 WTA O17 WATCH")
+        return out("👀 WATCH OVER 17.5", over17, "WTA v23.31.2: Over17 watch 77%-79.9%", "👀 WTA O17 WATCH")
 
     return out(current_market, None, "WTA v23.31: Over17 sin umbral oficial", "")
 
@@ -7408,6 +7409,11 @@ def aplicar_ml_quality_guard_v23300(row):
         return out(current_market, None, "ML guard evaluado; se mantiene Over oficial")
 
     mu = current_market.upper()
+
+    # v23.31.2: WTA Over17 Premium Watch debe verse en pantalla/export,
+    # no lo sustituimos por ML aunque el ML Guard detecte algo.
+    if "PREMIUM WATCH OVER 17.5" in mu:
+        return out(current_market, None, "ML guard evaluado; se mantiene WTA Over17 Premium Watch")
     current_is_official = (current_market.strip().startswith("✅") or current_market.strip().startswith("🔥")) and "WATCH" not in mu
 
     # Si no hay pick oficial y el ML sí es oficial, lo proponemos.
@@ -7647,8 +7653,8 @@ def prepare_batch_display_table(ok_df):
     for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector"]:
         df[_col] = final_prudence_cols[_col]
 
-    # v23.31: WTA Over 17.5 oficial específico. Se aplica antes del ML Guard
-    # para que el ML no pise un Over17 WTA oficial limpio.
+    # v23.31.2: WTA Over 17.5 Premium Watch específico. Se aplica antes del ML Guard
+    # para separar los mejores WTA Over17 sin convertirlos aún en oficiales.
     wta_o17_cols = df.apply(aplicar_wta_over17_oficial_v23310, axis=1)
     for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector", "WTA Over17 Official Guard"]:
         df[_col] = wta_o17_cols[_col]
