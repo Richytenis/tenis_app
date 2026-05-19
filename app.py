@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.30.1-pick-oficial-screen"
+APP_VERSION = "v23.30.2-picks-oficiales-panel"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -8565,17 +8565,66 @@ Sebastián Baez - Roberto Carballés Baena"""
 
         if ok_saved is not None and not ok_saved.empty:
             st.divider()
-            st.subheader("🔥 Resumen ordenado")
+
+            # v23.30.2: panel separado, claro y SIEMPRE visible solo con picks oficiales.
+            # Si la sesión viene de una tabla anterior sin la columna, la reconstruimos al vuelo.
+            if "Pick oficial" not in ok_saved.columns:
+                try:
+                    ok_saved = ok_saved.copy()
+                    ok_saved["Pick oficial"] = ok_saved.apply(pick_oficial_v23301, axis=1)
+                    st.session_state["batch_ok_df"] = ok_saved
+                except Exception:
+                    pass
+
+            st.subheader("🎯 Picks oficiales")
 
             if "Pick oficial" in ok_saved.columns:
                 _oficiales = ok_saved[ok_saved["Pick oficial"].astype(str).str.strip() != ""].copy()
+
                 if not _oficiales.empty:
-                    st.success(f"🎯 Picks oficiales detectados: {len(_oficiales)}")
-                    _cols_oficiales = [c for c in ["Hora", "Partido", "Pick oficial", "Confianza mínima", "Mín. partidos superficie", "Over Quality Guard", "ML Quality Guard"] if c in _oficiales.columns]
-                    st.dataframe(_oficiales[_cols_oficiales], width='stretch', hide_index=True)
+                    _n_over = int(_oficiales["Pick oficial"].astype(str).str.upper().str.contains("OVER", na=False).sum())
+                    _n_ml = int(_oficiales["Pick oficial"].astype(str).str.upper().str.contains("ML", na=False).sum())
+
+                    cpo1, cpo2, cpo3 = st.columns(3)
+                    cpo1.metric("Picks oficiales", len(_oficiales))
+                    cpo2.metric("Overs oficiales", _n_over)
+                    cpo3.metric("ML oficiales", _n_ml)
+
+                    _cols_oficiales_base = [
+                        "Hora",
+                        "Partido",
+                        "Pick oficial",
+                        "Mercado recomendado",
+                        "Prob mercado recomendado",
+                        "Resultado sets",
+                        "Ganador real",
+                        "Over 18.5 real",
+                        "Acierta Over 18.5",
+                        "Acierta ML modelo",
+                        "Confianza mínima",
+                        "Mín. partidos superficie",
+                        "Over Quality Guard",
+                        "ML Quality Guard",
+                        "Motivo Market Selector",
+                    ]
+                    _cols_oficiales = [c for c in _cols_oficiales_base if c in _oficiales.columns]
+
+                    st.dataframe(
+                        _oficiales[_cols_oficiales],
+                        width='stretch',
+                        hide_index=True
+                    )
+
+                    with st.expander("Ver solo motivos de picks oficiales"):
+                        _motivo_cols = [c for c in ["Partido", "Pick oficial", "Motivo Market Selector", "Motivos Over Guard", "Motivos ML Guard", "Riesgos"] if c in _oficiales.columns]
+                        if _motivo_cols:
+                            st.dataframe(_oficiales[_motivo_cols], width='stretch', hide_index=True)
                 else:
                     st.warning("🎯 Picks oficiales detectados: 0. No forzar combinada si solo hay WATCH/NO BET.")
+            else:
+                st.warning("No se ha podido crear la columna 🎯 Pick oficial en esta ejecución.")
 
+            st.subheader("🔥 Resumen ordenado completo")
             st.dataframe(ok_saved, width='stretch', hide_index=True)
 
             # v23.26.8: constructor automático de combinadas sobre la tabla real.
