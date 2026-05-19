@@ -8,7 +8,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.31.0-wta-over17-oficial"
+APP_VERSION = "v23.31.1-wta-over17-prudente"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -7259,7 +7259,7 @@ def pick_oficial_v23301(row):
 
 
 # =========================================================
-# v23.31 WTA OVER 17.5 OFFICIAL GUARD
+# v23.31.1 WTA OVER 17.5 OFFICIAL GUARD PRUDENTE
 # Objetivo: WTA no usa ML ni Over 18.5 como mercado principal.
 # Si el Over 17.5 sale >=80% y no hay alerta fuerte de 2-0/datos,
 # lo convertimos en pick oficial específico WTA.
@@ -7320,6 +7320,25 @@ def aplicar_wta_over17_oficial_v23310(row):
     # Si ya hay un Over oficial ATP/WTA muy claro, no lo pisamos salvo que sea WTA Over 18.5:
     # en WTA preferimos la línea 17.5 como mercado principal cuando cumple filtro.
     mu = current_market.upper()
+    motivo_u = current_motivo.upper()
+
+    # v23.31.1 prudente:
+    # No convertir en pick oficial una señal que el propio selector/Trust ya marcó como WATCH o DUDOSA.
+    # Esto evita que un Over17 alto, pero nacido de una lectura débil, aparezca como apuesta oficial.
+    señal_base_dudosa = (
+        "WATCH" in mu
+        or "WATCH" in motivo_u
+        or "SPOT DUDOSO" in trust
+        or "DUDOSO" in trust
+        or "DUDOSA" in trust
+        or "SPOT WATCH" in trust
+        or "NO COMBI" in mu
+        or "NO COMBI" in motivo_u
+    )
+    if señal_base_dudosa:
+        if over17 >= 0.77:
+            return out("👀 WATCH OVER 17.5", over17, "WTA v23.31.1: Over17 alto, pero señal base WATCH/DUDOSA; no oficial", "👀 WTA O17 WATCH")
+        return out(current_market, None, "WTA v23.31.1: sin Over17 oficial por señal base dudosa", "")
 
     # Bloqueos duros: si Over Guard está activo o hay datos claramente pobres, no oficializamos.
     if _row_over_guard_active(row):
@@ -7351,9 +7370,9 @@ def aplicar_wta_over17_oficial_v23310(row):
 
     # Regla oficial WTA tras validar dos días: Over 17.5 >=80%.
     if over17 >= 0.82:
-        return out("🔥 OVER 17.5", over17, "WTA v23.31: Over 17.5 fuerte >=82%", "🔥 WTA O17 OFICIAL")
+        return out("🔥 OVER 17.5", over17, "WTA v23.31.1: Over 17.5 fuerte >=82% sin señal dudosa", "🔥 WTA O17 OFICIAL")
     if over17 >= 0.80:
-        return out("✅ OVER 17.5", over17, "WTA v23.31: Over 17.5 oficial >=80%", "✅ WTA O17 OFICIAL")
+        return out("✅ OVER 17.5", over17, "WTA v23.31.1: Over 17.5 oficial >=80% sin señal dudosa", "✅ WTA O17 OFICIAL")
     if over17 >= 0.77:
         return out("👀 WATCH OVER 17.5", over17, "WTA v23.31: Over17 watch 77%-79.9%", "👀 WTA O17 WATCH")
 
