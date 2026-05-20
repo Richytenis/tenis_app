@@ -3,12 +3,13 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import random, re, os, glob, unicodedata, time, io, gc
+import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.31.2-wta-over17-premium-watch"
+APP_VERSION = "v23.32.0-telegram-picks-sender"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -7259,6 +7260,213 @@ def pick_oficial_v23301(row):
 
 
 # =========================================================
+# v23.32 TELEGRAM PICKS SENDER
+# Lee TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID desde .streamlit/secrets.toml
+# y permite enviar picks oficiales + recomendados/watch sin poner datos en pantalla.
+# =========================================================
+
+def _telegram_get_secret(key, default=""):
+    try:
+        return str(st.secrets.get(key, default) or "").strip()
+    except Exception:
+        return default
+
+
+def _telegram_html_escape(x):
+    s = str(x if x is not None else "")
+    return (
+        s.replace("&", "&amp;")
+         .replace("<", "&lt;")
+         .replace(">", "&gt;")
+    )
+
+
+def _telegram_str(row, col, default=""):
+    try:
+        v = row.get(col, default)
+    except Exception:
+        v = default
+    if pd.isna(v):
+        return default
+    return str(v).strip()
+
+
+def _telegram_pct_text(row, col):
+    raw = _telegram_str(row, col, "")
+    if raw == "":
+        return ""
+    try:
+        val = float(str(raw).replace("%", "").replace(",", "."))
+        if 0 <= val <= 1:
+            val *= 100
+        return f"{val:.1f}%"
+    except Exception:
+        return raw
+
+
+def _telegram_is_watch_recomendado(row):
+    """Devuelve True para WATCH/PREMIUM relevantes y False para NO BET/NO OVER/etc."""
+    market = _telegram_str(row, "Mercado recomendado", "")
+    pick = _telegram_str(row, "Pick oficial", "")
+    if pick:
+        return False
+    if not market:
+        return False
+
+    txt = " ".join([
+        market,
+        _telegram_str(row, "Motivo Market Selector", ""),
+        _telegram_str(row, "WTA Over17 Official Guard", ""),
+        _telegram_str(row, "Over Quality Guard", ""),
+        _telegram_str(row, "ML Quality Guard", ""),
+    ]).upper()
+
+    hard_bad = ["NO BET", "NO OVER", "NO ML", "BLOQUEADO", "DESCART", "SOLO CONTEXTO"]
+    if any(x in txt for x in hard_bad):
+        # Excepción: si explícitamente es Premium Watch, sí interesa verlo.
+        if "PREMIUM WATCH" not in txt:
+            return False
+
+    good_watch = ["WATCH", "PREMIUM", "RECOMEND", "OVER 17.5"]
+    return any(x in txt for x in good_watch)
+
+
+def _telegram_row_line(row, idx=None, oficial=True):
+    partido = _telegram_str(row, "Partido", "Partido sin nombre")
+    hora = _telegram_str(row, "Hora", "")
+    pick = _telegram_str(row, "Pick oficial", "") if oficial else _telegram_str(row, "Mercado recomendado", "")
+    prob = _telegram_pct_text(row, "Prob mercado recomendado")
+    conf = _telegram_pct_text(row, "Confianza mínima")
+    sup = _telegram_str(row, "Mín. partidos superficie", "")
+    motivo = _telegram_str(row, "Motivo Market Selector", "")
+    guard_wta = _telegram_str(row, "WTA Over17 Official Guard", "")
+    guard_over = _telegram_str(row, "Over Quality Guard", "")
+    guard_ml = _telegram_str(row, "ML Quality Guard", "")
+
+    prefix = f"{idx}. " if idx is not None else ""
+    lineas = []
+    title = f"{prefix}<b>{_telegram_html_escape(partido)}</b>"
+    if hora:
+        title += f" · {_telegram_html_escape(hora)}"
+    lineas.append(title)
+
+    if pick:
+        lineas.append(f"Pick: {_telegram_html_escape(pick)}")
+    if prob:
+        lineas.append(f"Prob: {_telegram_html_escape(prob)}")
+    extras = []
+    if conf:
+        extras.append(f"Conf {_telegram_html_escape(conf)}")
+    if sup:
+        extras.append(f"Sup {_telegram_html_escape(sup)}")
+    if extras:
+        lineas.append(" · ".join(extras))
+
+    if not oficial:
+        visible_motivos = " · ".join([x for x in [guard_wta, guard_over, guard_ml, motivo] if x])
+        if visible_motivos:
+            visible_motivos = visible_motivos[:220]
+            lineas.append(f"Motivo: {_telegram_html_escape(visible_motivos)}")
+
+    return "\n".join(lineas)
+
+
+def construir_mensaje_telegram_picks(ok_df, incluir_watch=False, max_watch=12):
+    if ok_df is None or ok_df.empty:
+        return "🎾 <b>Tennis IA</b>\nNo hay análisis disponible."
+
+    df = ok_df.copy()
+    if "Pick oficial" not in df.columns:
+        try:
+            df["Pick oficial"] = df.apply(pick_oficial_v23301, axis=1)
+        except Exception:
+            df["Pick oficial"] = ""
+
+    oficiales = df[df["Pick oficial"].astype(str).str.strip() != ""].copy()
+    watch = df[df.apply(_telegram_is_watch_recomendado, axis=1)].copy() if incluir_watch else pd.DataFrame()
+
+    partes = []
+    partes.append("🎾 <b>Tennis IA — Picks</b>")
+
+    partes.append("\n🎯 <b>PICKS OFICIALES</b>")
+    if oficiales.empty:
+        partes.append("No hay picks oficiales. No forzar combinada.")
+    else:
+        for i, (_, row) in enumerate(oficiales.iterrows(), start=1):
+            partes.append(_telegram_row_line(row, i, oficial=True))
+
+    if incluir_watch:
+        partes.append("\n👀 <b>RECOMENDADOS / WATCH</b>")
+        if watch.empty:
+            partes.append("No hay watch/recomendados relevantes.")
+        else:
+            for i, (_, row) in enumerate(watch.head(max_watch).iterrows(), start=1):
+                partes.append(_telegram_row_line(row, i, oficial=False))
+            if len(watch) > max_watch:
+                partes.append(f"… y {len(watch) - max_watch} watch más en la app/Excel.")
+
+    return "\n\n".join(partes)
+
+
+def enviar_telegram_mensaje(mensaje):
+    token = _telegram_get_secret("TELEGRAM_BOT_TOKEN", "")
+    chat_id = _telegram_get_secret("TELEGRAM_CHAT_ID", "")
+
+    if not token or not chat_id:
+        return False, "Falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID en .streamlit/secrets.toml"
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": mensaje,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+
+    try:
+        r = requests.post(url, data=payload, timeout=12)
+        if r.status_code == 200:
+            return True, "✅ Mensaje enviado a Telegram."
+        return False, f"❌ Error Telegram {r.status_code}: {r.text[:400]}"
+    except Exception as e:
+        return False, f"❌ Error enviando Telegram: {e}"
+
+
+def render_telegram_sender_panel(ok_df):
+    st.markdown("### 📲 Telegram")
+
+    token_ok = bool(_telegram_get_secret("TELEGRAM_BOT_TOKEN", ""))
+    chat_ok = bool(_telegram_get_secret("TELEGRAM_CHAT_ID", ""))
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Bot token", "OK" if token_ok else "Falta")
+    c2.metric("Chat ID", "OK" if chat_ok else "Falta")
+    c3.metric("Estado", "Listo" if token_ok and chat_ok else "Configurar")
+
+    if not (token_ok and chat_ok):
+        st.info('Añade TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID en `.streamlit/secrets.toml`.')
+        return
+
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        if st.button("📲 Enviar prueba Telegram", key="tg_test_btn"):
+            ok, msg = enviar_telegram_mensaje("✅ <b>Prueba Tennis IA</b>\nTelegram está conectado correctamente.")
+            st.success(msg) if ok else st.error(msg)
+
+    with b2:
+        if st.button("🎯 Enviar picks oficiales", key="tg_official_btn"):
+            mensaje = construir_mensaje_telegram_picks(ok_df, incluir_watch=False)
+            ok, msg = enviar_telegram_mensaje(mensaje)
+            st.success(msg) if ok else st.error(msg)
+
+    with b3:
+        if st.button("🎯👀 Enviar oficiales + watch", key="tg_all_btn"):
+            mensaje = construir_mensaje_telegram_picks(ok_df, incluir_watch=True, max_watch=12)
+            ok, msg = enviar_telegram_mensaje(mensaje)
+            st.success(msg) if ok else st.error(msg)
+
+
+# =========================================================
 # v23.31.2 WTA OVER 17.5 PREMIUM WATCH GUARD
 # Objetivo: WTA no usa ML ni Over 18.5 como mercado principal.
 # El Over 17.5 puede subir a PREMIUM WATCH si es >=82% y limpio,
@@ -8767,6 +8975,9 @@ Sebastián Baez - Roberto Carballés Baena"""
                     st.warning("🎯 Picks oficiales detectados: 0. No forzar combinada si solo hay WATCH/NO BET.")
             else:
                 st.warning("No se ha podido crear la columna 🎯 Pick oficial en esta ejecución.")
+
+            with st.expander("📲 Enviar picks a Telegram", expanded=False):
+                render_telegram_sender_panel(ok_saved)
 
             st.subheader("🔥 Resumen ordenado completo")
             st.dataframe(ok_saved, width='stretch', hide_index=True)
