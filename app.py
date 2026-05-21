@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v24.1.1 Market Hunter", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v24.1.1-market-hunter-export-fix-ml-watch"
+APP_VERSION = "v24.1.2-market-hunter-simple-view-fix"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -8874,7 +8874,7 @@ elif modo == "Analizador por lista":
         vista_resultados_simple = st.toggle(
             "Vista simple resultados",
             value=True,
-            help="En Sofascore resultados muestra ML, Over 18.5 y, solo en WTA, Over 17.5 para revisar aciertos."
+            help="En Sofascore resultados muestra ML, Over 18.5 y señales v24 para revisar aciertos."
         )
 
     ejemplo = """16:20
@@ -9087,10 +9087,22 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "WTA Watchlist",
                     "Signal Trust",
                     "Recomendación",
+                    "Pick oficial",
                     "Mercado recomendado",
                     "Prob mercado recomendado",
                     "Motivo Market Selector",
+                    "Tipo partido v24",
+                    "Set Resistance v24",
+                    "Chaos Score v24",
+                    "ML Trap v24",
+                    "Gana set WATCH v24",
+                    "Jugador gana set WATCH",
+                    "+2.5 sets WATCH v24",
+                    "Notas Market Hunter",
                     "Favorito 2-0",
+                    "Jugador gana set",
+                    "Prob gana set",
+                    "Partido a 3 sets",
                     "Riesgos"
                 ]
                 ok = ok[[c for c in simple_cols if c in ok.columns]]
