@@ -7416,9 +7416,10 @@ def ml_quality_guard_v23300(row):
 
 def pick_oficial_v23301(row):
     """
-    v23.30.1: columna visual para pantalla/export.
-    Devuelve solo picks oficiales reales: Over oficial o ML oficial.
-    Los WATCH/NO BET/NO OVER/NO ML quedan en blanco para no confundir.
+    v24.1 Máximo acierto:
+    - Los OVER oficiales siguen saliendo igual.
+    - El ML deja de ser pick oficial y queda solo como contexto/watch.
+    - Los nuevos mercados v24 siguen en modo experimental, no oficiales.
     """
     market = str(row.get("Mercado recomendado", "") or "").strip()
     prob = str(row.get("Prob mercado recomendado", "") or "").strip()
@@ -7433,8 +7434,13 @@ def pick_oficial_v23301(row):
     if any(tok in mu for tok in bad_tokens):
         return ""
 
+    # MUY IMPORTANTE: por máxima tasa de acierto, el ML no entra ya como oficial.
+    # Se mantiene visible en Mercado recomendado / ML Quality Guard, pero no en Pick oficial.
+    if ("ML" in mu) or ("GANADOR" in mu):
+        return ""
+
     is_positive = market.startswith("✅") or market.startswith("🔥") or market.startswith("🧱")
-    is_supported_market = ("OVER" in mu) or ("ML" in mu) or ("GANADOR" in mu)
+    is_supported_market = ("OVER" in mu)
 
     if is_positive and is_supported_market:
         return f"{market} ({prob})" if prob else market
@@ -8083,6 +8089,14 @@ def prepare_batch_display_table(ok_df):
         "Motivos Over Guard",
         "Under 2.5 Rescue",
         "Under 2.5 ajustado",
+        "Tipo partido v24",
+        "Set Resistance v24",
+        "Chaos Score v24",
+        "ML Trap v24",
+        "Gana set WATCH v24",
+        "Jugador gana set WATCH",
+        "+2.5 sets WATCH v24",
+        "Notas Market Hunter",
         "ML Quality Guard",
         "Motivos ML Guard",
         "Confianza mínima",
