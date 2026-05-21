@@ -7,9 +7,9 @@ import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
-st.set_page_config(page_title="Tennis IA v24.1.1 Market Hunter", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v24.1.3 Market Hunter", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v24.1.2-market-hunter-simple-view-fix"
+APP_VERSION = "v24.1.3-market-hunter-set-resistance-tight"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4360,26 +4360,57 @@ def market_hunter_engine(circuito, surface, sim, p1_name, p2_name, filters_ctx=N
         match_icon = "⚪"
         match_note = "Sin ventaja clara para mercados nuevos."
 
+    # v24.1.3 Market Hunter Tight
+    # Ajuste basado en backtest de 20/5/26:
+    # - Mantiene el OVER intacto.
+    # - Endurece Gana Set para evitar falsos fuertes en 2-0.
+    # - +2.5 queda solo como vigilancia muy filtrada, todavía no oficial.
     ml_trap = bool(
-        fav_prob <= 0.66
+        fav_prob <= 0.64
         and competitiveness >= 62
-        and (over18 >= 0.70 or set3 >= 0.42 or dogset >= 0.55)
+        and chaos_score >= 60
+        and (over18 >= 0.70 or set3 >= 0.44 or dogset >= 0.55)
     )
 
     dog_set_label = ""
-    if set_resistance >= 72 and fav_prob <= 0.68:
+    if (
+        set_resistance >= 72
+        and fav_prob <= 0.62
+        and set3 >= 0.46
+        and fav20 <= 0.38
+    ):
         dog_set_label = "🔥 WATCH fuerte"
-    elif set_resistance >= 62 and fav_prob <= 0.70:
+    elif (
+        set_resistance >= 62
+        and fav_prob <= 0.70
+        and set3 >= 0.44
+        and fav20 <= 0.48
+    ):
         dog_set_label = "✅ WATCH"
-    elif set_resistance >= 54:
+    elif (
+        set_resistance >= 56
+        and fav_prob <= 0.70
+        and set3 >= 0.42
+        and fav20 <= 0.52
+    ):
         dog_set_label = "👀 Vigilar"
 
     plus25_label = ""
-    if set3 >= 0.48 and competitiveness >= 70 and fav_prob <= 0.63:
+    if (
+        set3 >= 0.48
+        and competitiveness >= 70
+        and chaos_score >= 70
+        and fav_prob <= 0.58
+        and fav20 <= 0.34
+    ):
         plus25_label = "🔥 WATCH fuerte"
-    elif set3 >= 0.44 and competitiveness >= 62 and fav_prob <= 0.66:
-        plus25_label = "✅ WATCH"
-    elif set3 >= 0.40 and chaos_score >= 60:
+    elif (
+        set3 >= 0.46
+        and competitiveness >= 64
+        and chaos_score >= 68
+        and fav_prob <= 0.60
+        and fav20 <= 0.40
+    ):
         plus25_label = "👀 Vigilar"
 
     notes = []
