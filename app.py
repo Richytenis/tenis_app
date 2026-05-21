@@ -7,9 +7,9 @@ import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
-st.set_page_config(page_title="Tennis IA v24.1.7 Market Hunter", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v24.1.8 Market Hunter", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v24.1.7-market-hunter-setwatch-solo-limpio"
+APP_VERSION = "v24.1.8-market-hunter-radar-export-clean"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4423,11 +4423,29 @@ def market_hunter_engine(circuito, surface, sim, p1_name, p2_name, filters_ctx=N
     ):
         plus25_label = "🧪 ESTUDIO extremo"
 
+    # v24.1.8 Radar limpio:
+    # No convierte CAOS COMPETITIVO en WATCH de gana set, porque el acierto fue irregular.
+    # Pero sí lo exporta como RADAR para seguir midiendo sin confundirlo con señal usable.
+    dog_set_radar_label = ""
+    if (
+        not dog_set_label
+        and match_type == "CAOS COMPETITIVO"
+        and set_resistance >= 64
+        and chaos_score >= 60
+        and over18 >= 0.70
+        and 0.50 <= fav_prob <= 0.62
+        and fav20 <= 0.38
+        and set3 >= 0.42
+    ):
+        dog_set_radar_label = "🧪 RADAR caos"
+
     notes = []
     if ml_trap:
         notes.append("🚨 ML TRAP: favorito moderado + partido competitivo")
     if dog_set_label:
         notes.append(f"🎾 {dog_name} gana set: {dog_set_label}")
+    if dog_set_radar_label:
+        notes.append(f"🧪 {dog_name} gana set: radar, no pick")
     if plus25_label:
         notes.append(f"🧪 +2.5 sets solo estudio: {plus25_label}")
     if over_block and set_resistance >= 50:
@@ -4446,6 +4464,7 @@ def market_hunter_engine(circuito, surface, sim, p1_name, p2_name, filters_ctx=N
         "fav_name": fav_name,
         "dog_name": dog_name,
         "dog_set_label": dog_set_label,
+        "dog_set_radar_label": dog_set_radar_label,
         "plus25_label": plus25_label,
         "notes": notes,
         "over_safe_note": "Over oficial NO modificado por este módulo",
@@ -6322,7 +6341,9 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Chaos Score v24": f"{(filters.get('market_hunter', {}) or {}).get('chaos_score', 0):.0f}/100" if isinstance(filters, dict) else "",
             "ML Trap v24": "Sí" if isinstance(filters, dict) and (filters.get("market_hunter", {}) or {}).get("ml_trap", False) else "",
             "Gana set WATCH v24": (filters.get("market_hunter", {}) or {}).get("dog_set_label", "") if isinstance(filters, dict) else "",
-            "Jugador gana set WATCH": (filters.get("market_hunter", {}) or {}).get("dog_name", "") if isinstance(filters, dict) else "",
+            "Jugador gana set WATCH": ((filters.get("market_hunter", {}) or {}).get("dog_name", "") if isinstance(filters, dict) and (filters.get("market_hunter", {}) or {}).get("dog_set_label", "") else ""),
+            "Gana set RADAR v24": (filters.get("market_hunter", {}) or {}).get("dog_set_radar_label", "") if isinstance(filters, dict) else "",
+            "Jugador gana set RADAR": ((filters.get("market_hunter", {}) or {}).get("dog_name", "") if isinstance(filters, dict) and (filters.get("market_hunter", {}) or {}).get("dog_set_radar_label", "") else ""),
             "+2.5 sets WATCH v24": (filters.get("market_hunter", {}) or {}).get("plus25_label", "") if isinstance(filters, dict) else "",
             "Notas Market Hunter": " · ".join((filters.get("market_hunter", {}) or {}).get("notes", [])[:4]) if isinstance(filters, dict) else "",
             "Confianza mínima": f"{filters.get('min_confidence', 1.0):.0%}" if isinstance(filters, dict) else "",
@@ -8136,6 +8157,8 @@ def prepare_batch_display_table(ok_df):
         "ML Trap v24",
         "Gana set WATCH v24",
         "Jugador gana set WATCH",
+        "Gana set RADAR v24",
+        "Jugador gana set RADAR",
         "+2.5 sets WATCH v24",
         "Notas Market Hunter",
         "ML Quality Guard",
