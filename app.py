@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.32.0-telegram-picks-sender"
+APP_VERSION = "v24.0.0-market-hunter-sin-tocar-over"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4230,6 +4230,14 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     elif over_quality_watch and "OVER" in str(status).upper():
         status = "⚠️ OVER WATCH / NO COMBI"
 
+    market_hunter = market_hunter_engine(
+        circuito, surface, sim, p1_name, p2_name,
+        filters_ctx={
+            "over_quality_block": over_quality_block,
+            "over_quality_watch": over_quality_watch,
+        }
+    )
+
     return {
         "status": status,
         "main": main,
@@ -4247,9 +4255,160 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         "under25_raw": under25_raw,
         "under25_adjusted": under25_adjusted,
         "under25_label": under25_label,
-        "straight_sets_risk": straight_sets_risk
+        "straight_sets_risk": straight_sets_risk,
+        "market_hunter": market_hunter
     }
 
+
+
+# =========================================================
+# v24.0 MARKET HUNTER ENGINE — SIN TOCAR OVER
+# =========================================================
+# Capa experimental. No modifica probabilidades de Over, no cambia caps,
+# no cambia selección oficial del Over Focus. Solo clasifica el tipo de partido
+# y crea señales WATCH para mercados derivados de competitividad.
+
+def market_hunter_engine(circuito, surface, sim, p1_name, p2_name, filters_ctx=None):
+    filters_ctx = filters_ctx or {}
+    p1c = float(sim.get("p1_cal", 0.5) or 0.5)
+    p2c = float(sim.get("p2_cal", 0.5) or 0.5)
+    fav_prob = max(p1c, p2c)
+    fav_is_p1 = p1c >= p2c
+    fav_name = p1_name if fav_is_p1 else p2_name
+    dog_name = p2_name if fav_is_p1 else p1_name
+
+    hold1 = float(sim.get("hold1", 0.70) or 0.70)
+    hold2 = float(sim.get("hold2", 0.70) or 0.70)
+    ret1 = float(sim.get("ret1", 0.25) or 0.25)
+    ret2 = float(sim.get("ret2", 0.25) or 0.25)
+    tb = float(sim.get("tb", 0.0) or 0.0)
+    set3 = float(sim.get("set3", 0.0) or 0.0)
+    dogset = float(sim.get("dog_wins_set", 0.0) or 0.0)
+    fav20 = float(sim.get("fav_2_0", 0.0) or 0.0)
+    longm = float(sim.get("long_match", 0.0) or 0.0)
+    vol = float(sim.get("vol", 0.0) or 0.0)
+    over18 = float(sim.get("market_over18", 0.0) or 0.0)
+    over19 = float(sim.get("market_over19", 0.0) or 0.0)
+    over20 = float(sim.get("market_over20", 0.0) or 0.0)
+
+    e1 = float(sim.get("elo_effective1", 1500) or 1500)
+    e2 = float(sim.get("elo_effective2", 1500) or 1500)
+    elo_gap = abs(e1 - e2)
+    hold_gap = abs(hold1 - hold2)
+    ret_gap = abs(ret1 - ret2)
+
+    rs = sim.get("rating_sanity", {}) or {}
+    p1_rs = rs.get("p1", {}) or {}
+    p2_rs = rs.get("p2", {}) or {}
+    min_conf = min(float(p1_rs.get("confidence", 1.0) or 1.0), float(p2_rs.get("confidence", 1.0) or 1.0))
+    min_surface = min(int(p1_rs.get("matches_surface", 99) or 0), int(p2_rs.get("matches_surface", 99) or 0))
+
+    over_block = bool(filters_ctx.get("over_quality_block", False))
+    over_watch = bool(filters_ctx.get("over_quality_watch", False))
+    upset_guard = bool((sim.get("upset_risk_guard", {}) or {}).get("active", False))
+
+    def closeness_score():
+        elo_close = 1.0 - np.clip(elo_gap / 320.0, 0, 1)
+        hold_close = 1.0 - np.clip(hold_gap / 0.115, 0, 1)
+        ret_close = 1.0 - np.clip(ret_gap / 0.120, 0, 1)
+        ml_close = 1.0 - np.clip((fav_prob - 0.50) / 0.30, 0, 1)
+        return 100.0 * (0.34 * elo_close + 0.24 * hold_close + 0.14 * ret_close + 0.28 * ml_close)
+
+    competitiveness = float(np.clip(
+        closeness_score()
+        + (over18 - 0.66) * 70
+        + (set3 - 0.38) * 45
+        + (tb - 0.26) * 30
+        + (vol - 0.045) * 80,
+        0, 100
+    ))
+
+    set_resistance = float(np.clip(
+        100 * dogset
+        + (over18 - 0.70) * 55
+        + (set3 - 0.40) * 65
+        + (tb - 0.28) * 35
+        - max(fav_prob - 0.68, 0) * 80
+        - max(fav20 - 0.58, 0) * 45
+        - max(hold_gap - 0.075, 0) * 220,
+        0, 100
+    ))
+
+    chaos_score = float(np.clip(
+        competitiveness * 0.42
+        + set_resistance * 0.34
+        + (100 if over_block else 55 if over_watch else 0) * 0.12
+        + (100 if upset_guard else 0) * 0.08
+        + np.clip((vol - 0.04) / 0.04, 0, 1) * 18,
+        0, 100
+    ))
+
+    if fav_prob >= 0.70 and fav20 >= 0.62 and set_resistance < 48 and competitiveness < 62:
+        match_type = "PARTIDO ROTO"
+        match_icon = "🔴"
+        match_note = "Favorito con control; poca resistencia del underdog."
+    elif (over18 >= 0.73 and not over_block and not over_watch and competitiveness >= 54):
+        match_type = "OVER ESTABLE"
+        match_icon = "🟢"
+        match_note = "Lectura larga limpia; mantener Over como núcleo."
+    elif chaos_score >= 58 or (over_block and set_resistance >= 50) or (over_watch and competitiveness >= 62):
+        match_type = "CAOS COMPETITIVO"
+        match_icon = "🟠"
+        match_note = "Partido incómodo: mejor estudiar gana set / +2.5 que ML."
+    else:
+        match_type = "NEUTRO / OBSERVAR"
+        match_icon = "⚪"
+        match_note = "Sin ventaja clara para mercados nuevos."
+
+    ml_trap = bool(
+        fav_prob <= 0.66
+        and competitiveness >= 62
+        and (over18 >= 0.70 or set3 >= 0.42 or dogset >= 0.55)
+    )
+
+    dog_set_label = ""
+    if set_resistance >= 72 and fav_prob <= 0.68:
+        dog_set_label = "🔥 WATCH fuerte"
+    elif set_resistance >= 62 and fav_prob <= 0.70:
+        dog_set_label = "✅ WATCH"
+    elif set_resistance >= 54:
+        dog_set_label = "👀 Vigilar"
+
+    plus25_label = ""
+    if set3 >= 0.48 and competitiveness >= 70 and fav_prob <= 0.63:
+        plus25_label = "🔥 WATCH fuerte"
+    elif set3 >= 0.44 and competitiveness >= 62 and fav_prob <= 0.66:
+        plus25_label = "✅ WATCH"
+    elif set3 >= 0.40 and chaos_score >= 60:
+        plus25_label = "👀 Vigilar"
+
+    notes = []
+    if ml_trap:
+        notes.append("🚨 ML TRAP: favorito moderado + partido competitivo")
+    if dog_set_label:
+        notes.append(f"🎾 {dog_name} gana set: {dog_set_label}")
+    if plus25_label:
+        notes.append(f"🎾 +2.5 sets: {plus25_label}")
+    if over_block and set_resistance >= 50:
+        notes.append("Over bloqueado, pero con resistencia: revisar mercado gana set")
+    if min_conf < 0.50 or min_surface < 10:
+        notes.append("Datos limitados: señal experimental, no oficial")
+
+    return {
+        "match_type": match_type,
+        "match_icon": match_icon,
+        "match_note": match_note,
+        "competitiveness": competitiveness,
+        "set_resistance": set_resistance,
+        "chaos_score": chaos_score,
+        "ml_trap": ml_trap,
+        "fav_name": fav_name,
+        "dog_name": dog_name,
+        "dog_set_label": dog_set_label,
+        "plus25_label": plus25_label,
+        "notes": notes,
+        "over_safe_note": "Over oficial NO modificado por este módulo",
+    }
 
 def render_betting_filters(filters):
     st.divider()
@@ -4277,6 +4436,22 @@ def render_betting_filters(filters):
         st.metric("Mín. partidos superficie", f"{filters.get('min_surface_matches', 0)}")
     with c3:
         st.metric("Gap Elo puro/modelo", f"{filters.get('elo_pure_gap', 0):.1%}")
+
+    hunter = filters.get("market_hunter", {}) or {}
+    if hunter:
+        st.divider()
+        st.subheader("🧠 Market Hunter v24 · Experimental")
+        st.caption(hunter.get("over_safe_note", "Over oficial NO modificado por este módulo"))
+        h1, h2, h3 = st.columns(3)
+        with h1:
+            st.metric("Tipo de partido", f"{hunter.get('match_icon','')} {hunter.get('match_type','')}")
+        with h2:
+            st.metric("Set Resistance", f"{hunter.get('set_resistance', 0):.0f}/100")
+        with h3:
+            st.metric("Chaos Score", f"{hunter.get('chaos_score', 0):.0f}/100")
+        st.info(hunter.get("match_note", ""))
+        if hunter.get("notes"):
+            st.warning(" · ".join(hunter.get("notes", [])[:5]))
 
     rows = []
     for s in filters.get("signals", []):
@@ -6101,6 +6276,14 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Motivos Over Guard": " · ".join(filters.get("over_quality_reasons", [])[:4]) if isinstance(filters, dict) else "",
             "Under 2.5 Rescue": filters.get("under25_label", ""),
             "Under 2.5 ajustado": f"{filters.get('under25_adjusted', 0.0):.1%}" if isinstance(filters, dict) else "",
+            "Tipo partido v24": (filters.get("market_hunter", {}) or {}).get("match_type", "") if isinstance(filters, dict) else "",
+            "Set Resistance v24": f"{(filters.get('market_hunter', {}) or {}).get('set_resistance', 0):.0f}/100" if isinstance(filters, dict) else "",
+            "Chaos Score v24": f"{(filters.get('market_hunter', {}) or {}).get('chaos_score', 0):.0f}/100" if isinstance(filters, dict) else "",
+            "ML Trap v24": "Sí" if isinstance(filters, dict) and (filters.get("market_hunter", {}) or {}).get("ml_trap", False) else "",
+            "Gana set WATCH v24": (filters.get("market_hunter", {}) or {}).get("dog_set_label", "") if isinstance(filters, dict) else "",
+            "Jugador gana set WATCH": (filters.get("market_hunter", {}) or {}).get("dog_name", "") if isinstance(filters, dict) else "",
+            "+2.5 sets WATCH v24": (filters.get("market_hunter", {}) or {}).get("plus25_label", "") if isinstance(filters, dict) else "",
+            "Notas Market Hunter": " · ".join((filters.get("market_hunter", {}) or {}).get("notes", [])[:4]) if isinstance(filters, dict) else "",
             "Confianza mínima": f"{filters.get('min_confidence', 1.0):.0%}" if isinstance(filters, dict) else "",
             "Mín. partidos superficie": filters.get("min_surface_matches", "") if isinstance(filters, dict) else "",
             "Gap Elo/modelo": f"{filters.get('elo_pure_gap', 0.0):.1%}" if isinstance(filters, dict) else "",
