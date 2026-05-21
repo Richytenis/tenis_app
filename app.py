@@ -7,10 +7,10 @@ import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
-st.set_page_config(page_title="Tennis IA v24.1.8 Market Hunter", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v24.2.2 Over Original + Market Hunter", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v24.2.1-over-original-market-hunter"
-# v24.2.1: ROLLBACK del filtro de oficialidad Over. Over vuelve a salir como en v24.1.9; Market Hunter queda solo como radar/watch.
+APP_VERSION = "v24.2.2-over-pick-original-recomendacion"
+# v24.2.2: Pick oficial Over vuelve a tomar la Recomendación original (✅/🔥 OVER), sin que Market Hunter/ML Guard lo frenen.
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -7491,11 +7491,33 @@ def ml_quality_guard_v23300(row):
 
 def pick_oficial_v23301(row):
     """
-    v24.1 Máximo acierto:
-    - Los OVER oficiales siguen saliendo igual.
-    - El ML deja de ser pick oficial y queda solo como contexto/watch.
-    - Los nuevos mercados v24 siguen en modo experimental, no oficiales.
+    v24.2.2 Over original blindado:
+    - El Pick oficial de Over se toma de la columna Recomendación original cuando sea ✅/🔥 OVER.
+    - Market Hunter, ML Guard y Radar quedan como contexto/estudio: NO frenan el Over oficial.
+    - ML sigue fuera de picks oficiales.
+    - Señales WATCH/👀/NO BET/BLOQUEADO no se convierten en oficiales.
     """
+    rec = str(row.get("Recomendación", "") or "").strip()
+    rec_u = rec.upper()
+
+    def _prob_for_over(text_u):
+        if "19.5" in text_u:
+            return str(row.get("Over 19.5", "") or row.get("Prob mercado recomendado", "") or "").strip()
+        if "20.5" in text_u:
+            return str(row.get("Over 20.5", "") or row.get("Prob mercado recomendado", "") or "").strip()
+        if "22.5" in text_u:
+            return str(row.get("Over 22.5", "") or row.get("Prob mercado recomendado", "") or "").strip()
+        return str(row.get("Over 18.5", "") or row.get("Prob mercado recomendado", "") or "").strip()
+
+    # Prioridad absoluta: Over original de la columna Recomendación.
+    # Esto revierte el efecto de las capas posteriores que convertían Overs buenos en WATCH/ML contexto.
+    if rec and "OVER" in rec_u:
+        if (rec.startswith("✅") or rec.startswith("🔥")) and not any(tok in rec_u for tok in ["WATCH", "NO BET", "BLOQUEADO", "NO COMBI", "DUDOS"]):
+            prob = _prob_for_over(rec_u)
+            return f"{rec} ({prob})" if prob else rec
+        return ""
+
+    # Fallback por si alguna fila antigua no trae Recomendación.
     market = str(row.get("Mercado recomendado", "") or "").strip()
     prob = str(row.get("Prob mercado recomendado", "") or "").strip()
     if not market:
@@ -7509,8 +7531,7 @@ def pick_oficial_v23301(row):
     if any(tok in mu for tok in bad_tokens):
         return ""
 
-    # MUY IMPORTANTE: por máxima tasa de acierto, el ML no entra ya como oficial.
-    # Se mantiene visible en Mercado recomendado / ML Quality Guard, pero no en Pick oficial.
+    # ML fuera de oficiales.
     if ("ML" in mu) or ("GANADOR" in mu):
         return ""
 
