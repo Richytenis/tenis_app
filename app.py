@@ -7,9 +7,9 @@ import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
-st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v24.1.1 Market Hunter", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v24.0.0-market-hunter-sin-tocar-over"
+APP_VERSION = "v24.1.1-market-hunter-export-fix-ml-watch"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
