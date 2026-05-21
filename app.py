@@ -7,10 +7,9 @@ import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
-st.set_page_config(page_title="Tennis IA v24.2.2 Over Original + Market Hunter", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v24.2.2-over-pick-original-recomendacion"
-# v24.2.2: Pick oficial Over vuelve a tomar la Recomendación original (✅/🔥 OVER), sin que Market Hunter/ML Guard lo frenen.
+APP_VERSION = "v24.3.0-over-original-clean-market-hunter"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4231,14 +4230,6 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     elif over_quality_watch and "OVER" in str(status).upper():
         status = "⚠️ OVER WATCH / NO COMBI"
 
-    market_hunter = market_hunter_engine(
-        circuito, surface, sim, p1_name, p2_name,
-        filters_ctx={
-            "over_quality_block": over_quality_block,
-            "over_quality_watch": over_quality_watch,
-        }
-    )
-
     return {
         "status": status,
         "main": main,
@@ -4256,232 +4247,9 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         "under25_raw": under25_raw,
         "under25_adjusted": under25_adjusted,
         "under25_label": under25_label,
-        "straight_sets_risk": straight_sets_risk,
-        "market_hunter": market_hunter
+        "straight_sets_risk": straight_sets_risk
     }
 
-
-
-# =========================================================
-# v24.0 MARKET HUNTER ENGINE — SIN TOCAR OVER
-# =========================================================
-# Capa experimental. No modifica probabilidades de Over, no cambia caps,
-# no cambia selección oficial del Over Focus. Solo clasifica el tipo de partido
-# y crea señales WATCH para mercados derivados de competitividad.
-
-def market_hunter_engine(circuito, surface, sim, p1_name, p2_name, filters_ctx=None):
-    filters_ctx = filters_ctx or {}
-    p1c = float(sim.get("p1_cal", 0.5) or 0.5)
-    p2c = float(sim.get("p2_cal", 0.5) or 0.5)
-    fav_prob = max(p1c, p2c)
-    fav_is_p1 = p1c >= p2c
-    fav_name = p1_name if fav_is_p1 else p2_name
-    dog_name = p2_name if fav_is_p1 else p1_name
-
-    hold1 = float(sim.get("hold1", 0.70) or 0.70)
-    hold2 = float(sim.get("hold2", 0.70) or 0.70)
-    ret1 = float(sim.get("ret1", 0.25) or 0.25)
-    ret2 = float(sim.get("ret2", 0.25) or 0.25)
-    tb = float(sim.get("tb", 0.0) or 0.0)
-    set3 = float(sim.get("set3", 0.0) or 0.0)
-    dogset = float(sim.get("dog_wins_set", 0.0) or 0.0)
-    fav20 = float(sim.get("fav_2_0", 0.0) or 0.0)
-    longm = float(sim.get("long_match", 0.0) or 0.0)
-    vol = float(sim.get("vol", 0.0) or 0.0)
-    over18 = float(sim.get("market_over18", 0.0) or 0.0)
-    over19 = float(sim.get("market_over19", 0.0) or 0.0)
-    over20 = float(sim.get("market_over20", 0.0) or 0.0)
-
-    e1 = float(sim.get("elo_effective1", 1500) or 1500)
-    e2 = float(sim.get("elo_effective2", 1500) or 1500)
-    elo_gap = abs(e1 - e2)
-    hold_gap = abs(hold1 - hold2)
-    ret_gap = abs(ret1 - ret2)
-
-    rs = sim.get("rating_sanity", {}) or {}
-    p1_rs = rs.get("p1", {}) or {}
-    p2_rs = rs.get("p2", {}) or {}
-    min_conf = min(float(p1_rs.get("confidence", 1.0) or 1.0), float(p2_rs.get("confidence", 1.0) or 1.0))
-    min_surface = min(int(p1_rs.get("matches_surface", 99) or 0), int(p2_rs.get("matches_surface", 99) or 0))
-
-    over_block = bool(filters_ctx.get("over_quality_block", False))
-    over_watch = bool(filters_ctx.get("over_quality_watch", False))
-    upset_guard = bool((sim.get("upset_risk_guard", {}) or {}).get("active", False))
-
-    def closeness_score():
-        elo_close = 1.0 - np.clip(elo_gap / 320.0, 0, 1)
-        hold_close = 1.0 - np.clip(hold_gap / 0.115, 0, 1)
-        ret_close = 1.0 - np.clip(ret_gap / 0.120, 0, 1)
-        ml_close = 1.0 - np.clip((fav_prob - 0.50) / 0.30, 0, 1)
-        return 100.0 * (0.34 * elo_close + 0.24 * hold_close + 0.14 * ret_close + 0.28 * ml_close)
-
-    competitiveness = float(np.clip(
-        closeness_score()
-        + (over18 - 0.66) * 70
-        + (set3 - 0.38) * 45
-        + (tb - 0.26) * 30
-        + (vol - 0.045) * 80,
-        0, 100
-    ))
-
-    set_resistance = float(np.clip(
-        100 * dogset
-        + (over18 - 0.70) * 55
-        + (set3 - 0.40) * 65
-        + (tb - 0.28) * 35
-        - max(fav_prob - 0.68, 0) * 80
-        - max(fav20 - 0.58, 0) * 45
-        - max(hold_gap - 0.075, 0) * 220,
-        0, 100
-    ))
-
-    chaos_score = float(np.clip(
-        competitiveness * 0.42
-        + set_resistance * 0.34
-        + (100 if over_block else 55 if over_watch else 0) * 0.12
-        + (100 if upset_guard else 0) * 0.08
-        + np.clip((vol - 0.04) / 0.04, 0, 1) * 18,
-        0, 100
-    ))
-
-    if fav_prob >= 0.70 and fav20 >= 0.62 and set_resistance < 48 and competitiveness < 62:
-        match_type = "PARTIDO ROTO"
-        match_icon = "🔴"
-        match_note = "Favorito con control; poca resistencia del underdog."
-    elif (over18 >= 0.73 and not over_block and not over_watch and competitiveness >= 54):
-        match_type = "OVER ESTABLE"
-        match_icon = "🟢"
-        match_note = "Lectura larga limpia; mantener Over como núcleo."
-    elif chaos_score >= 58 or (over_block and set_resistance >= 50) or (over_watch and competitiveness >= 62):
-        match_type = "CAOS COMPETITIVO"
-        match_icon = "🟠"
-        match_note = "Partido incómodo: mejor estudiar gana set / +2.5 que ML."
-    else:
-        match_type = "NEUTRO / OBSERVAR"
-        match_icon = "⚪"
-        match_note = "Sin ventaja clara para mercados nuevos."
-
-    # v24.1.4 Market Hunter SetWatch Precision
-    # Ajuste basado en backtest de 20/5/26 con v24.1.3:
-    # - Mantiene el OVER intacto.
-    # - Elimina "👀 Vigilar" como señal exportable de gana set, porque tuvo peor acierto.
-    # - Conserva solo señales de mayor precisión: 🔥 WATCH fuerte y ✅ WATCH.
-    # - +2.5 se degrada a modo estudio muy restringido; NO debe tratarse como pick.
-    ml_trap = bool(
-        fav_prob <= 0.64
-        and competitiveness >= 62
-        and chaos_score >= 60
-        and (over18 >= 0.70 or set3 >= 0.44 or dogset >= 0.55)
-    )
-
-    # v24.1.7 SetWatch Solo Limpio
-    # Ajuste basado en backtests v24.1.6:
-    # - OVER oficial intacto.
-    # - El último falso positivo vino de CAOS COMPETITIVO: el modelo detectaba pelea,
-    #   pero no una lectura limpia de que el dog robara set.
-    # - Para máxima tasa de acierto, el gana-set WATCH solo sale en OVER ESTABLE
-    #   o en una señal extremadamente limpia de resistencia.
-    high_precision_setwatch = bool(set3 >= 0.46 or over18 >= 0.745)
-    clean_setwatch_context = bool(match_type == "OVER ESTABLE" and not over_block and chaos_score <= 74)
-    extreme_clean_resistance = bool(set_resistance >= 82 and 0.56 <= fav_prob <= 0.60 and fav20 <= 0.34 and chaos_score <= 72)
-
-    dog_set_label = ""
-    if (
-        high_precision_setwatch
-        and clean_setwatch_context
-        and set_resistance >= 78
-        and 0.56 <= fav_prob <= 0.62
-        and set3 >= 0.455
-        and fav20 <= 0.40
-    ):
-        dog_set_label = "🔥 WATCH fuerte"
-    elif (
-        high_precision_setwatch
-        and clean_setwatch_context
-        and set_resistance >= 73
-        and 0.56 <= fav_prob <= 0.64
-        and set3 >= 0.455
-        and fav20 <= 0.42
-    ):
-        dog_set_label = "✅ WATCH"
-    elif (
-        high_precision_setwatch
-        and extreme_clean_resistance
-        and set3 >= 0.46
-    ):
-        dog_set_label = "✅ WATCH"
-
-    # +2.5 queda casi apagado. Solo se marca como ESTUDIO cuando la señal es extrema.
-    # En el último backtest fue 4/8, demasiado flojo para buscar alta tasa de acierto.
-    plus25_label = ""
-    if (
-        set3 >= 0.52
-        and competitiveness >= 76
-        and chaos_score >= 78
-        and set_resistance >= 76
-        and fav_prob <= 0.56
-        and fav20 <= 0.32
-    ):
-        plus25_label = "🧪 ESTUDIO extremo"
-
-    # v24.1.8 Radar limpio:
-    # No convierte CAOS COMPETITIVO en WATCH de gana set, porque el acierto fue irregular.
-    # Pero sí lo exporta como RADAR para seguir midiendo sin confundirlo con señal usable.
-    dog_set_radar_label = ""
-    if (
-        not dog_set_label
-        and match_type == "CAOS COMPETITIVO"
-        and set_resistance >= 64
-        and chaos_score >= 60
-        and over18 >= 0.70
-        and 0.50 <= fav_prob <= 0.62
-        and fav20 <= 0.38
-        and set3 >= 0.42
-    ):
-        # v24.2.1: el RADAR se separa en "limpio" y "caos".
-        # Backtest 19/5/26:
-        # - RADAR limpio: pocas señales, mejor precisión.
-        # - RADAR caos: solo estudio, demasiado irregular para usarlo.
-        if (
-            set3 >= 0.47
-            and chaos_score <= 77
-            and set_resistance >= 65
-            and fav20 <= 0.36
-        ):
-            dog_set_radar_label = "🧪 RADAR limpio"
-        else:
-            dog_set_radar_label = "🧪 RADAR caos"
-
-    notes = []
-    if ml_trap:
-        notes.append("🚨 ML TRAP: favorito moderado + partido competitivo")
-    if dog_set_label:
-        notes.append(f"🎾 {dog_name} gana set: {dog_set_label}")
-    if dog_set_radar_label:
-        notes.append(f"🧪 {dog_name} gana set: radar, no pick")
-    if plus25_label:
-        notes.append(f"🧪 +2.5 sets solo estudio: {plus25_label}")
-    if over_block and set_resistance >= 50:
-        notes.append("Over bloqueado, pero con resistencia: revisar mercado gana set")
-    if min_conf < 0.50 or min_surface < 10:
-        notes.append("Datos limitados: señal experimental, no oficial")
-
-    return {
-        "match_type": match_type,
-        "match_icon": match_icon,
-        "match_note": match_note,
-        "competitiveness": competitiveness,
-        "set_resistance": set_resistance,
-        "chaos_score": chaos_score,
-        "ml_trap": ml_trap,
-        "fav_name": fav_name,
-        "dog_name": dog_name,
-        "dog_set_label": dog_set_label,
-        "dog_set_radar_label": dog_set_radar_label,
-        "plus25_label": plus25_label,
-        "notes": notes,
-        "over_safe_note": "Over oficial NO modificado por este módulo",
-    }
 
 def render_betting_filters(filters):
     st.divider()
@@ -4509,22 +4277,6 @@ def render_betting_filters(filters):
         st.metric("Mín. partidos superficie", f"{filters.get('min_surface_matches', 0)}")
     with c3:
         st.metric("Gap Elo puro/modelo", f"{filters.get('elo_pure_gap', 0):.1%}")
-
-    hunter = filters.get("market_hunter", {}) or {}
-    if hunter:
-        st.divider()
-        st.subheader("🧠 Market Hunter v24 · Experimental")
-        st.caption(hunter.get("over_safe_note", "Over oficial NO modificado por este módulo"))
-        h1, h2, h3 = st.columns(3)
-        with h1:
-            st.metric("Tipo de partido", f"{hunter.get('match_icon','')} {hunter.get('match_type','')}")
-        with h2:
-            st.metric("Set Resistance", f"{hunter.get('set_resistance', 0):.0f}/100")
-        with h3:
-            st.metric("Chaos Score", f"{hunter.get('chaos_score', 0):.0f}/100")
-        st.info(hunter.get("match_note", ""))
-        if hunter.get("notes"):
-            st.warning(" · ".join(hunter.get("notes", [])[:5]))
 
     rows = []
     for s in filters.get("signals", []):
@@ -6349,16 +6101,6 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Motivos Over Guard": " · ".join(filters.get("over_quality_reasons", [])[:4]) if isinstance(filters, dict) else "",
             "Under 2.5 Rescue": filters.get("under25_label", ""),
             "Under 2.5 ajustado": f"{filters.get('under25_adjusted', 0.0):.1%}" if isinstance(filters, dict) else "",
-            "Tipo partido v24": (filters.get("market_hunter", {}) or {}).get("match_type", "") if isinstance(filters, dict) else "",
-            "Set Resistance v24": f"{(filters.get('market_hunter', {}) or {}).get('set_resistance', 0):.0f}/100" if isinstance(filters, dict) else "",
-            "Chaos Score v24": f"{(filters.get('market_hunter', {}) or {}).get('chaos_score', 0):.0f}/100" if isinstance(filters, dict) else "",
-            "ML Trap v24": "Sí" if isinstance(filters, dict) and (filters.get("market_hunter", {}) or {}).get("ml_trap", False) else "",
-            "Gana set WATCH v24": (filters.get("market_hunter", {}) or {}).get("dog_set_label", "") if isinstance(filters, dict) else "",
-            "Jugador gana set WATCH": ((filters.get("market_hunter", {}) or {}).get("dog_name", "") if isinstance(filters, dict) and (filters.get("market_hunter", {}) or {}).get("dog_set_label", "") else ""),
-            "Gana set RADAR v24": (filters.get("market_hunter", {}) or {}).get("dog_set_radar_label", "") if isinstance(filters, dict) else "",
-            "Jugador gana set RADAR": ((filters.get("market_hunter", {}) or {}).get("dog_name", "") if isinstance(filters, dict) and (filters.get("market_hunter", {}) or {}).get("dog_set_radar_label", "") else ""),
-            "+2.5 sets WATCH v24": (filters.get("market_hunter", {}) or {}).get("plus25_label", "") if isinstance(filters, dict) else "",
-            "Notas Market Hunter": " · ".join((filters.get("market_hunter", {}) or {}).get("notes", [])[:4]) if isinstance(filters, dict) else "",
             "Confianza mínima": f"{filters.get('min_confidence', 1.0):.0%}" if isinstance(filters, dict) else "",
             "Mín. partidos superficie": filters.get("min_surface_matches", "") if isinstance(filters, dict) else "",
             "Gap Elo/modelo": f"{filters.get('elo_pure_gap', 0.0):.1%}" if isinstance(filters, dict) else "",
@@ -7491,33 +7233,10 @@ def ml_quality_guard_v23300(row):
 
 def pick_oficial_v23301(row):
     """
-    v24.2.2 Over original blindado:
-    - El Pick oficial de Over se toma de la columna Recomendación original cuando sea ✅/🔥 OVER.
-    - Market Hunter, ML Guard y Radar quedan como contexto/estudio: NO frenan el Over oficial.
-    - ML sigue fuera de picks oficiales.
-    - Señales WATCH/👀/NO BET/BLOQUEADO no se convierten en oficiales.
+    v23.30.1: columna visual para pantalla/export.
+    Devuelve solo picks oficiales reales: Over oficial o ML oficial.
+    Los WATCH/NO BET/NO OVER/NO ML quedan en blanco para no confundir.
     """
-    rec = str(row.get("Recomendación", "") or "").strip()
-    rec_u = rec.upper()
-
-    def _prob_for_over(text_u):
-        if "19.5" in text_u:
-            return str(row.get("Over 19.5", "") or row.get("Prob mercado recomendado", "") or "").strip()
-        if "20.5" in text_u:
-            return str(row.get("Over 20.5", "") or row.get("Prob mercado recomendado", "") or "").strip()
-        if "22.5" in text_u:
-            return str(row.get("Over 22.5", "") or row.get("Prob mercado recomendado", "") or "").strip()
-        return str(row.get("Over 18.5", "") or row.get("Prob mercado recomendado", "") or "").strip()
-
-    # Prioridad absoluta: Over original de la columna Recomendación.
-    # Esto revierte el efecto de las capas posteriores que convertían Overs buenos en WATCH/ML contexto.
-    if rec and "OVER" in rec_u:
-        if (rec.startswith("✅") or rec.startswith("🔥")) and not any(tok in rec_u for tok in ["WATCH", "NO BET", "BLOQUEADO", "NO COMBI", "DUDOS"]):
-            prob = _prob_for_over(rec_u)
-            return f"{rec} ({prob})" if prob else rec
-        return ""
-
-    # Fallback por si alguna fila antigua no trae Recomendación.
     market = str(row.get("Mercado recomendado", "") or "").strip()
     prob = str(row.get("Prob mercado recomendado", "") or "").strip()
     if not market:
@@ -7531,10 +7250,6 @@ def pick_oficial_v23301(row):
     if any(tok in mu for tok in bad_tokens):
         return ""
 
-    # ML fuera de oficiales.
-    if ("ML" in mu) or ("GANADOR" in mu):
-        return ""
-
     is_positive = market.startswith("✅") or market.startswith("🔥") or market.startswith("🧱")
     is_supported_market = ("OVER" in mu)
 
@@ -7542,6 +7257,134 @@ def pick_oficial_v23301(row):
         return f"{market} ({prob})" if prob else market
 
     return ""
+
+
+
+
+# =========================================================
+# v24.3.0 MARKET HUNTER INFORMATIVO — OVER ORIGINAL INTACTO
+# =========================================================
+# Importante:
+# - Esta capa NO toca Recomendación.
+# - NO toca Mercado recomendado.
+# - NO toca probabilidades Over.
+# - NO bloquea ni cambia Pick oficial Over.
+# Solo añade columnas informativas para estudiar gana set / radar / ML Trap.
+
+def _mh_parse_pct_v24300(v, default=0.0):
+    try:
+        if pd.isna(v):
+            return default
+        s = str(v).replace('%', '').replace(',', '.').strip()
+        if s == '' or s.lower() in ['nan', 'none']:
+            return default
+        x = float(s)
+        if x > 1:
+            x /= 100.0
+        return float(np.clip(x, 0.0, 1.0))
+    except Exception:
+        return default
+
+
+def _mh_parse_score_v24300(v, default=0.0):
+    try:
+        s = str(v).split('/')[0].replace(',', '.').strip()
+        if s == '' or s.lower() in ['nan', 'none']:
+            return default
+        return float(np.clip(float(s), 0, 100))
+    except Exception:
+        return default
+
+
+def market_hunter_row_v24300(row):
+    """Capa row-based para export/pantalla. No interviene en la selección del Over."""
+    fav_prob = _mh_parse_pct_v24300(row.get('ML favorito', 0.0), 0.0)
+    over18 = _mh_parse_pct_v24300(row.get('Over 18.5', 0.0), 0.0)
+    over19 = _mh_parse_pct_v24300(row.get('Over 19.5', 0.0), 0.0)
+    set3 = _mh_parse_pct_v24300(row.get('Partido a 3 sets', 0.0), 0.0)
+    fav20 = _mh_parse_pct_v24300(row.get('Favorito 2-0', 0.0), 0.0)
+    dogset = _mh_parse_pct_v24300(row.get('Prob gana set', 0.0), 0.0)
+
+    rec = str(row.get('Recomendación', '') or '')
+    market = str(row.get('Mercado recomendado', '') or '')
+    trust = str(row.get('Signal Trust', '') or '')
+    over_guard = str(row.get('Over Quality Guard', '') or '')
+    motivos_over = str(row.get('Motivos Over Guard', '') or '')
+    riesgos = str(row.get('Riesgos', '') or '')
+    txt = ' '.join([rec, market, trust, over_guard, motivos_over, riesgos]).upper()
+
+    favorito = str(row.get('Favorito modelo', '') or '').strip()
+    jugador_set = str(row.get('Jugador gana set', '') or '').strip()
+
+    over_block = ('OVER BLOQUEADO' in txt) or ('NO OVER' in txt)
+    over_watch = ('WATCH' in txt and 'OVER' in txt) or ('MIRAR UNDER' in txt)
+    datos_limitados = any(x in txt for x in ['DATOS PARCIALES', 'FALLBACK', 'ESTIMADO', 'INCOMPLET'])
+
+    # Scores simples e interpretables, derivados de columnas ya existentes.
+    ml_close = 1.0 - np.clip((max(fav_prob, 0.50) - 0.50) / 0.30, 0, 1)
+    competitiveness = float(np.clip(
+        100 * (0.36 * ml_close + 0.28 * max(set3, 0) + 0.24 * max(dogset, 0) + 0.12 * max(over18 - 0.64, 0) / 0.20),
+        0, 100
+    ))
+    set_resistance = float(np.clip(
+        100 * dogset + (over18 - 0.70) * 55 + (set3 - 0.40) * 70 - max(fav_prob - 0.68, 0) * 85 - max(fav20 - 0.58, 0) * 50,
+        0, 100
+    ))
+    chaos_score = float(np.clip(
+        competitiveness * 0.45 + set_resistance * 0.35 + (18 if over_block else 9 if over_watch else 0) + (8 if 0.50 <= fav_prob <= 0.64 else 0),
+        0, 100
+    ))
+
+    if fav_prob >= 0.70 and fav20 >= 0.62 and set_resistance < 48:
+        match_type = 'PARTIDO ROTO'
+    elif over18 >= 0.73 and not over_block and not over_watch and competitiveness >= 50:
+        match_type = 'OVER ESTABLE'
+    elif chaos_score >= 58 or (over_block and set_resistance >= 50) or (0.50 <= fav_prob <= 0.64 and over18 >= 0.70):
+        match_type = 'CAOS COMPETITIVO'
+    else:
+        match_type = 'NEUTRO / OBSERVAR'
+
+    ml_trap = bool(0.50 <= fav_prob <= 0.64 and over18 >= 0.70 and (set3 >= 0.42 or dogset >= 0.52 or chaos_score >= 58))
+
+    # WATCH muy estricto: no se usa para oficial; solo para estudiar.
+    watch = ''
+    if (match_type == 'OVER ESTABLE' and set_resistance >= 74 and set3 >= 0.455 and fav20 <= 0.42 and 0.56 <= fav_prob <= 0.64):
+        watch = '✅ WATCH'
+    if (match_type == 'OVER ESTABLE' and set_resistance >= 80 and set3 >= 0.47 and fav20 <= 0.39 and 0.56 <= fav_prob <= 0.62):
+        watch = '🔥 WATCH fuerte'
+
+    radar = ''
+    if not watch and match_type == 'CAOS COMPETITIVO' and set_resistance >= 62 and over18 >= 0.70 and fav20 <= 0.42:
+        radar = '🧪 RADAR limpio' if (set3 >= 0.47 and chaos_score <= 77 and set_resistance >= 66) else '🧪 RADAR caos'
+
+    plus25 = ''
+    if set3 >= 0.52 and chaos_score >= 78 and set_resistance >= 76 and fav_prob <= 0.56:
+        plus25 = '🧪 ESTUDIO extremo'
+
+    notas = []
+    if ml_trap:
+        notas.append('🚨 ML TRAP: favorito moderado + partido competitivo')
+    if watch and jugador_set:
+        notas.append(f'🎾 {jugador_set} gana set: {watch}')
+    if radar and jugador_set:
+        notas.append(f'🧪 {jugador_set} gana set: radar, no pick')
+    if over_block and set_resistance >= 50:
+        notas.append('Over bloqueado, pero con resistencia: revisar gana set')
+    if datos_limitados:
+        notas.append('Datos limitados: señal experimental')
+
+    return pd.Series({
+        'Tipo partido v24': match_type,
+        'Set Resistance v24': f'{set_resistance:.0f}/100',
+        'Chaos Score v24': f'{chaos_score:.0f}/100',
+        'ML Trap v24': 'Sí' if ml_trap else '',
+        'Gana set WATCH v24': watch,
+        'Jugador gana set WATCH': jugador_set if watch else '',
+        'Gana set RADAR v24': radar,
+        'Jugador gana set RADAR': jugador_set if radar else '',
+        '+2.5 sets WATCH v24': plus25,
+        'Notas Market Hunter': ' · '.join(notas),
+    })
 
 
 # =========================================================
@@ -8160,6 +8003,13 @@ def prepare_batch_display_table(ok_df):
     # v23.30.1: columna visible con el pick oficial real para revisar antes de descargar Excel.
     df["Pick oficial"] = df.apply(pick_oficial_v23301, axis=1)
 
+    # v24.3.0: Market Hunter informativo. No toca Over/Recomendación/Mercado/Pick.
+    try:
+        mh_cols = df.apply(market_hunter_row_v24300, axis=1)
+        df = pd.concat([df, mh_cols], axis=1)
+    except Exception:
+        pass
+
     preferred = [
         "Versión app",
         "Recomendación",
@@ -8181,10 +8031,6 @@ def prepare_batch_display_table(ok_df):
         "WTA Over17 Priority",
         "WTA Over17 Official Guard",
         "Signal Trust",
-        "Over Quality Guard",
-        "Motivos Over Guard",
-        "Under 2.5 Rescue",
-        "Under 2.5 ajustado",
         "Tipo partido v24",
         "Set Resistance v24",
         "Chaos Score v24",
@@ -8195,6 +8041,10 @@ def prepare_batch_display_table(ok_df):
         "Jugador gana set RADAR",
         "+2.5 sets WATCH v24",
         "Notas Market Hunter",
+        "Over Quality Guard",
+        "Motivos Over Guard",
+        "Under 2.5 Rescue",
+        "Under 2.5 ajustado",
         "ML Quality Guard",
         "Motivos ML Guard",
         "Confianza mínima",
@@ -8972,7 +8822,7 @@ elif modo == "Analizador por lista":
         vista_resultados_simple = st.toggle(
             "Vista simple resultados",
             value=True,
-            help="En Sofascore resultados muestra ML, Over 18.5 y señales v24 para revisar aciertos."
+            help="En Sofascore resultados muestra ML, Over 18.5 y, solo en WTA, Over 17.5 para revisar aciertos."
         )
 
     ejemplo = """16:20
@@ -9185,24 +9035,10 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "WTA Watchlist",
                     "Signal Trust",
                     "Recomendación",
-                    "Pick oficial",
                     "Mercado recomendado",
                     "Prob mercado recomendado",
                     "Motivo Market Selector",
-                    "Tipo partido v24",
-                    "Set Resistance v24",
-                    "Chaos Score v24",
-                    "ML Trap v24",
-                    "Gana set WATCH v24",
-                    "Jugador gana set WATCH",
-                    "Gana set RADAR v24",
-                    "Jugador gana set RADAR",
-                    "+2.5 sets WATCH v24",
-                    "Notas Market Hunter",
                     "Favorito 2-0",
-                    "Jugador gana set",
-                    "Prob gana set",
-                    "Partido a 3 sets",
                     "Riesgos"
                 ]
                 ok = ok[[c for c in simple_cols if c in ok.columns]]
