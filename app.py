@@ -9,7 +9,8 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v24.1.8 Market Hunter", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v24.2.0-official-over-precision-guard"
+APP_VERSION = "v24.2.1-over-original-market-hunter"
+# v24.2.1: ROLLBACK del filtro de oficialidad Over. Over vuelve a salir como en v24.1.9; Market Hunter queda solo como radar/watch.
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4437,7 +4438,7 @@ def market_hunter_engine(circuito, surface, sim, p1_name, p2_name, filters_ctx=N
         and fav20 <= 0.38
         and set3 >= 0.42
     ):
-        # v24.1.9: el RADAR se separa en "limpio" y "caos".
+        # v24.2.1: el RADAR se separa en "limpio" y "caos".
         # Backtest 19/5/26:
         # - RADAR limpio: pocas señales, mejor precisión.
         # - RADAR caos: solo estudio, demasiado irregular para usarlo.
@@ -7516,28 +7517,7 @@ def pick_oficial_v23301(row):
     is_positive = market.startswith("✅") or market.startswith("🔥") or market.startswith("🧱")
     is_supported_market = ("OVER" in mu)
 
-    # v24.2.0 Official Over Precision Guard.
-    # NO cambia la probabilidad ni la fórmula del Over.
-    # Solo evita convertir en Pick oficial los Over que el propio Market Hunter marca como frágiles:
-    # - ML Trap activo: favorito moderado + partido competitivo, alta posibilidad de lectura engañosa.
-    # - Partido a 3 sets bajo/medio: Over alto pero sin apoyo suficiente de partido largo.
-    # - Chaos muy alto en spot fuerte: señal de volatilidad, no de over limpio.
     if is_positive and is_supported_market:
-        ml_trap = str(row.get("ML Trap v24", "") or "").strip().upper()
-        set3 = _row_pct(row, "Partido a 3 sets", 0.0)
-        chaos_raw = str(row.get("Chaos Score v24", "") or "0").replace("/100", "").replace(",", ".").strip()
-        try:
-            chaos_score = float(chaos_raw)
-        except Exception:
-            chaos_score = 0.0
-
-        if ml_trap == "SÍ" or ml_trap == "SI":
-            return ""
-        if set3 > 0 and set3 < 0.45:
-            return ""
-        if market.startswith("🔥") and chaos_score >= 70:
-            return ""
-
         return f"{market} ({prob})" if prob else market
 
     return ""
