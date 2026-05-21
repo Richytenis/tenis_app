@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v24.1.3 Market Hunter", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v24.1.3-market-hunter-set-resistance-tight"
+APP_VERSION = "v24.1.4-market-hunter-setwatch-precision"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4360,11 +4360,12 @@ def market_hunter_engine(circuito, surface, sim, p1_name, p2_name, filters_ctx=N
         match_icon = "⚪"
         match_note = "Sin ventaja clara para mercados nuevos."
 
-    # v24.1.3 Market Hunter Tight
-    # Ajuste basado en backtest de 20/5/26:
+    # v24.1.4 Market Hunter SetWatch Precision
+    # Ajuste basado en backtest de 20/5/26 con v24.1.3:
     # - Mantiene el OVER intacto.
-    # - Endurece Gana Set para evitar falsos fuertes en 2-0.
-    # - +2.5 queda solo como vigilancia muy filtrada, todavía no oficial.
+    # - Elimina "👀 Vigilar" como señal exportable de gana set, porque tuvo peor acierto.
+    # - Conserva solo señales de mayor precisión: 🔥 WATCH fuerte y ✅ WATCH.
+    # - +2.5 se degrada a modo estudio muy restringido; NO debe tratarse como pick.
     ml_trap = bool(
         fav_prob <= 0.64
         and competitiveness >= 62
@@ -4387,31 +4388,19 @@ def market_hunter_engine(circuito, surface, sim, p1_name, p2_name, filters_ctx=N
         and fav20 <= 0.48
     ):
         dog_set_label = "✅ WATCH"
-    elif (
-        set_resistance >= 56
-        and fav_prob <= 0.70
-        and set3 >= 0.42
-        and fav20 <= 0.52
-    ):
-        dog_set_label = "👀 Vigilar"
 
+    # +2.5 queda casi apagado. Solo se marca como ESTUDIO cuando la señal es extrema.
+    # En el último backtest fue 4/8, demasiado flojo para buscar alta tasa de acierto.
     plus25_label = ""
     if (
-        set3 >= 0.48
-        and competitiveness >= 70
-        and chaos_score >= 70
-        and fav_prob <= 0.58
-        and fav20 <= 0.34
+        set3 >= 0.52
+        and competitiveness >= 76
+        and chaos_score >= 78
+        and set_resistance >= 76
+        and fav_prob <= 0.56
+        and fav20 <= 0.32
     ):
-        plus25_label = "🔥 WATCH fuerte"
-    elif (
-        set3 >= 0.46
-        and competitiveness >= 64
-        and chaos_score >= 68
-        and fav_prob <= 0.60
-        and fav20 <= 0.40
-    ):
-        plus25_label = "👀 Vigilar"
+        plus25_label = "🧪 ESTUDIO extremo"
 
     notes = []
     if ml_trap:
@@ -4419,7 +4408,7 @@ def market_hunter_engine(circuito, surface, sim, p1_name, p2_name, filters_ctx=N
     if dog_set_label:
         notes.append(f"🎾 {dog_name} gana set: {dog_set_label}")
     if plus25_label:
-        notes.append(f"🎾 +2.5 sets: {plus25_label}")
+        notes.append(f"🧪 +2.5 sets solo estudio: {plus25_label}")
     if over_block and set_resistance >= 50:
         notes.append("Over bloqueado, pero con resistencia: revisar mercado gana set")
     if min_conf < 0.50 or min_surface < 10:
