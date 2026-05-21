@@ -7,9 +7,9 @@ import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
-st.set_page_config(page_title="Tennis IA v24.1.6 Market Hunter", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v24.1.7 Market Hunter", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v24.1.6-market-hunter-ultra-precision-setwatch"
+APP_VERSION = "v24.1.7-market-hunter-setwatch-solo-limpio"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4373,32 +4373,40 @@ def market_hunter_engine(circuito, surface, sim, p1_name, p2_name, filters_ctx=N
         and (over18 >= 0.70 or set3 >= 0.44 or dogset >= 0.55)
     )
 
-    # v24.1.6 Ultra Precision SetWatch
-    # Ajuste basado en backtest v24.1.5 del 19/5/26:
+    # v24.1.7 SetWatch Solo Limpio
+    # Ajuste basado en backtests v24.1.6:
     # - OVER oficial intacto.
-    # - Elimina señales medias que bajaron el acierto.
-    # - Evita coinflips extremos del ML (<56%) porque generaron falsos positivos.
-    # - Exige resistencia alta, entorno largo real y que el favorito 2-0 no sea dominante.
-    # - También evita caos extremo (>82), donde el modelo detecta batalla pero no lectura limpia de gana-set.
+    # - El último falso positivo vino de CAOS COMPETITIVO: el modelo detectaba pelea,
+    #   pero no una lectura limpia de que el dog robara set.
+    # - Para máxima tasa de acierto, el gana-set WATCH solo sale en OVER ESTABLE
+    #   o en una señal extremadamente limpia de resistencia.
     high_precision_setwatch = bool(set3 >= 0.46 or over18 >= 0.745)
+    clean_setwatch_context = bool(match_type == "OVER ESTABLE" and not over_block and chaos_score <= 74)
+    extreme_clean_resistance = bool(set_resistance >= 82 and 0.56 <= fav_prob <= 0.60 and fav20 <= 0.34 and chaos_score <= 72)
 
     dog_set_label = ""
     if (
         high_precision_setwatch
-        and set_resistance >= 76
+        and clean_setwatch_context
+        and set_resistance >= 78
         and 0.56 <= fav_prob <= 0.62
         and set3 >= 0.455
         and fav20 <= 0.40
-        and chaos_score <= 82
     ):
         dog_set_label = "🔥 WATCH fuerte"
     elif (
         high_precision_setwatch
-        and set_resistance >= 72
+        and clean_setwatch_context
+        and set_resistance >= 73
         and 0.56 <= fav_prob <= 0.64
         and set3 >= 0.455
         and fav20 <= 0.42
-        and chaos_score <= 82
+    ):
+        dog_set_label = "✅ WATCH"
+    elif (
+        high_precision_setwatch
+        and extreme_clean_resistance
+        and set3 >= 0.46
     ):
         dog_set_label = "✅ WATCH"
 
