@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v24.1.8 Market Hunter", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v24.1.8-market-hunter-radar-export-clean"
+APP_VERSION = "v24.1.9-market-hunter-radar-clean-split"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4437,7 +4437,19 @@ def market_hunter_engine(circuito, surface, sim, p1_name, p2_name, filters_ctx=N
         and fav20 <= 0.38
         and set3 >= 0.42
     ):
-        dog_set_radar_label = "🧪 RADAR caos"
+        # v24.1.9: el RADAR se separa en "limpio" y "caos".
+        # Backtest 19/5/26:
+        # - RADAR limpio: pocas señales, mejor precisión.
+        # - RADAR caos: solo estudio, demasiado irregular para usarlo.
+        if (
+            set3 >= 0.47
+            and chaos_score <= 77
+            and set_resistance >= 65
+            and fav20 <= 0.36
+        ):
+            dog_set_radar_label = "🧪 RADAR limpio"
+        else:
+            dog_set_radar_label = "🧪 RADAR caos"
 
     notes = []
     if ml_trap:
@@ -9161,6 +9173,8 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "ML Trap v24",
                     "Gana set WATCH v24",
                     "Jugador gana set WATCH",
+                    "Gana set RADAR v24",
+                    "Jugador gana set RADAR",
                     "+2.5 sets WATCH v24",
                     "Notas Market Hunter",
                     "Favorito 2-0",
