@@ -7,9 +7,9 @@ import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
-st.set_page_config(page_title="Tennis IA v24.1.3 Market Hunter", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v24.1.5 Market Hunter", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v24.1.4-market-hunter-setwatch-precision"
+APP_VERSION = "v24.1.5-market-hunter-high-precision-setwatch"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -4373,16 +4373,26 @@ def market_hunter_engine(circuito, surface, sim, p1_name, p2_name, filters_ctx=N
         and (over18 >= 0.70 or set3 >= 0.44 or dogset >= 0.55)
     )
 
+    # v24.1.5 High Precision SetWatch
+    # Ajuste basado en el backtest v24.1.4 del 20/5/26:
+    # - OVER oficial intacto.
+    # - El mercado gana-set solo se exporta si pasa un filtro extra de precisión.
+    # - Se exige entorno de partido realmente largo: set3 alto o Over18 muy alto.
+    #   Esto reduce señales pero busca tasa de acierto máxima.
+    high_precision_setwatch = bool(set3 >= 0.462 or over18 >= 0.745)
+
     dog_set_label = ""
     if (
-        set_resistance >= 72
+        high_precision_setwatch
+        and set_resistance >= 72
         and fav_prob <= 0.62
         and set3 >= 0.46
         and fav20 <= 0.38
     ):
         dog_set_label = "🔥 WATCH fuerte"
     elif (
-        set_resistance >= 62
+        high_precision_setwatch
+        and set_resistance >= 62
         and fav_prob <= 0.70
         and set3 >= 0.44
         and fav20 <= 0.48
