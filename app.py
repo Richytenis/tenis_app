@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.33.0-control-panel-sofascore-over-locked"
+APP_VERSION = "v23.33.1-backtesting-export-sofascore-over-locked"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8053,6 +8053,224 @@ def batch_excel_bytes(df):
     return output.getvalue()
 
 
+
+# =========================================================
+# v23.33.1 BACKTESTING EXPORT FORMAT
+# Exporta una hoja preparada para medir tasa de acierto por mercado.
+# NO modifica cálculos, simulación, filtros ni matemáticas de Over.
+# =========================================================
+
+def _bt_pct_to_float(v):
+    try:
+        if pd.isna(v):
+            return np.nan
+        s = str(v).replace(",", ".").replace("%", "").strip()
+        if s == "":
+            return np.nan
+        n = float(s)
+        if n > 1:
+            n /= 100.0
+        return float(n)
+    except Exception:
+        return np.nan
+
+
+def _bt_txt(v):
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except Exception:
+        pass
+    return str(v).strip()
+
+
+def _bt_split_partido(partido):
+    p = _bt_txt(partido)
+    if " vs " in p:
+        a, b = p.split(" vs ", 1)
+        return a.strip(), b.strip()
+    return "", ""
+
+
+def _bt_parse_sets(v):
+    s = _bt_txt(v)
+    m = re.search(r"(\d+)\s*[-/]\s*(\d+)", s)
+    if not m:
+        return None, None
+    return int(m.group(1)), int(m.group(2))
+
+
+def _bt_name_eq(a, b):
+    return limpiar(a) == limpiar(b) and limpiar(a) != ""
+
+
+def crear_hoja_backtesting_export(df):
+    """
+    Crea una hoja normalizada para backtesting diario.
+    Objetivo:
+    - Una fila por partido.
+    - Probabilidades del modelo por mercado.
+    - Resultado real si la lista venía desde SofaScore resultados.
+    - Columnas de acierto calculables.
+    - Over queda marcado como protegido: solo se registra/exporta.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for _, row in df.iterrows():
+        partido = _bt_txt(row.get("Partido", ""))
+        j1, j2 = _bt_split_partido(partido)
+        favorito = _bt_txt(row.get("Favorito modelo", ""))
+        ganador_real = _bt_txt(row.get("Ganador real", ""))
+        resultado_sets = _bt_txt(row.get("Resultado sets", ""))
+        p1_sets, p2_sets = _bt_parse_sets(resultado_sets)
+        total_games_real = row.get("Total games real", "")
+
+        prob_ml = _bt_pct_to_float(row.get("ML favorito", ""))
+        prob_gana_set = _bt_pct_to_float(row.get("Prob gana set", ""))
+        prob_3sets = _bt_pct_to_float(row.get("Partido a 3 sets", ""))
+        prob_fav20 = _bt_pct_to_float(row.get("Favorito 2-0", ""))
+        prob_over17 = _bt_pct_to_float(row.get("Over 17.5", ""))
+        prob_over18 = _bt_pct_to_float(row.get("Over 18.5", ""))
+        prob_over19 = _bt_pct_to_float(row.get("Over 19.5", ""))
+        prob_under22 = _bt_pct_to_float(row.get("Under 22.5", ""))
+
+        dog_set_player = _bt_txt(row.get("Jugador gana set", ""))
+
+        ml_hit = _bt_txt(row.get("Acierta ML modelo", ""))
+        if ml_hit == "" and ganador_real and favorito:
+            ml_hit = "Sí" if _bt_name_eq(ganador_real, favorito) else "No"
+
+        sets3_hit = _bt_txt(row.get("Acierta 3 sets", ""))
+        if sets3_hit == "" and p1_sets is not None and p2_sets is not None:
+            sets3_hit = "Sí" if (p1_sets + p2_sets) == 3 else "No"
+
+        gana_set_hit = ""
+        if dog_set_player and p1_sets is not None and p2_sets is not None:
+            if _bt_name_eq(dog_set_player, j1):
+                gana_set_hit = "Sí" if p1_sets >= 1 else "No"
+            elif _bt_name_eq(dog_set_player, j2):
+                gana_set_hit = "Sí" if p2_sets >= 1 else "No"
+
+        fav20_hit = ""
+        if favorito and p1_sets is not None and p2_sets is not None:
+            if _bt_name_eq(favorito, j1):
+                fav20_hit = "Sí" if (p1_sets == 2 and p2_sets == 0) else "No"
+            elif _bt_name_eq(favorito, j2):
+                fav20_hit = "Sí" if (p1_sets == 0 and p2_sets == 2) else "No"
+
+        over17_hit = _bt_txt(row.get("Acierta Over 17.5", ""))
+        over18_hit = _bt_txt(row.get("Acierta Over 18.5", ""))
+        over19_hit = ""
+        under22_hit = ""
+        try:
+            tg = float(str(total_games_real).replace(",", "."))
+            if not np.isnan(prob_over19):
+                over19_hit = "Sí" if tg > 19.5 else "No"
+            if not np.isnan(prob_under22):
+                under22_hit = "Sí" if tg < 22.5 else "No"
+        except Exception:
+            pass
+
+        rows.append({
+            "Fecha": row.get("Fecha", ""),
+            "Hora": row.get("Hora", ""),
+            "Fuente partidos": "SofaScore",
+            "Circuito fuente": row.get("Circuito fuente", ""),
+            "Circuito datos": row.get("Circuito datos", ""),
+            "Circuito cálculo": row.get("Circuito cálculo", ""),
+            "Torneo": row.get("Torneo", ""),
+            "Superficie": row.get("Superficie", ""),
+            "Jugador 1": j1,
+            "Jugador 2": j2,
+            "Partido": partido,
+            "Estado lectura": row.get("Estado", ""),
+            "Aviso datos": row.get("Aviso datos", ""),
+            "Favorito modelo": favorito,
+            "Prob ML favorito": prob_ml,
+            "Jugador gana set": dog_set_player,
+            "Prob gana set": prob_gana_set,
+            "Prob +2.5 sets": prob_3sets,
+            "Prob favorito 2-0": prob_fav20,
+            "Prob Over 17.5 🔒": prob_over17,
+            "Prob Over 18.5 🔒": prob_over18,
+            "Prob Over 19.5 🔒": prob_over19,
+            "Prob Under 22.5": prob_under22,
+            "Mercado recomendado": row.get("Mercado recomendado", ""),
+            "Prob mercado recomendado": _bt_pct_to_float(row.get("Prob mercado recomendado", "")),
+            "Pick oficial": row.get("Pick oficial", ""),
+            "Recomendación": row.get("Recomendación", ""),
+            "Signal Trust": row.get("Signal Trust", ""),
+            "Motivo selector": row.get("Motivo Market Selector", ""),
+            "Riesgos": row.get("Riesgos", ""),
+            "Ganador real": ganador_real,
+            "Resultado sets": resultado_sets,
+            "Marcador games": row.get("Marcador games", ""),
+            "Total games real": total_games_real,
+            "Acierta ML": ml_hit,
+            "Acierta gana set": gana_set_hit,
+            "Acierta +2.5 sets": sets3_hit,
+            "Acierta favorito 2-0": fav20_hit,
+            "Acierta Over 17.5 🔒": over17_hit,
+            "Acierta Over 18.5 🔒": over18_hit,
+            "Acierta Over 19.5 🔒": over19_hit,
+            "Acierta Under 22.5": under22_hit,
+            "Over engine status": "🔒 PROTEGIDO - solo exportación/medición, no cálculo",
+        })
+
+    out = pd.DataFrame(rows)
+
+    # Mantener porcentajes como números para que Excel pueda filtrar/ordenar bien.
+    pct_cols = [c for c in out.columns if c.startswith("Prob ")]
+    for c in pct_cols:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+
+    return out
+
+
+def crear_resumen_backtesting_export(bt_df):
+    if bt_df is None or bt_df.empty:
+        return pd.DataFrame(columns=["Mercado", "Evaluados", "Aciertos", "Fallos", "% Acierto", "Recomendados por selector", "Estado"])
+
+    markets = [
+        ("ML", "Prob ML favorito", "Acierta ML", "ML|GANADOR|FAVORITO"),
+        ("Gana al menos un set", "Prob gana set", "Acierta gana set", "GANA SET|AL MENOS"),
+        ("+2.5 sets", "Prob +2.5 sets", "Acierta +2.5 sets", "3 SET|\\+2.5|PARTIDO A 3"),
+        ("Favorito 2-0", "Prob favorito 2-0", "Acierta favorito 2-0", "2-0"),
+        ("Over 17.5 🔒", "Prob Over 17.5 🔒", "Acierta Over 17.5 🔒", "OVER 17.5"),
+        ("Over 18.5 🔒", "Prob Over 18.5 🔒", "Acierta Over 18.5 🔒", "OVER 18.5"),
+        ("Over 19.5 🔒", "Prob Over 19.5 🔒", "Acierta Over 19.5 🔒", "OVER 19.5"),
+        ("Under 22.5", "Prob Under 22.5", "Acierta Under 22.5", "UNDER 22.5"),
+    ]
+
+    rows = []
+    selector = bt_df.get("Mercado recomendado", pd.Series([""] * len(bt_df))).astype(str).str.upper()
+    for market, prob_col, hit_col, selector_pat in markets:
+        if prob_col not in bt_df.columns or hit_col not in bt_df.columns:
+            continue
+        hit_series = bt_df[hit_col].astype(str).str.strip().str.lower()
+        mask = hit_series.isin(["sí", "si", "no"])
+        evaluados = int(mask.sum())
+        aciertos = int(hit_series[mask].isin(["sí", "si"]).sum())
+        fallos = int(evaluados - aciertos)
+        pct = aciertos / evaluados if evaluados else np.nan
+        recomendados = int(selector.str.contains(selector_pat, regex=True, na=False).sum())
+        estado = "🔒 Over protegido" if "Over" in market else "OK"
+        rows.append({
+            "Mercado": market,
+            "Evaluados": evaluados,
+            "Aciertos": aciertos,
+            "Fallos": fallos,
+            "% Acierto": pct,
+            "Recomendados por selector": recomendados,
+            "Estado": estado,
+        })
+    return pd.DataFrame(rows)
+
+
 def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -8060,6 +8278,15 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
         ko_sheet = enrich_not_found_with_suggestions(ko_df, db) if ko_df is not None and not ko_df.empty else pd.DataFrame()
 
         ok_sheet.to_excel(writer, index=False, sheet_name="Analisis")
+
+        # Hoja preparada para backtesting diario.
+        # Solo reordena/exporta datos ya calculados; no toca motor ni matemáticas de Over.
+        bt_sheet = crear_hoja_backtesting_export(ok_sheet)
+        if not bt_sheet.empty:
+            bt_sheet.to_excel(writer, index=False, sheet_name="Backtesting")
+            resumen_bt = crear_resumen_backtesting_export(bt_sheet)
+            resumen_bt.to_excel(writer, index=False, sheet_name="Resumen_Mercados")
+
         if not ko_sheet.empty:
             ko_sheet.to_excel(writer, index=False, sheet_name="No encontrados")
 
@@ -8086,6 +8313,18 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
                 letter = col_cells[0].column_letter
                 max_len = max([len(str(c.value)) if c.value is not None else 0 for c in col_cells] + [10])
                 ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 42)
+
+            # Formato porcentaje para hojas de backtesting/resumen.
+            for header_cell in ws[1]:
+                header = str(header_cell.value or "")
+                if header.startswith("Prob ") or header == "% Acierto":
+                    for data_cell in ws.iter_cols(min_col=header_cell.column, max_col=header_cell.column, min_row=2, max_row=ws.max_row):
+                        for c in data_cell:
+                            c.number_format = "0.0%"
+
+            if ws.title in ["Backtesting", "Resumen_Mercados"]:
+                ws.freeze_panes = "A2"
+                ws.auto_filter.ref = ws.dimensions
 
     output.seek(0)
     return output.getvalue()
