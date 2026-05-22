@@ -9,8 +9,18 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v24.3.0-over-original-clean-market-hunter"
+APP_VERSION = "v23.33.0-control-panel-sofascore-over-locked"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
+
+# =========================================================
+# 🔒 OVER ENGINE LOCK
+# Regla de proyecto: desde esta base NO se toca ninguna fórmula,
+# umbral, guard, simulación ni exportación que afecte a mercados Over
+# salvo orden explícita del usuario.
+# Este flag es informativo y no modifica ningún cálculo.
+# =========================================================
+OVER_ENGINE_LOCKED = True
+OVER_ENGINE_LOCK_NOTE = "Over blindado: no tocar matemáticas ni lógica de Over sin orden explícita."
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 
@@ -7251,140 +7261,12 @@ def pick_oficial_v23301(row):
         return ""
 
     is_positive = market.startswith("✅") or market.startswith("🔥") or market.startswith("🧱")
-    is_supported_market = ("OVER" in mu)
+    is_supported_market = ("OVER" in mu) or ("ML" in mu) or ("GANADOR" in mu)
 
     if is_positive and is_supported_market:
         return f"{market} ({prob})" if prob else market
 
     return ""
-
-
-
-
-# =========================================================
-# v24.3.0 MARKET HUNTER INFORMATIVO — OVER ORIGINAL INTACTO
-# =========================================================
-# Importante:
-# - Esta capa NO toca Recomendación.
-# - NO toca Mercado recomendado.
-# - NO toca probabilidades Over.
-# - NO bloquea ni cambia Pick oficial Over.
-# Solo añade columnas informativas para estudiar gana set / radar / ML Trap.
-
-def _mh_parse_pct_v24300(v, default=0.0):
-    try:
-        if pd.isna(v):
-            return default
-        s = str(v).replace('%', '').replace(',', '.').strip()
-        if s == '' or s.lower() in ['nan', 'none']:
-            return default
-        x = float(s)
-        if x > 1:
-            x /= 100.0
-        return float(np.clip(x, 0.0, 1.0))
-    except Exception:
-        return default
-
-
-def _mh_parse_score_v24300(v, default=0.0):
-    try:
-        s = str(v).split('/')[0].replace(',', '.').strip()
-        if s == '' or s.lower() in ['nan', 'none']:
-            return default
-        return float(np.clip(float(s), 0, 100))
-    except Exception:
-        return default
-
-
-def market_hunter_row_v24300(row):
-    """Capa row-based para export/pantalla. No interviene en la selección del Over."""
-    fav_prob = _mh_parse_pct_v24300(row.get('ML favorito', 0.0), 0.0)
-    over18 = _mh_parse_pct_v24300(row.get('Over 18.5', 0.0), 0.0)
-    over19 = _mh_parse_pct_v24300(row.get('Over 19.5', 0.0), 0.0)
-    set3 = _mh_parse_pct_v24300(row.get('Partido a 3 sets', 0.0), 0.0)
-    fav20 = _mh_parse_pct_v24300(row.get('Favorito 2-0', 0.0), 0.0)
-    dogset = _mh_parse_pct_v24300(row.get('Prob gana set', 0.0), 0.0)
-
-    rec = str(row.get('Recomendación', '') or '')
-    market = str(row.get('Mercado recomendado', '') or '')
-    trust = str(row.get('Signal Trust', '') or '')
-    over_guard = str(row.get('Over Quality Guard', '') or '')
-    motivos_over = str(row.get('Motivos Over Guard', '') or '')
-    riesgos = str(row.get('Riesgos', '') or '')
-    txt = ' '.join([rec, market, trust, over_guard, motivos_over, riesgos]).upper()
-
-    favorito = str(row.get('Favorito modelo', '') or '').strip()
-    jugador_set = str(row.get('Jugador gana set', '') or '').strip()
-
-    over_block = ('OVER BLOQUEADO' in txt) or ('NO OVER' in txt)
-    over_watch = ('WATCH' in txt and 'OVER' in txt) or ('MIRAR UNDER' in txt)
-    datos_limitados = any(x in txt for x in ['DATOS PARCIALES', 'FALLBACK', 'ESTIMADO', 'INCOMPLET'])
-
-    # Scores simples e interpretables, derivados de columnas ya existentes.
-    ml_close = 1.0 - np.clip((max(fav_prob, 0.50) - 0.50) / 0.30, 0, 1)
-    competitiveness = float(np.clip(
-        100 * (0.36 * ml_close + 0.28 * max(set3, 0) + 0.24 * max(dogset, 0) + 0.12 * max(over18 - 0.64, 0) / 0.20),
-        0, 100
-    ))
-    set_resistance = float(np.clip(
-        100 * dogset + (over18 - 0.70) * 55 + (set3 - 0.40) * 70 - max(fav_prob - 0.68, 0) * 85 - max(fav20 - 0.58, 0) * 50,
-        0, 100
-    ))
-    chaos_score = float(np.clip(
-        competitiveness * 0.45 + set_resistance * 0.35 + (18 if over_block else 9 if over_watch else 0) + (8 if 0.50 <= fav_prob <= 0.64 else 0),
-        0, 100
-    ))
-
-    if fav_prob >= 0.70 and fav20 >= 0.62 and set_resistance < 48:
-        match_type = 'PARTIDO ROTO'
-    elif over18 >= 0.73 and not over_block and not over_watch and competitiveness >= 50:
-        match_type = 'OVER ESTABLE'
-    elif chaos_score >= 58 or (over_block and set_resistance >= 50) or (0.50 <= fav_prob <= 0.64 and over18 >= 0.70):
-        match_type = 'CAOS COMPETITIVO'
-    else:
-        match_type = 'NEUTRO / OBSERVAR'
-
-    ml_trap = bool(0.50 <= fav_prob <= 0.64 and over18 >= 0.70 and (set3 >= 0.42 or dogset >= 0.52 or chaos_score >= 58))
-
-    # WATCH muy estricto: no se usa para oficial; solo para estudiar.
-    watch = ''
-    if (match_type == 'OVER ESTABLE' and set_resistance >= 74 and set3 >= 0.455 and fav20 <= 0.42 and 0.56 <= fav_prob <= 0.64):
-        watch = '✅ WATCH'
-    if (match_type == 'OVER ESTABLE' and set_resistance >= 80 and set3 >= 0.47 and fav20 <= 0.39 and 0.56 <= fav_prob <= 0.62):
-        watch = '🔥 WATCH fuerte'
-
-    radar = ''
-    if not watch and match_type == 'CAOS COMPETITIVO' and set_resistance >= 62 and over18 >= 0.70 and fav20 <= 0.42:
-        radar = '🧪 RADAR limpio' if (set3 >= 0.47 and chaos_score <= 77 and set_resistance >= 66) else '🧪 RADAR caos'
-
-    plus25 = ''
-    if set3 >= 0.52 and chaos_score >= 78 and set_resistance >= 76 and fav_prob <= 0.56:
-        plus25 = '🧪 ESTUDIO extremo'
-
-    notas = []
-    if ml_trap:
-        notas.append('🚨 ML TRAP: favorito moderado + partido competitivo')
-    if watch and jugador_set:
-        notas.append(f'🎾 {jugador_set} gana set: {watch}')
-    if radar and jugador_set:
-        notas.append(f'🧪 {jugador_set} gana set: radar, no pick')
-    if over_block and set_resistance >= 50:
-        notas.append('Over bloqueado, pero con resistencia: revisar gana set')
-    if datos_limitados:
-        notas.append('Datos limitados: señal experimental')
-
-    return pd.Series({
-        'Tipo partido v24': match_type,
-        'Set Resistance v24': f'{set_resistance:.0f}/100',
-        'Chaos Score v24': f'{chaos_score:.0f}/100',
-        'ML Trap v24': 'Sí' if ml_trap else '',
-        'Gana set WATCH v24': watch,
-        'Jugador gana set WATCH': jugador_set if watch else '',
-        'Gana set RADAR v24': radar,
-        'Jugador gana set RADAR': jugador_set if radar else '',
-        '+2.5 sets WATCH v24': plus25,
-        'Notas Market Hunter': ' · '.join(notas),
-    })
 
 
 # =========================================================
@@ -7574,6 +7456,11 @@ def render_telegram_sender_panel(ok_df):
     if not (token_ok and chat_ok):
         st.info('Añade TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID en `.streamlit/secrets.toml`.')
         return
+
+    incluir_watch_preview = st.toggle("Incluir watch/recomendados en vista previa", value=False, key="tg_preview_watch")
+    mensaje_preview = construir_mensaje_telegram_picks(ok_df, incluir_watch=incluir_watch_preview, max_watch=12)
+    with st.expander("👀 Vista previa del mensaje", expanded=True):
+        st.text_area("Mensaje que se enviará", value=mensaje_preview, height=260, key="tg_preview_text", disabled=True)
 
     b1, b2, b3 = st.columns(3)
     with b1:
@@ -8003,13 +7890,6 @@ def prepare_batch_display_table(ok_df):
     # v23.30.1: columna visible con el pick oficial real para revisar antes de descargar Excel.
     df["Pick oficial"] = df.apply(pick_oficial_v23301, axis=1)
 
-    # v24.3.0: Market Hunter informativo. No toca Over/Recomendación/Mercado/Pick.
-    try:
-        mh_cols = df.apply(market_hunter_row_v24300, axis=1)
-        df = pd.concat([df, mh_cols], axis=1)
-    except Exception:
-        pass
-
     preferred = [
         "Versión app",
         "Recomendación",
@@ -8031,16 +7911,6 @@ def prepare_batch_display_table(ok_df):
         "WTA Over17 Priority",
         "WTA Over17 Official Guard",
         "Signal Trust",
-        "Tipo partido v24",
-        "Set Resistance v24",
-        "Chaos Score v24",
-        "ML Trap v24",
-        "Gana set WATCH v24",
-        "Jugador gana set WATCH",
-        "Gana set RADAR v24",
-        "Jugador gana set RADAR",
-        "+2.5 sets WATCH v24",
-        "Notas Market Hunter",
         "Over Quality Guard",
         "Motivos Over Guard",
         "Under 2.5 Rescue",
@@ -8220,18 +8090,123 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
     output.seek(0)
     return output.getvalue()
 
+
+# =========================================================
+# v23.33 Control Panel + Safe UX Helpers
+# Solo añade visibilidad, control de estado y backups. No cambia cálculos.
+# =========================================================
+
+def _safe_exists(path):
+    try:
+        return os.path.exists(path)
+    except Exception:
+        return False
+
+
+def _file_status_row(label, path):
+    return {
+        "Archivo": label,
+        "Ruta": path,
+        "Estado": "✅ OK" if _safe_exists(path) else "❌ Falta"
+    }
+
+
+def build_control_panel_files(circuito):
+    r = rutas(circuito)
+    rows = [
+        _file_status_row("Elo", r.get("elo", "")),
+        _file_status_row("Serve general", r.get("serve", "")),
+        _file_status_row("Return general", r.get("return", "")),
+        _file_status_row("Break general", r.get("break", "")),
+        _file_status_row("Históricos", r.get("historicos", "")),
+    ]
+    for sf in ["Hard", "Clay", "Grass"]:
+        rows.append(_file_status_row(f"Serve {sf}", ruta_stats_superficie(circuito, "serve", sf)))
+        rows.append(_file_status_row(f"Return {sf}", ruta_stats_superficie(circuito, "return", sf)))
+        rows.append(_file_status_row(f"Break {sf}", ruta_stats_superficie(circuito, "break", sf)))
+    if str(circuito).upper() == "ATP":
+        rows.append(_file_status_row("Challenger Elo", os.path.join("datos", "challenger", "challenger_elo.xlsx")))
+    return pd.DataFrame(rows)
+
+
+def render_control_panel(db, circuito):
+    st.subheader("🧭 Panel de Control")
+    st.caption("Panel seguro: solo comprueba estado, archivos y sesión. No toca predicciones ni mercados Over.")
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Versión app", APP_VERSION)
+    c2.metric("Jugadores cargados", f"{len(db):,}")
+    c3.metric("Circuito", circuito)
+    c4.metric("Over", "🔒 Blindado" if OVER_ENGINE_LOCKED else "Abierto")
+
+    st.success(OVER_ENGINE_LOCK_NOTE)
+    st.info("Fuente de partidos fijada: SofaScore. Winamax/listas simples quedan fuera del flujo principal para evitar lecturas mezcladas.")
+
+    st.divider()
+    st.subheader("📁 Archivos detectados")
+    files_df = build_control_panel_files(circuito)
+    st.dataframe(files_df, width='stretch', hide_index=True)
+
+    faltan = files_df[files_df["Estado"].astype(str).str.contains("Falta", na=False)]
+    if not faltan.empty:
+        st.warning(f"Faltan {len(faltan)} rutas/archivos. La app puede funcionar con fallbacks, pero conviene revisarlo.")
+    else:
+        st.success("Archivos principales encontrados.")
+
+    st.divider()
+    st.subheader("🧹 Herramientas seguras")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("🧹 Limpiar caché ahora", key="control_clear_cache", width='stretch'):
+            st.cache_data.clear()
+            st.success("Caché limpiada. Recarga o vuelve a ejecutar el análisis.")
+    with col_b:
+        if st.button("🔄 Reiniciar resultados de lote", key="control_clear_batch", width='stretch'):
+            for _k in ["batch_ok_df", "batch_ko_df", "batch_last_ready"]:
+                st.session_state.pop(_k, None)
+            st.success("Resultados de lote eliminados de la sesión.")
+
+    if "batch_ok_df" in st.session_state:
+        ok = st.session_state.get("batch_ok_df")
+        ko = st.session_state.get("batch_ko_df")
+        st.divider()
+        st.subheader("📊 Último análisis en sesión")
+        a, b, c = st.columns(3)
+        a.metric("Partidos analizados", len(ok) if ok is not None else 0)
+        b.metric("No encontrados", len(ko) if ko is not None else 0)
+        if ok is not None and isinstance(ok, pd.DataFrame) and "Pick oficial" in ok.columns:
+            c.metric("Picks oficiales", int(ok["Pick oficial"].astype(str).str.strip().ne("").sum()))
+        else:
+            c.metric("Picks oficiales", "-")
+
+
+def backup_analysis_excel(ok_df, ko_df, db, prefix="analisis_lista_tennis_ia"):
+    """Guarda una copia local del Excel en exports/. No modifica datos ni cálculos."""
+    try:
+        os.makedirs("exports", exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"{prefix}_{stamp}.xlsx"
+        path = os.path.join("exports", filename)
+        with open(path, "wb") as f:
+            f.write(batch_excel_with_not_found_bytes(ok_df, ko_df, db))
+        return True, path
+    except Exception as e:
+        return False, str(e)
+
 # =========================================================
 # UI
 # =========================================================
 
 with st.sidebar:
-    st.header("🎾 Tennis IA v23.26.6 Market Selector + Visual Coherence")
-    st.caption("ATP + Challenger ELO/Stats Engine")
+    st.header("🎾 Tennis IA")
+    st.caption(APP_VERSION)
+    st.caption("ATP + Challenger ELO/Stats Engine · SofaScore workflow")
+    st.caption("🔒 Over blindado")
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
     circuito = st.radio("Circuito", ["ATP", "WTA"])
-    modo = st.radio("Modo", ["Predictor", "Analizador por lista", "Validador histórico", "Analyzer"])
+    modo = st.radio("Modo", ["Panel de control", "Predictor", "Analizador por lista", "Validador histórico", "Analyzer"])
     mostrar_debug = st.toggle("🔧 Mostrar diagnóstico técnico", value=False)
 
 # =========================================================
@@ -8267,7 +8242,10 @@ if st.session_state.get("batch_app_version") != APP_VERSION:
         st.session_state.pop(_k, None)
     st.session_state["batch_app_version"] = APP_VERSION
 
-if modo == "Predictor":
+if modo == "Panel de control":
+    render_control_panel(db, circuito)
+
+elif modo == "Predictor":
     with st.sidebar:
         players = sorted(db.keys())
         surface = st.selectbox("Superficie", ["Hard","Clay","Grass"])
@@ -8796,6 +8774,7 @@ if modo == "Predictor":
 elif modo == "Analizador por lista":
     st.subheader("📋 Analizador por lista pegada")
     st.caption("Pega lista diaria o resultados de SofaScore. Se ignoran dobles/cancelados/retirados.")
+    st.success("Fuente fijada: SofaScore. Esta pantalla ya no usa Winamax ni listas simples como flujo principal.")
     st.info("Nota: en Sofascore resultados, el ML se valida con ganador real. Si el pegado incluye juegos por set, también valida Over 18.5 y, solo en WTA, Over 17.5. En tie-breaks puede contar puntos extra si Sofascore los copia como números separados.")
 
     with st.sidebar:
@@ -8813,7 +8792,7 @@ elif modo == "Analizador por lista":
             help="Puedes subirlo para analizar el día completo en una sola hoja. Si va lento, baja simulaciones a 500/1000."
         )
         formato_pegado = st.radio(
-            "Formato pegado",
+            "Formato SofaScore",
             ["Sofascore día auto ATP/WTA/Challenger", "Sofascore resultados auto ATP/WTA/Challenger"],
             index=0,
             help="Pega todo el día junto y la app filtra según el circuito elegido en la barra lateral. Ignora dobles/cancelados/retirados."
@@ -8842,7 +8821,7 @@ M. Landaluce
 Sebastián Baez - Roberto Carballés Baena"""
 
     raw_batch = st.text_area(
-        "Pega aquí los partidos",
+        "Pega aquí los partidos/resultados de SofaScore",
         height=260,
         placeholder=ejemplo
     )
@@ -9147,6 +9126,13 @@ Sebastián Baez - Roberto Carballés Baena"""
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="download_batch_excel"
                 )
+
+            if st.button("💾 Guardar copia automática en carpeta exports", key="backup_batch_excel"):
+                _ok_bk, _msg_bk = backup_analysis_excel(ok_saved, ko_saved, db)
+                if _ok_bk:
+                    st.success(f"Copia guardada: {_msg_bk}")
+                else:
+                    st.warning(f"No se pudo guardar la copia: {_msg_bk}")
 
         if ko_saved is not None and not ko_saved.empty:
             st.divider()
