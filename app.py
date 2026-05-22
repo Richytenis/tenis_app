@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.32.0-telegram-picks-sender"
+APP_VERSION = "v24.3.0-over-original-clean-market-hunter"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
@@ -7251,12 +7251,140 @@ def pick_oficial_v23301(row):
         return ""
 
     is_positive = market.startswith("✅") or market.startswith("🔥") or market.startswith("🧱")
-    is_supported_market = ("OVER" in mu) or ("ML" in mu) or ("GANADOR" in mu)
+    is_supported_market = ("OVER" in mu)
 
     if is_positive and is_supported_market:
         return f"{market} ({prob})" if prob else market
 
     return ""
+
+
+
+
+# =========================================================
+# v24.3.0 MARKET HUNTER INFORMATIVO — OVER ORIGINAL INTACTO
+# =========================================================
+# Importante:
+# - Esta capa NO toca Recomendación.
+# - NO toca Mercado recomendado.
+# - NO toca probabilidades Over.
+# - NO bloquea ni cambia Pick oficial Over.
+# Solo añade columnas informativas para estudiar gana set / radar / ML Trap.
+
+def _mh_parse_pct_v24300(v, default=0.0):
+    try:
+        if pd.isna(v):
+            return default
+        s = str(v).replace('%', '').replace(',', '.').strip()
+        if s == '' or s.lower() in ['nan', 'none']:
+            return default
+        x = float(s)
+        if x > 1:
+            x /= 100.0
+        return float(np.clip(x, 0.0, 1.0))
+    except Exception:
+        return default
+
+
+def _mh_parse_score_v24300(v, default=0.0):
+    try:
+        s = str(v).split('/')[0].replace(',', '.').strip()
+        if s == '' or s.lower() in ['nan', 'none']:
+            return default
+        return float(np.clip(float(s), 0, 100))
+    except Exception:
+        return default
+
+
+def market_hunter_row_v24300(row):
+    """Capa row-based para export/pantalla. No interviene en la selección del Over."""
+    fav_prob = _mh_parse_pct_v24300(row.get('ML favorito', 0.0), 0.0)
+    over18 = _mh_parse_pct_v24300(row.get('Over 18.5', 0.0), 0.0)
+    over19 = _mh_parse_pct_v24300(row.get('Over 19.5', 0.0), 0.0)
+    set3 = _mh_parse_pct_v24300(row.get('Partido a 3 sets', 0.0), 0.0)
+    fav20 = _mh_parse_pct_v24300(row.get('Favorito 2-0', 0.0), 0.0)
+    dogset = _mh_parse_pct_v24300(row.get('Prob gana set', 0.0), 0.0)
+
+    rec = str(row.get('Recomendación', '') or '')
+    market = str(row.get('Mercado recomendado', '') or '')
+    trust = str(row.get('Signal Trust', '') or '')
+    over_guard = str(row.get('Over Quality Guard', '') or '')
+    motivos_over = str(row.get('Motivos Over Guard', '') or '')
+    riesgos = str(row.get('Riesgos', '') or '')
+    txt = ' '.join([rec, market, trust, over_guard, motivos_over, riesgos]).upper()
+
+    favorito = str(row.get('Favorito modelo', '') or '').strip()
+    jugador_set = str(row.get('Jugador gana set', '') or '').strip()
+
+    over_block = ('OVER BLOQUEADO' in txt) or ('NO OVER' in txt)
+    over_watch = ('WATCH' in txt and 'OVER' in txt) or ('MIRAR UNDER' in txt)
+    datos_limitados = any(x in txt for x in ['DATOS PARCIALES', 'FALLBACK', 'ESTIMADO', 'INCOMPLET'])
+
+    # Scores simples e interpretables, derivados de columnas ya existentes.
+    ml_close = 1.0 - np.clip((max(fav_prob, 0.50) - 0.50) / 0.30, 0, 1)
+    competitiveness = float(np.clip(
+        100 * (0.36 * ml_close + 0.28 * max(set3, 0) + 0.24 * max(dogset, 0) + 0.12 * max(over18 - 0.64, 0) / 0.20),
+        0, 100
+    ))
+    set_resistance = float(np.clip(
+        100 * dogset + (over18 - 0.70) * 55 + (set3 - 0.40) * 70 - max(fav_prob - 0.68, 0) * 85 - max(fav20 - 0.58, 0) * 50,
+        0, 100
+    ))
+    chaos_score = float(np.clip(
+        competitiveness * 0.45 + set_resistance * 0.35 + (18 if over_block else 9 if over_watch else 0) + (8 if 0.50 <= fav_prob <= 0.64 else 0),
+        0, 100
+    ))
+
+    if fav_prob >= 0.70 and fav20 >= 0.62 and set_resistance < 48:
+        match_type = 'PARTIDO ROTO'
+    elif over18 >= 0.73 and not over_block and not over_watch and competitiveness >= 50:
+        match_type = 'OVER ESTABLE'
+    elif chaos_score >= 58 or (over_block and set_resistance >= 50) or (0.50 <= fav_prob <= 0.64 and over18 >= 0.70):
+        match_type = 'CAOS COMPETITIVO'
+    else:
+        match_type = 'NEUTRO / OBSERVAR'
+
+    ml_trap = bool(0.50 <= fav_prob <= 0.64 and over18 >= 0.70 and (set3 >= 0.42 or dogset >= 0.52 or chaos_score >= 58))
+
+    # WATCH muy estricto: no se usa para oficial; solo para estudiar.
+    watch = ''
+    if (match_type == 'OVER ESTABLE' and set_resistance >= 74 and set3 >= 0.455 and fav20 <= 0.42 and 0.56 <= fav_prob <= 0.64):
+        watch = '✅ WATCH'
+    if (match_type == 'OVER ESTABLE' and set_resistance >= 80 and set3 >= 0.47 and fav20 <= 0.39 and 0.56 <= fav_prob <= 0.62):
+        watch = '🔥 WATCH fuerte'
+
+    radar = ''
+    if not watch and match_type == 'CAOS COMPETITIVO' and set_resistance >= 62 and over18 >= 0.70 and fav20 <= 0.42:
+        radar = '🧪 RADAR limpio' if (set3 >= 0.47 and chaos_score <= 77 and set_resistance >= 66) else '🧪 RADAR caos'
+
+    plus25 = ''
+    if set3 >= 0.52 and chaos_score >= 78 and set_resistance >= 76 and fav_prob <= 0.56:
+        plus25 = '🧪 ESTUDIO extremo'
+
+    notas = []
+    if ml_trap:
+        notas.append('🚨 ML TRAP: favorito moderado + partido competitivo')
+    if watch and jugador_set:
+        notas.append(f'🎾 {jugador_set} gana set: {watch}')
+    if radar and jugador_set:
+        notas.append(f'🧪 {jugador_set} gana set: radar, no pick')
+    if over_block and set_resistance >= 50:
+        notas.append('Over bloqueado, pero con resistencia: revisar gana set')
+    if datos_limitados:
+        notas.append('Datos limitados: señal experimental')
+
+    return pd.Series({
+        'Tipo partido v24': match_type,
+        'Set Resistance v24': f'{set_resistance:.0f}/100',
+        'Chaos Score v24': f'{chaos_score:.0f}/100',
+        'ML Trap v24': 'Sí' if ml_trap else '',
+        'Gana set WATCH v24': watch,
+        'Jugador gana set WATCH': jugador_set if watch else '',
+        'Gana set RADAR v24': radar,
+        'Jugador gana set RADAR': jugador_set if radar else '',
+        '+2.5 sets WATCH v24': plus25,
+        'Notas Market Hunter': ' · '.join(notas),
+    })
 
 
 # =========================================================
@@ -7875,6 +8003,13 @@ def prepare_batch_display_table(ok_df):
     # v23.30.1: columna visible con el pick oficial real para revisar antes de descargar Excel.
     df["Pick oficial"] = df.apply(pick_oficial_v23301, axis=1)
 
+    # v24.3.0: Market Hunter informativo. No toca Over/Recomendación/Mercado/Pick.
+    try:
+        mh_cols = df.apply(market_hunter_row_v24300, axis=1)
+        df = pd.concat([df, mh_cols], axis=1)
+    except Exception:
+        pass
+
     preferred = [
         "Versión app",
         "Recomendación",
@@ -7896,6 +8031,16 @@ def prepare_batch_display_table(ok_df):
         "WTA Over17 Priority",
         "WTA Over17 Official Guard",
         "Signal Trust",
+        "Tipo partido v24",
+        "Set Resistance v24",
+        "Chaos Score v24",
+        "ML Trap v24",
+        "Gana set WATCH v24",
+        "Jugador gana set WATCH",
+        "Gana set RADAR v24",
+        "Jugador gana set RADAR",
+        "+2.5 sets WATCH v24",
+        "Notas Market Hunter",
         "Over Quality Guard",
         "Motivos Over Guard",
         "Under 2.5 Rescue",
