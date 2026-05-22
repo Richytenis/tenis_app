@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.34.0-over-opportunity-selector"
+APP_VERSION = "v23.33.0-control-panel-sofascore-over-locked"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -7254,7 +7254,7 @@ def pick_oficial_v23301(row):
 
     mu = market.upper()
     bad_tokens = [
-        "WATCH", "NO BET", "NO OVER", "NO ML", "BLOQUEADO", "CANDIDATO",
+        "WATCH", "NO BET", "NO OVER", "NO ML", "BLOQUEADO",
         "SOLO CONTEXTO", "OBSERVAR", "REVISAR", "DUDOS"
     ]
     if any(tok in mu for tok in bad_tokens):
@@ -7834,168 +7834,6 @@ def batch_recommendation(row):
 
     return "ML SOLO CONTEXTO"
 
-
-# =========================================================
-# v23.34 OVER OPPORTUNITY SELECTOR
-# Solo selector/etiquetas. NO modifica simulación, fórmulas ni probabilidades Over.
-# Objetivo: encontrar más oportunidades Over para seguimiento y backtesting.
-# =========================================================
-
-def aplicar_over_opportunity_selector_v23340(row):
-    """Añade oportunidades Over sin tocar el motor Over.
-
-    Reglas:
-    - No pisa un Over oficial ya existente.
-    - No convierte candidatos en Pick oficial: etiqueta CANDIDATO/WATCH.
-    - Si el Over Quality Guard bloquea, respeta el bloqueo.
-    - Usa probabilidades ya calculadas: Over 18.5/19.5, Fav 2-0, +2.5 sets, gana set.
-    """
-    current_market = str(row.get("Mercado recomendado", "") or "")
-    current_prob = str(row.get("Prob mercado recomendado", "") or "")
-    current_motivo = str(row.get("Motivo Market Selector", "") or "")
-
-    over18 = _row_pct(row, "Over 18.5", 0.0)
-    over19 = _row_pct(row, "Over 19.5", 0.0)
-    fav = _row_pct(row, "ML favorito", 0.0)
-    fav20 = _row_pct(row, "Favorito 2-0", 0.0)
-    set3 = _row_pct(row, "Partido a 3 sets", 0.0)
-    dog_set = _row_pct(row, "Prob gana set", 0.0)
-    min_conf = _row_pct(row, "Confianza mínima", 0.0)
-    gap = _row_pct(row, "Gap Elo/modelo", 0.0)
-    try:
-        min_surface = int(float(str(row.get("Mín. partidos superficie", "0") or 0).replace(",", ".")))
-    except Exception:
-        min_surface = 0
-
-    circuito_txt = " ".join([
-        str(row.get("Circuito cálculo", "") or ""),
-        str(row.get("Circuito datos", "") or ""),
-        str(row.get("Circuito fuente", "") or ""),
-        str(row.get("Torneo", "") or ""),
-        str(row.get("Estado", "") or ""),
-    ]).upper()
-    is_chall = _is_challenger_context(circuito_txt)
-    is_wta = "WTA" in circuito_txt
-
-    trust = str(row.get("Signal Trust", "") or "").upper()
-    risks = str(row.get("Riesgos", "") or "").upper()
-    aviso = str(row.get("Aviso datos", "") or "").upper()
-    estado = str(row.get("Estado", "") or "").upper()
-    datos_parciales = any(x in f"{trust} {risks} {aviso} {estado}" for x in ["FALLBACK", "PARCIAL", "ESTIMADO", "INCOMPLETO"])
-
-    def out(market, prob, estado_sel, motivo_extra, candidato=False, watch=False):
-        prob_txt = current_prob
-        if prob is not None:
-            try:
-                prob_txt = f"{float(prob):.1%}"
-            except Exception:
-                pass
-        motivo = current_motivo
-        if motivo_extra:
-            motivo = (motivo + " · " if motivo else "") + motivo_extra
-        return pd.Series({
-            "Mercado recomendado": market,
-            "Prob mercado recomendado": prob_txt,
-            "Motivo Market Selector": motivo,
-            "Over Selector Estado": estado_sel,
-            "Over Selector Motivo": motivo_extra,
-            "Over Candidato Fuerte": "Sí" if candidato else "No",
-            "Over Watch": "Sí" if watch else "No",
-        })
-
-    mu = current_market.upper()
-
-    # Si ya hay Over oficial limpio, no tocamos nada: solo lo marcamos como oficial existente.
-    if _is_official_over_market_v23300(current_market):
-        return out(current_market, None, "🔥 OFICIAL ACTUAL", "Over oficial existente; selector nuevo no interviene", False, False)
-
-    # Si hay un pick oficial ML, lo respetamos. El Over queda visible solo en columnas de probabilidad.
-    current_is_official = (current_market.strip().startswith("✅") or current_market.strip().startswith("🔥")) and not any(x in mu for x in ["WATCH", "CANDIDATO", "NO BET", "NO OVER", "SOLO CONTEXTO"])
-    if current_is_official and "ML" in mu:
-        return out(current_market, None, "ML OFICIAL RESPETADO", "Hay ML oficial; no se pisa con candidato Over", False, False)
-
-    if _row_over_guard_active(row):
-        return out(current_market, None, "🚫 BLOQUEADO", "Over Quality Guard activo; no se crea oportunidad Over", False, False)
-
-    # Penalizadores del selector: no cambian probabilidades, solo exigen más para destacar.
-    penalty = 0.0
-    reasons = []
-    if is_chall:
-        penalty += 0.02
-        reasons.append("Challenger/Qualy: +2pp exigencia")
-    if is_wta:
-        penalty += 0.02
-        reasons.append("WTA: +2pp exigencia")
-    if datos_parciales:
-        penalty += 0.03
-        reasons.append("datos parciales/fallback")
-    if min_conf < 0.45:
-        penalty += 0.04
-        reasons.append("confianza baja")
-    elif min_conf < 0.55:
-        penalty += 0.02
-        reasons.append("confianza media-baja")
-    if min_surface < 5:
-        penalty += 0.03
-        reasons.append("muestra superficie muy corta")
-    elif min_surface < 10:
-        penalty += 0.015
-        reasons.append("muestra superficie corta")
-    if gap >= 0.18:
-        penalty += 0.03
-        reasons.append("gap Elo/modelo alto")
-    elif gap >= 0.14:
-        penalty += 0.015
-        reasons.append("gap Elo/modelo medio")
-
-    # Perfil de partido que sí ayuda al Over 18.5: no necesita 3 sets, pero sí resistencia mínima.
-    resistencia = 0
-    if fav <= 0.68:
-        resistencia += 1
-    if fav20 <= 0.56:
-        resistencia += 1
-    if set3 >= 0.40:
-        resistencia += 1
-    if dog_set >= 0.50:
-        resistencia += 1
-    if over19 >= 0.62:
-        resistencia += 1
-
-    riesgo_2_0_corto = (fav >= 0.72 and fav20 >= 0.58 and set3 < 0.43 and dog_set < 0.50)
-    if riesgo_2_0_corto:
-        reasons.append("riesgo 2-0 corto")
-
-    candidato_min = 0.72 + penalty
-    watch_min = 0.68 + penalty
-
-    # Over 19.5 candidato solo cuando el 18.5 también acompaña y hay lectura larga.
-    if over19 >= max(0.66 + penalty, 0.64) and over18 >= max(0.72 + penalty, 0.70) and resistencia >= 3 and not riesgo_2_0_corto:
-        motivo = "v23.34: candidato Over 19.5 por Over18 alto + resistencia + línea 19.5 útil"
-        if reasons:
-            motivo += " (" + "; ".join(reasons[:3]) + ")"
-        return out("✅ CANDIDATO OVER 19.5", over19, "✅ CANDIDATO FUERTE", motivo, True, False)
-
-    if over18 >= candidato_min and resistencia >= 2 and not riesgo_2_0_corto:
-        motivo = "v23.34: candidato Over 18.5; probabilidad alta y resistencia suficiente sin tocar motor"
-        if reasons:
-            motivo += " (" + "; ".join(reasons[:3]) + ")"
-        return out("✅ CANDIDATO OVER 18.5", over18, "✅ CANDIDATO FUERTE", motivo, True, False)
-
-    if over18 >= watch_min and resistencia >= 2 and not _row_over_guard_watch(row):
-        motivo = "v23.34: Watch Over 18.5; buena probabilidad, pendiente de validar en backtesting"
-        if riesgo_2_0_corto:
-            motivo += " · riesgo 2-0 corto"
-        if reasons:
-            motivo += " (" + "; ".join(reasons[:3]) + ")"
-        return out("👀 WATCH OVER 18.5", over18, "👀 WATCH", motivo, False, True)
-
-    estado_sel = "SIN OPORTUNIDAD"
-    motivo = "v23.34: no supera filtros de oportunidad Over"
-    if riesgo_2_0_corto:
-        estado_sel = "RIESGO 2-0 CORTO"
-        motivo += " · riesgo 2-0 corto"
-    return out(current_market, None, estado_sel, motivo, False, False)
-
 def prepare_batch_display_table(ok_df):
     if ok_df is None or ok_df.empty:
         return ok_df
@@ -8049,11 +7887,6 @@ def prepare_batch_display_table(ok_df):
     for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector", "ML Quality Guard", "Motivos ML Guard"]:
         df[_col] = ml_guard_cols[_col]
 
-    # v23.34: Over Opportunity Selector. Solo etiqueta candidatos/watch; no toca cálculo Over.
-    over_opp_cols = df.apply(aplicar_over_opportunity_selector_v23340, axis=1)
-    for _col in ["Mercado recomendado", "Prob mercado recomendado", "Motivo Market Selector", "Over Selector Estado", "Over Selector Motivo", "Over Candidato Fuerte", "Over Watch"]:
-        df[_col] = over_opp_cols[_col]
-
     # v23.30.1: columna visible con el pick oficial real para revisar antes de descargar Excel.
     df["Pick oficial"] = df.apply(pick_oficial_v23301, axis=1)
 
@@ -8064,10 +7897,6 @@ def prepare_batch_display_table(ok_df):
         "Mercado recomendado",
         "Prob mercado recomendado",
         "Motivo Market Selector",
-        "Over Selector Estado",
-        "Over Selector Motivo",
-        "Over Candidato Fuerte",
-        "Over Watch",
         "Fecha",
         "Hora",
         "Partido",
@@ -8224,236 +8053,6 @@ def batch_excel_bytes(df):
     return output.getvalue()
 
 
-
-# =========================================================
-# v23.33.1 BACKTESTING EXPORT FORMAT
-# Exporta una hoja preparada para medir tasa de acierto por mercado.
-# NO modifica cálculos, simulación, filtros ni matemáticas de Over.
-# =========================================================
-
-def _bt_pct_to_float(v):
-    try:
-        if pd.isna(v):
-            return np.nan
-        s = str(v).replace(",", ".").replace("%", "").strip()
-        if s == "":
-            return np.nan
-        n = float(s)
-        if n > 1:
-            n /= 100.0
-        return float(n)
-    except Exception:
-        return np.nan
-
-
-def _bt_txt(v):
-    if v is None:
-        return ""
-    try:
-        if pd.isna(v):
-            return ""
-    except Exception:
-        pass
-    return str(v).strip()
-
-
-def _bt_split_partido(partido):
-    p = _bt_txt(partido)
-    if " vs " in p:
-        a, b = p.split(" vs ", 1)
-        return a.strip(), b.strip()
-    return "", ""
-
-
-def _bt_parse_sets(v):
-    s = _bt_txt(v)
-    m = re.search(r"(\d+)\s*[-/]\s*(\d+)", s)
-    if not m:
-        return None, None
-    return int(m.group(1)), int(m.group(2))
-
-
-def _bt_name_eq(a, b):
-    return limpiar(a) == limpiar(b) and limpiar(a) != ""
-
-
-def crear_hoja_backtesting_export(df):
-    """
-    Crea una hoja normalizada para backtesting diario.
-    Objetivo:
-    - Una fila por partido.
-    - Probabilidades del modelo por mercado.
-    - Resultado real si la lista venía desde SofaScore resultados.
-    - Columnas de acierto calculables.
-    - Over queda marcado como protegido: solo se registra/exporta.
-    """
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    rows = []
-    for _, row in df.iterrows():
-        partido = _bt_txt(row.get("Partido", ""))
-        j1, j2 = _bt_split_partido(partido)
-        favorito = _bt_txt(row.get("Favorito modelo", ""))
-        ganador_real = _bt_txt(row.get("Ganador real", ""))
-        resultado_sets = _bt_txt(row.get("Resultado sets", ""))
-        p1_sets, p2_sets = _bt_parse_sets(resultado_sets)
-        total_games_real = row.get("Total games real", "")
-
-        prob_ml = _bt_pct_to_float(row.get("ML favorito", ""))
-        prob_gana_set = _bt_pct_to_float(row.get("Prob gana set", ""))
-        prob_3sets = _bt_pct_to_float(row.get("Partido a 3 sets", ""))
-        prob_fav20 = _bt_pct_to_float(row.get("Favorito 2-0", ""))
-        prob_over17 = _bt_pct_to_float(row.get("Over 17.5", ""))
-        prob_over18 = _bt_pct_to_float(row.get("Over 18.5", ""))
-        prob_over19 = _bt_pct_to_float(row.get("Over 19.5", ""))
-        prob_under22 = _bt_pct_to_float(row.get("Under 22.5", ""))
-
-        dog_set_player = _bt_txt(row.get("Jugador gana set", ""))
-
-        ml_hit = _bt_txt(row.get("Acierta ML modelo", ""))
-        if ml_hit == "" and ganador_real and favorito:
-            ml_hit = "Sí" if _bt_name_eq(ganador_real, favorito) else "No"
-
-        sets3_hit = _bt_txt(row.get("Acierta 3 sets", ""))
-        if sets3_hit == "" and p1_sets is not None and p2_sets is not None:
-            sets3_hit = "Sí" if (p1_sets + p2_sets) == 3 else "No"
-
-        gana_set_hit = ""
-        if dog_set_player and p1_sets is not None and p2_sets is not None:
-            if _bt_name_eq(dog_set_player, j1):
-                gana_set_hit = "Sí" if p1_sets >= 1 else "No"
-            elif _bt_name_eq(dog_set_player, j2):
-                gana_set_hit = "Sí" if p2_sets >= 1 else "No"
-
-        fav20_hit = ""
-        if favorito and p1_sets is not None and p2_sets is not None:
-            if _bt_name_eq(favorito, j1):
-                fav20_hit = "Sí" if (p1_sets == 2 and p2_sets == 0) else "No"
-            elif _bt_name_eq(favorito, j2):
-                fav20_hit = "Sí" if (p1_sets == 0 and p2_sets == 2) else "No"
-
-        over17_hit = _bt_txt(row.get("Acierta Over 17.5", ""))
-        over18_hit = _bt_txt(row.get("Acierta Over 18.5", ""))
-        over19_hit = ""
-        under22_hit = ""
-        try:
-            tg = float(str(total_games_real).replace(",", "."))
-            if not np.isnan(prob_over19):
-                over19_hit = "Sí" if tg > 19.5 else "No"
-            if not np.isnan(prob_under22):
-                under22_hit = "Sí" if tg < 22.5 else "No"
-        except Exception:
-            pass
-
-        rows.append({
-            "Fecha": row.get("Fecha", ""),
-            "Hora": row.get("Hora", ""),
-            "Fuente partidos": "SofaScore",
-            "Circuito fuente": row.get("Circuito fuente", ""),
-            "Circuito datos": row.get("Circuito datos", ""),
-            "Circuito cálculo": row.get("Circuito cálculo", ""),
-            "Torneo": row.get("Torneo", ""),
-            "Superficie": row.get("Superficie", ""),
-            "Jugador 1": j1,
-            "Jugador 2": j2,
-            "Partido": partido,
-            "Estado lectura": row.get("Estado", ""),
-            "Aviso datos": row.get("Aviso datos", ""),
-            "Favorito modelo": favorito,
-            "Prob ML favorito": prob_ml,
-            "Jugador gana set": dog_set_player,
-            "Prob gana set": prob_gana_set,
-            "Prob +2.5 sets": prob_3sets,
-            "Prob favorito 2-0": prob_fav20,
-            "Prob Over 17.5 🔒": prob_over17,
-            "Prob Over 18.5 🔒": prob_over18,
-            "Prob Over 19.5 🔒": prob_over19,
-            "Prob Under 22.5": prob_under22,
-            "Mercado recomendado": row.get("Mercado recomendado", ""),
-            "Prob mercado recomendado": _bt_pct_to_float(row.get("Prob mercado recomendado", "")),
-            "Pick oficial": row.get("Pick oficial", ""),
-            "Recomendación": row.get("Recomendación", ""),
-            "Signal Trust": row.get("Signal Trust", ""),
-            "Motivo selector": row.get("Motivo Market Selector", ""),
-            "Over Selector Estado": row.get("Over Selector Estado", ""),
-            "Over Selector Motivo": row.get("Over Selector Motivo", ""),
-            "Over Candidato Fuerte": row.get("Over Candidato Fuerte", ""),
-            "Over Watch": row.get("Over Watch", ""),
-            "Riesgos": row.get("Riesgos", ""),
-            "Ganador real": ganador_real,
-            "Resultado sets": resultado_sets,
-            "Marcador games": row.get("Marcador games", ""),
-            "Total games real": total_games_real,
-            "Acierta ML": ml_hit,
-            "Acierta gana set": gana_set_hit,
-            "Acierta +2.5 sets": sets3_hit,
-            "Acierta favorito 2-0": fav20_hit,
-            "Acierta Over 17.5 🔒": over17_hit,
-            "Acierta Over 18.5 🔒": over18_hit,
-            "Acierta Over 19.5 🔒": over19_hit,
-            "Acierta Under 22.5": under22_hit,
-            "Over engine status": "🔒 PROTEGIDO - solo exportación/medición, no cálculo",
-        })
-
-    out = pd.DataFrame(rows)
-
-    # Mantener porcentajes como números para que Excel pueda filtrar/ordenar bien.
-    pct_cols = [c for c in out.columns if c.startswith("Prob ")]
-    for c in pct_cols:
-        out[c] = pd.to_numeric(out[c], errors="coerce")
-
-    return out
-
-
-def crear_resumen_backtesting_export(bt_df):
-    if bt_df is None or bt_df.empty:
-        return pd.DataFrame(columns=["Mercado", "Evaluados", "Aciertos", "Fallos", "% Acierto", "Recomendados por selector", "Estado"])
-
-    markets = [
-        ("ML", "Prob ML favorito", "Acierta ML", "ML|GANADOR|FAVORITO"),
-        ("Gana al menos un set", "Prob gana set", "Acierta gana set", "GANA SET|AL MENOS"),
-        ("+2.5 sets", "Prob +2.5 sets", "Acierta +2.5 sets", "3 SET|\\+2.5|PARTIDO A 3"),
-        ("Favorito 2-0", "Prob favorito 2-0", "Acierta favorito 2-0", "2-0"),
-        ("Over 17.5 🔒", "Prob Over 17.5 🔒", "Acierta Over 17.5 🔒", "OVER 17.5"),
-        ("Over 18.5 🔒", "Prob Over 18.5 🔒", "Acierta Over 18.5 🔒", "OVER 18.5"),
-        ("Over 19.5 🔒", "Prob Over 19.5 🔒", "Acierta Over 19.5 🔒", "OVER 19.5"),
-        ("Under 22.5", "Prob Under 22.5", "Acierta Under 22.5", "UNDER 22.5"),
-    ]
-
-    rows = []
-    selector = bt_df.get("Mercado recomendado", pd.Series([""] * len(bt_df))).astype(str).str.upper()
-    for market, prob_col, hit_col, selector_pat in markets:
-        if prob_col not in bt_df.columns or hit_col not in bt_df.columns:
-            continue
-        hit_series = bt_df[hit_col].astype(str).str.strip().str.lower()
-        mask = hit_series.isin(["sí", "si", "no"])
-        evaluados = int(mask.sum())
-        aciertos = int(hit_series[mask].isin(["sí", "si"]).sum())
-        fallos = int(evaluados - aciertos)
-        pct = aciertos / evaluados if evaluados else np.nan
-        recomendados = int(selector.str.contains(selector_pat, regex=True, na=False).sum())
-        candidatos = 0
-        watch = 0
-        if "Over" in market and "Over Candidato Fuerte" in bt_df.columns:
-            candidatos = int(bt_df["Over Candidato Fuerte"].astype(str).str.upper().isin(["SÍ", "SI"]).sum())
-        if "Over" in market and "Over Watch" in bt_df.columns:
-            watch = int(bt_df["Over Watch"].astype(str).str.upper().isin(["SÍ", "SI"]).sum())
-        estado = "🔒 Over protegido" if "Over" in market else "OK"
-        rows.append({
-            "Mercado": market,
-            "Evaluados": evaluados,
-            "Aciertos": aciertos,
-            "Fallos": fallos,
-            "% Acierto": pct,
-            "Recomendados por selector": recomendados,
-            "Candidatos Over v23.34": candidatos if "Over" in market else "",
-            "Watch Over v23.34": watch if "Over" in market else "",
-            "Estado": estado,
-        })
-    return pd.DataFrame(rows)
-
-
 def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -8461,15 +8060,6 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
         ko_sheet = enrich_not_found_with_suggestions(ko_df, db) if ko_df is not None and not ko_df.empty else pd.DataFrame()
 
         ok_sheet.to_excel(writer, index=False, sheet_name="Analisis")
-
-        # Hoja preparada para backtesting diario.
-        # Solo reordena/exporta datos ya calculados; no toca motor ni matemáticas de Over.
-        bt_sheet = crear_hoja_backtesting_export(ok_sheet)
-        if not bt_sheet.empty:
-            bt_sheet.to_excel(writer, index=False, sheet_name="Backtesting")
-            resumen_bt = crear_resumen_backtesting_export(bt_sheet)
-            resumen_bt.to_excel(writer, index=False, sheet_name="Resumen_Mercados")
-
         if not ko_sheet.empty:
             ko_sheet.to_excel(writer, index=False, sheet_name="No encontrados")
 
@@ -8496,18 +8086,6 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
                 letter = col_cells[0].column_letter
                 max_len = max([len(str(c.value)) if c.value is not None else 0 for c in col_cells] + [10])
                 ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 42)
-
-            # Formato porcentaje para hojas de backtesting/resumen.
-            for header_cell in ws[1]:
-                header = str(header_cell.value or "")
-                if header.startswith("Prob ") or header == "% Acierto":
-                    for data_cell in ws.iter_cols(min_col=header_cell.column, max_col=header_cell.column, min_row=2, max_row=ws.max_row):
-                        for c in data_cell:
-                            c.number_format = "0.0%"
-
-            if ws.title in ["Backtesting", "Resumen_Mercados"]:
-                ws.freeze_panes = "A2"
-                ws.auto_filter.ref = ws.dimensions
 
     output.seek(0)
     return output.getvalue()
