@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.35.0-sofascore-auto-extractor"
+APP_VERSION = "v23.36.0-mobile-api-tennis-loader"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8508,6 +8508,210 @@ def render_sofascore_auto_extractor(circuito):
                     st.warning("SofaScore respondió, pero no quedaron partidos tras filtrar. Prueba desactivar el filtro o cambia ATP/WTA en la barra lateral.")
                 st.rerun()
 
+
+# =========================================================
+# v23.36 MOBILE API TENNIS LOADER
+# Fuente alternativa para usar la app desde móvil sin copiar/pegar SofaScore.
+# Solo rellena el cuadro de texto en formato ya soportado. NO toca Over ni simulaciones.
+# =========================================================
+
+API_TENNIS_IMPORT_VERSION = "v23.36.0-mobile-api-tennis-loader"
+API_TENNIS_BASE_URL = "https://api.api-tennis.com/tennis/"
+
+
+def _secret_value(*names, default=""):
+    """Lee claves desde st.secrets o variables de entorno sin romper la app."""
+    for name in names:
+        try:
+            if name in st.secrets:
+                v = st.secrets.get(name, "")
+                if v:
+                    return str(v).strip()
+        except Exception:
+            pass
+        try:
+            v = os.environ.get(name, "")
+            if v:
+                return str(v).strip()
+        except Exception:
+            pass
+    return default
+
+
+def _api_tennis_event_type_to_circuit(event_type):
+    txt = normalizar_texto(event_type).upper()
+    if "DOUBLES" in txt:
+        return "DOBLES"
+    if "WTA" in txt or "WOMEN" in txt:
+        if "CHALLENGER" in txt or "125" in txt:
+            return "WTA_125"
+        if "ITF" in txt:
+            return "ITF_WTA"
+        return "WTA"
+    if "CHALLENGER" in txt:
+        return "CHALLENGER_ATP"
+    if "ITF" in txt:
+        return "ITF_ATP"
+    if "ATP" in txt or "MEN" in txt:
+        return "ATP"
+    return "DESCONOCIDO"
+
+
+def _api_tennis_is_doubles(item):
+    txt = " ".join([
+        str(item.get("event_type_type", "")),
+        str(item.get("tournament_name", "")),
+        str(item.get("event_first_player", "")),
+        str(item.get("event_second_player", "")),
+    ]).lower()
+    return "doubles" in txt or "/" in txt or " dobles" in txt
+
+
+def _api_tennis_surface(item, default_surface="Clay"):
+    txt = " ".join([
+        str(item.get("tournament_name", "")),
+        str(item.get("tournament_round", "")),
+        str(item.get("event_type_type", "")),
+    ])
+    return normalizar_superficie_pegada(txt, default=default_surface)
+
+
+def _api_tennis_to_match(item, fecha_iso="", default_surface="Clay"):
+    p1 = normalizar_texto(item.get("event_first_player", ""))
+    p2 = normalizar_texto(item.get("event_second_player", ""))
+    if not p1 or not p2:
+        return None
+    if _api_tennis_is_doubles(item):
+        return None
+    if es_rival_pendiente_pegado(p1) or es_rival_pendiente_pegado(p2):
+        return None
+
+    circuito_detectado = _api_tennis_event_type_to_circuit(item.get("event_type_type", ""))
+    if circuito_detectado == "DOBLES":
+        return None
+
+    torneo = normalizar_texto(item.get("tournament_name", "")) or "API Tennis"
+    ronda = normalizar_texto(item.get("tournament_round", ""))
+    if ronda and ronda not in torneo:
+        torneo = f"{torneo} · {ronda}"
+
+    return {
+        "date": fecha_iso or normalizar_texto(item.get("event_date", "")),
+        "time": normalizar_texto(item.get("event_time", "")) or "00:00",
+        # API Tennis no siempre devuelve país en fixtures; usamos marcador neutro para conservar formato.
+        "p1_country": "USA",
+        "p2_country": "USA",
+        "p1_raw": p1,
+        "p2_raw": p2,
+        "surface": _api_tennis_surface(item, default_surface=default_surface),
+        "torneo": torneo,
+        "circuito_detectado": circuito_detectado,
+        "odd1": None,
+        "odd2": None,
+        "quoted_side": None,
+        "quoted_odd": None,
+        "quoted_text": None,
+        "source": "API Tennis auto",
+        "api_tennis_event_key": item.get("event_key", ""),
+    }
+
+
+@st.cache_data(show_spinner=False, ttl=900)
+def fetch_api_tennis_fixtures(fecha_iso, default_surface="Clay"):
+    """
+    Carga fixtures desde API-Tennis. Requiere API_TENNIS_KEY en secrets.toml.
+    Solo convierte datos a formato de pegado; no modifica análisis ni mercados.
+    """
+    api_key = _secret_value("API_TENNIS_KEY", "API_TENNIS_API_KEY", "APITENNIS_KEY")
+    if not api_key:
+        return {
+            "ok": False,
+            "matches": [],
+            "error": "Falta API_TENNIS_KEY en .streamlit/secrets.toml",
+            "debug": "sin_api_key",
+        }
+
+    params = {
+        "method": "get_fixtures",
+        "APIkey": api_key,
+        "date_start": fecha_iso,
+        "date_stop": fecha_iso,
+        "timezone": "Europe/Madrid",
+    }
+    safe_debug = f"method=get_fixtures date={fecha_iso} timezone=Europe/Madrid"
+    try:
+        r = requests.get(API_TENNIS_BASE_URL, params=params, timeout=20)
+        if r.status_code != 200:
+            return {"ok": False, "matches": [], "error": f"HTTP {r.status_code} en API Tennis", "debug": safe_debug}
+        data = r.json()
+    except Exception as e:
+        return {"ok": False, "matches": [], "error": f"Error conectando con API Tennis: {str(e)[:160]}", "debug": safe_debug}
+
+    if not isinstance(data, dict):
+        return {"ok": False, "matches": [], "error": "Respuesta API Tennis no válida", "debug": safe_debug}
+
+    if str(data.get("success", "0")) not in ["1", "True", "true"]:
+        err = data.get("error") or data.get("message") or data.get("result") or "API Tennis no devolvió success=1"
+        return {"ok": False, "matches": [], "error": str(err)[:220], "debug": safe_debug}
+
+    result = data.get("result", [])
+    if not isinstance(result, list):
+        return {"ok": False, "matches": [], "error": "API Tennis no devolvió lista de partidos", "debug": safe_debug}
+
+    matches = []
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        m = _api_tennis_to_match(item, fecha_iso=fecha_iso, default_surface=default_surface)
+        if m:
+            matches.append(m)
+
+    matches = sorted(matches, key=lambda x: (str(x.get("time", "")), str(x.get("torneo", "")), str(x.get("p1_raw", ""))))
+    return {"ok": True, "matches": matches, "error": "", "debug": safe_debug, "raw_count": len(result)}
+
+
+def render_api_tennis_mobile_loader(circuito):
+    """UI móvil: carga partidos por API Tennis y rellena el cuadro de SofaScore."""
+    with st.expander("📲 Modo móvil: cargar partidos con API Tennis", expanded=False):
+        st.caption("Alternativa para fines de semana: desde el móvil pulsas un botón y la app rellena el cuadro. Requiere API_TENNIS_KEY en secrets.toml. No toca Over ni probabilidades.")
+
+        api_key_present = bool(_secret_value("API_TENNIS_KEY", "API_TENNIS_API_KEY", "APITENNIS_KEY"))
+        if api_key_present:
+            st.success("API_TENNIS_KEY detectada")
+        else:
+            st.warning("Falta API_TENNIS_KEY. Añádela en .streamlit/secrets.toml para activar este modo.")
+            st.code('API_TENNIS_KEY = "tu_clave_de_api_tennis"', language="toml")
+
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with c1:
+            fecha_api = st.date_input("Fecha API Tennis", value=pd.Timestamp.today(tz="Europe/Madrid").date(), key="api_tennis_date")
+        with c2:
+            solo_circuito_api = st.toggle(f"Filtrar por {circuito}", value=True, key="api_tennis_filter_now")
+        with c3:
+            default_surface_label = st.selectbox("Superficie si falta", ["Clay", "Hard", "Grass"], index=0, key="api_tennis_default_surface")
+
+        do_api_fetch = st.button("📥 Cargar desde API Tennis", width='stretch', key="btn_fetch_api_tennis_mobile")
+
+        if do_api_fetch:
+            fecha_iso = pd.to_datetime(fecha_api).strftime("%Y-%m-%d")
+            res = fetch_api_tennis_fixtures(fecha_iso, default_surface=default_surface_label)
+            if not res.get("ok"):
+                st.error(f"No se pudo cargar API Tennis: {res.get('error', 'error desconocido')}")
+                if mostrar_debug:
+                    st.caption(f"Debug API Tennis: {res.get('debug','')}")
+            else:
+                matches = res.get("matches", [])
+                total = len(matches)
+                raw_count = res.get("raw_count", total)
+                if solo_circuito_api:
+                    matches = filtrar_matches_por_circuito_pegado(matches, circuito)
+                texto = sofascore_matches_to_paste_text(matches)
+                st.session_state["sofa_raw_batch"] = texto
+                st.success(f"API Tennis cargó {len(matches)} partidos para {circuito} ({total} singles útiles / {raw_count} eventos brutos). Revisa el cuadro y pulsa ANALIZAR LISTA.")
+                if len(matches) == 0:
+                    st.warning("La API respondió, pero no quedaron partidos tras filtrar. Prueba cambiar ATP/WTA o desactivar el filtro.")
+                st.rerun()
+
 # =========================================================
 # UI
 # =========================================================
@@ -9136,6 +9340,7 @@ M. Landaluce
 Sebastián Baez - Roberto Carballés Baena"""
 
     render_sofascore_auto_extractor(circuito)
+    render_api_tennis_mobile_loader(circuito)
 
     raw_batch = st.text_area(
         "Pega aquí los partidos/resultados de SofaScore",
