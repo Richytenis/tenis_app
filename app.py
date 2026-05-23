@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.36.0-mobile-api-tennis-loader"
+APP_VERSION = "v23.36.1-api-tennis-no-itf-default"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -4797,13 +4797,23 @@ def es_linea_torneo_pegado(line):
     return False
 
 
-def filtrar_matches_por_circuito_pegado(matches, circuito):
-    """Si la app está en ATP, deja ATP+Challenger ATP. Si está en WTA, deja WTA/WTA125."""
+def filtrar_matches_por_circuito_pegado(matches, circuito, incluir_itf=False):
+    """
+    Si la app está en ATP, deja ATP+Challenger ATP. Si está en WTA, deja WTA/WTA125.
+
+    v23.36.1: ITF queda fuera por defecto porque el modelo actual no lo usa
+    como flujo principal de pronósticos y puede ensuciar el análisis. Se puede
+    activar manualmente solo para observación/debug.
+    """
     circuito = str(circuito).upper()
     if circuito == "ATP":
-        allowed = {"ATP", "CHALLENGER_ATP", "ITF_ATP"}
+        allowed = {"ATP", "CHALLENGER_ATP"}
+        if incluir_itf:
+            allowed.add("ITF_ATP")
     else:
-        allowed = {"WTA", "WTA_125", "CHALLENGER_WTA", "ITF_WTA"}
+        allowed = {"WTA", "WTA_125", "CHALLENGER_WTA"}
+        if incluir_itf:
+            allowed.add("ITF_WTA")
     return [m for m in matches if m.get("circuito_detectado") in allowed]
 
 
@@ -8515,7 +8525,7 @@ def render_sofascore_auto_extractor(circuito):
 # Solo rellena el cuadro de texto en formato ya soportado. NO toca Over ni simulaciones.
 # =========================================================
 
-API_TENNIS_IMPORT_VERSION = "v23.36.0-mobile-api-tennis-loader"
+API_TENNIS_IMPORT_VERSION = "v23.36.1-api-tennis-no-itf-default"
 API_TENNIS_BASE_URL = "https://api.api-tennis.com/tennis/"
 
 
@@ -8690,6 +8700,12 @@ def render_api_tennis_mobile_loader(circuito):
         with c3:
             default_surface_label = st.selectbox("Superficie si falta", ["Clay", "Hard", "Grass"], index=0, key="api_tennis_default_surface")
 
+        incluir_itf_api = st.toggle("Incluir ITF", value=False, key="api_tennis_include_itf")
+        if incluir_itf_api:
+            st.warning("ITF activado solo para observación: puede tener menos datos y más ruido. No recomendado para picks oficiales.")
+        else:
+            st.caption("ITF queda excluido por defecto. La app se centra en ATP/WTA/Challenger/Qualy.")
+
         do_api_fetch = st.button("📥 Cargar desde API Tennis", width='stretch', key="btn_fetch_api_tennis_mobile")
 
         if do_api_fetch:
@@ -8703,11 +8719,16 @@ def render_api_tennis_mobile_loader(circuito):
                 matches = res.get("matches", [])
                 total = len(matches)
                 raw_count = res.get("raw_count", total)
+                itf_count = sum(1 for m in matches if "ITF" in str(m.get("circuito_detectado", "")).upper())
                 if solo_circuito_api:
-                    matches = filtrar_matches_por_circuito_pegado(matches, circuito)
+                    matches = filtrar_matches_por_circuito_pegado(matches, circuito, incluir_itf=incluir_itf_api)
+                elif not incluir_itf_api:
+                    matches = [m for m in matches if "ITF" not in str(m.get("circuito_detectado", "")).upper()]
                 texto = sofascore_matches_to_paste_text(matches)
                 st.session_state["sofa_raw_batch"] = texto
                 st.success(f"API Tennis cargó {len(matches)} partidos para {circuito} ({total} singles útiles / {raw_count} eventos brutos). Revisa el cuadro y pulsa ANALIZAR LISTA.")
+                if itf_count and not incluir_itf_api:
+                    st.info(f"Se han excluido {itf_count} partidos ITF por defecto para no ensuciar los pronósticos.")
                 if len(matches) == 0:
                     st.warning("La API respondió, pero no quedaron partidos tras filtrar. Prueba cambiar ATP/WTA o desactivar el filtro.")
                 st.rerun()
