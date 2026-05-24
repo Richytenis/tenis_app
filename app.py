@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.36.4-challenger-over-selector-fix"
+APP_VERSION = "v23.37.0-max-acierto-selector"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -2894,6 +2894,12 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "dog_over20": res["dog_over20"] / n,
         "fav_2_0": fav20,
         "dog_wins_set": dogset,
+        # v23.37: probabilidades exactas de "gana al menos 1 set" por jugador.
+        # No toca el motor Over; solo expone resultados ya simulados para el selector de máximo acierto.
+        "p1_wins_set_any": res["p1_wins_set_any"] / n,
+        "p2_wins_set_any": res["p2_wins_set_any"] / n,
+        "p1_2_0": res["p1_2_0"] / n,
+        "p2_2_0": res["p2_2_0"] / n,
         "long_match": longm,
         "games": res["games"],
         "games_p1": res["games_p1"],
@@ -6009,6 +6015,179 @@ def batch_pick_label(sim, over17, over18, over19, over20, over22, under22, p1_na
     return label, float(prob)
 
 
+
+def _safe_float_v23370(x, default=0.0):
+    try:
+        if x is None or pd.isna(x):
+            return default
+        return float(x)
+    except Exception:
+        return default
+
+
+def _confianza_acierto_v23370(prob):
+    prob = _safe_float_v23370(prob, 0.0)
+    if prob >= 0.84:
+        return "🔥 Muy alta"
+    if prob >= 0.78:
+        return "✅ Alta"
+    if prob >= 0.70:
+        return "✅ Media-alta"
+    if prob >= 0.64:
+        return "⚖️ Media"
+    return "⚠️ Baja"
+
+
+def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, over22, under22,
+                                           p1_name, p2_name, circuito=None, surface=None):
+    """
+    v23.37 Selector Maestro de Máximo Acierto.
+    Objetivo: para cada partido elegir el mercado con MAYOR probabilidad estimada.
+    - No usa cuotas.
+    - No calcula value.
+    - No modifica ninguna fórmula ni guard del motor Over.
+    - Usa las probabilidades ya calculadas por la simulación: ML, gana set, overs y 3 sets.
+    """
+    p1c = _safe_float_v23370(sim.get("p1_cal", 0.5), 0.5)
+    p2c = _safe_float_v23370(sim.get("p2_cal", 1 - p1c), 1 - p1c)
+
+    p1_set = _safe_float_v23370(sim.get("p1_wins_set_any", 0.0), 0.0)
+    p2_set = _safe_float_v23370(sim.get("p2_wins_set_any", 0.0), 0.0)
+
+    # Compatibilidad con versiones/cachés antiguas donde aún no existían p1_wins_set_any/p2_wins_set_any.
+    if p1_set <= 0.0 and p2_set <= 0.0:
+        dog_set = _safe_float_v23370(sim.get("dog_wins_set", 0.0), 0.0)
+        if p1c >= p2c:
+            p2_set = dog_set
+            p1_set = max(p1c, 1.0 - _safe_float_v23370(sim.get("p2_2_0", 0.0), 0.0))
+        else:
+            p1_set = dog_set
+            p2_set = max(p2c, 1.0 - _safe_float_v23370(sim.get("p1_2_0", 0.0), 0.0))
+
+    fav_is_p1 = p1c >= p2c
+    fav_name = p1_name if fav_is_p1 else p2_name
+    dog_name = p2_name if fav_is_p1 else p1_name
+    fav_prob = p1c if fav_is_p1 else p2c
+    dog_prob = p2c if fav_is_p1 else p1c
+    fav_set = p1_set if fav_is_p1 else p2_set
+    dog_set = p2_set if fav_is_p1 else p1_set
+
+    set3 = _safe_float_v23370(sim.get("set3", sim.get("market_3sets", sim.get("prob_3sets", 0.0))), 0.0)
+
+    candidatos = [
+        {
+            "mercado": f"{fav_name} gana al menos 1 set",
+            "prob": fav_set,
+            "tipo": "SET_FAV",
+            "motivo": "Mercado prudente: favorito con margen para ganar mínimo un set"
+        },
+        {
+            "mercado": f"{fav_name} gana",
+            "prob": fav_prob,
+            "tipo": "ML",
+            "motivo": "Favorito por probabilidad de partido"
+        },
+        {
+            "mercado": f"{dog_name} gana al menos 1 set",
+            "prob": dog_set,
+            "tipo": "SET_DOG",
+            "motivo": "Underdog con opciones reales de rascar un set"
+        },
+        {
+            "mercado": "Over 18.5",
+            "prob": _safe_float_v23370(over18, 0.0),
+            "tipo": "OVER",
+            "motivo": "Línea baja de juegos con probabilidad superior al ML alternativo"
+        },
+        {
+            "mercado": "Over 19.5",
+            "prob": _safe_float_v23370(over19, 0.0),
+            "tipo": "OVER",
+            "motivo": "Partido con proyección de juegos suficiente"
+        },
+        {
+            "mercado": "Over 20.5",
+            "prob": _safe_float_v23370(over20, 0.0),
+            "tipo": "OVER",
+            "motivo": "Partido con proyección larga"
+        },
+        {
+            "mercado": "+2.5 sets",
+            "prob": set3,
+            "tipo": "SETS3",
+            "motivo": "Probabilidad de partido a tres sets"
+        },
+        {
+            "mercado": "Under 22.5",
+            "prob": _safe_float_v23370(under22, 0.0),
+            "tipo": "UNDER",
+            "motivo": "Proyección de partido corto / control del favorito"
+        },
+    ]
+
+    if str(circuito).upper().strip() == "WTA":
+        candidatos.append({
+            "mercado": "Over 17.5",
+            "prob": _safe_float_v23370(over17, 0.0),
+            "tipo": "OVER",
+            "motivo": "Línea WTA más conservadora"
+        })
+
+    # Limpieza básica: no dejar señales sin sentido.
+    limpios = []
+    for c in candidatos:
+        p = _safe_float_v23370(c.get("prob", 0.0), 0.0)
+        if 0.01 <= p <= 0.995:
+            c = c.copy()
+            c["prob"] = float(np.clip(p, 0.0, 0.995))
+            limpios.append(c)
+
+    if not limpios:
+        return {
+            "mercado": "⛔ EVITAR",
+            "prob": 0.0,
+            "confianza": "⚠️ Baja",
+            "motivo": "Sin probabilidades utilizables",
+            "tipo": "EVITAR",
+        }
+
+    # Orden por máxima probabilidad. En empate, priorizamos el mercado más prudente.
+    prioridad_tipo = {"SET_FAV": 5, "ML": 4, "OVER": 3, "UNDER": 3, "SET_DOG": 2, "SETS3": 1}
+    limpios.sort(key=lambda c: (c["prob"], prioridad_tipo.get(c["tipo"], 0)), reverse=True)
+    top = limpios[0]
+
+    # Umbral de seguridad: si nada llega al 62%, mejor no venderlo como mercado probable.
+    if top["prob"] < 0.62:
+        return {
+            "mercado": "⛔ EVITAR",
+            "prob": top["prob"],
+            "confianza": "⚠️ Baja",
+            "motivo": f"Ningún mercado supera zona mínima de acierto; mejor candidato: {top['mercado']}",
+            "tipo": "EVITAR",
+        }
+
+    # Motivo algo más explicativo para el caso clave que estabas buscando.
+    if top["tipo"] == "SET_FAV":
+        if fav_prob >= 0.78:
+            top["motivo"] = "Favorito claro: el mercado más conservador es que gane al menos un set"
+        elif fav_prob >= 0.64:
+            top["motivo"] = "Favorito con riesgo ML: se baja a gana al menos un set para maximizar acierto"
+        else:
+            top["motivo"] = "Partido igualado: gana al menos un set es más prudente que elegir ganador"
+    elif top["tipo"] == "ML" and fav_prob >= 0.78:
+        top["motivo"] = "Superioridad suficiente para recomendar ganador sin bajar a mercado de set"
+    elif top["tipo"] == "OVER":
+        top["motivo"] = "El total de juegos ofrece más probabilidad que elegir ganador"
+
+    return {
+        "mercado": top["mercado"],
+        "prob": float(top["prob"]),
+        "confianza": _confianza_acierto_v23370(top["prob"]),
+        "motivo": top["motivo"],
+        "tipo": top["tipo"],
+    }
+
+
 def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, progress_callback=None):
     rows = []
     total = len(parsed_matches)
@@ -6067,6 +6246,14 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         dog_name = p2_key if p1c >= p2c else p1_key
 
         best_label, best_prob = batch_pick_label(sim, over17, over18, over19, over20, over22, under22, p1_key, p2_key, circuito_calc, match_surface)
+
+        # v23.37: selector independiente de máxima probabilidad de acierto.
+        # Es una capa visible nueva: no usa cuotas y no toca el motor Over.
+        max_acierto = selector_mercado_maximo_acierto_v23370(
+            sim, over17, over18, over19, over20, over22, under22,
+            p1_key, p2_key, circuito_calc, match_surface
+        )
+
         wta_watchlist = wta_over_watchlist_reason(circuito_calc, match_surface, fav_prob, over18, over17)
 
         filters = betting_filter_engine(circuito_calc, match_surface, sim, p1_key, p2_key)
@@ -6078,6 +6265,11 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             # No permitimos que un partido con jugador estimado se vea como recomendación fuerte.
             if best_prob >= 0.70:
                 best_label = f"OBSERVAR {best_label}"
+            if isinstance(max_acierto, dict) and max_acierto.get("mercado") and not str(max_acierto.get("mercado")).startswith(("⛔", "OBSERVAR")):
+                max_acierto = max_acierto.copy()
+                max_acierto["mercado"] = f"OBSERVAR {max_acierto.get('mercado')}"
+                max_acierto["confianza"] = "⚠️ Datos parciales"
+                max_acierto["motivo"] = str(max_acierto.get("motivo", "")) + " · fallback estimado: no tratar como pick fuerte"
 
         # Cuota pegada: puede ser de un jugador concreto.
         quoted_player = None
@@ -6118,6 +6310,10 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             ),
             "Favorito modelo": fav_name,
             "ML favorito": f"{fav_prob:.1%}",
+            "🎯 Mercado más probable": max_acierto.get("mercado", ""),
+            "🎯 Prob máxima": f"{max_acierto.get('prob', 0.0):.1%}" if isinstance(max_acierto, dict) else "",
+            "🎯 Confianza acierto": max_acierto.get("confianza", "") if isinstance(max_acierto, dict) else "",
+            "🎯 Motivo acierto": max_acierto.get("motivo", "") if isinstance(max_acierto, dict) else "",
             "Mejor señal": best_label,
             "Prob señal": f"{best_prob:.1%}",
             "Mejor mercado Over Focus": best_label if any(x in str(best_label) for x in ["Over", "3 sets", "Partido"]) else "",
@@ -6139,6 +6335,9 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Under 22.5": f"{under22:.1%}",
             "Jugador gana set": dog_name,
             "Prob gana set": f"{sim.get('dog_wins_set', 0):.1%}",
+            f"{p1_key} gana al menos 1 set": f"{sim.get('p1_wins_set_any', 0):.1%}",
+            f"{p2_key} gana al menos 1 set": f"{sim.get('p2_wins_set_any', 0):.1%}",
+            "Favorito gana al menos 1 set": f"{(sim.get('p1_wins_set_any', 0) if p1c >= p2c else sim.get('p2_wins_set_any', 0)):.1%}",
             "Partido a 3 sets": f"{sim.get('set3', 0):.1%}",
             "Favorito 2-0": f"{sim.get('fav_2_0', 0):.1%}",
             "Juegos J1": f"{avg_g1:.1f}",
@@ -7968,6 +8167,10 @@ def prepare_batch_display_table(ok_df):
         "Partido",
         "Favorito modelo",
         "ML favorito",
+        "🎯 Mercado más probable",
+        "🎯 Prob máxima",
+        "🎯 Confianza acierto",
+        "🎯 Motivo acierto",
         "Mejor señal",
         "Prob señal",
         "Mejor mercado Over Focus",
@@ -8007,6 +8210,7 @@ def prepare_batch_display_table(ok_df):
         "Under 22.5",
         "Jugador gana set",
         "Prob gana set",
+        "Favorito gana al menos 1 set",
         "Juegos J1",
         "Juegos J2",
         "Total games",
