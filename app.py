@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.36.2-api-tennis-grandslam-filter-fix"
+APP_VERSION = "v23.36.4-challenger-over-selector-fix"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -4799,28 +4799,31 @@ def es_linea_torneo_pegado(line):
 
 def filtrar_matches_por_circuito_pegado(matches, circuito, incluir_itf=False, incluir_challenger=True):
     """
-    Si la app está en ATP, deja ATP y opcionalmente Challenger ATP. Si está en WTA, deja WTA/WTA125
-    y opcionalmente Challenger WTA/WTA125.
+    Filtro estricto por el circuito elegido en el menú lateral.
 
-    v23.36.2:
-    - ITF queda fuera por defecto porque el modelo actual no lo usa como flujo principal.
-    - Challenger/125 se puede activar/desactivar desde el cargador móvil.
-    - Grand Slam/ATP/WTA principales se conservan como ATP/WTA aunque API Tennis los etiquete genéricos.
+    v23.36.3:
+    - Si eliges ATP: SOLO deja ATP + opcionalmente Challenger ATP + opcionalmente ITF ATP.
+      Nunca mete WTA/WTA125.
+    - Si eliges WTA: SOLO deja WTA + opcionalmente WTA125/Challenger WTA + opcionalmente ITF WTA.
+      Nunca mete ATP/Challenger ATP.
+    - WTA125 ya NO entra si el interruptor de secundarios está apagado.
     """
-    circuito = str(circuito).upper()
+    circuito = str(circuito).upper().strip()
     if circuito == "ATP":
         allowed = {"ATP"}
         if incluir_challenger:
             allowed.add("CHALLENGER_ATP")
         if incluir_itf:
             allowed.add("ITF_ATP")
-    else:
-        allowed = {"WTA", "WTA_125"}
+    elif circuito == "WTA":
+        allowed = {"WTA"}
         if incluir_challenger:
-            allowed.add("CHALLENGER_WTA")
+            allowed.update({"WTA_125", "CHALLENGER_WTA"})
         if incluir_itf:
             allowed.add("ITF_WTA")
-    return [m for m in matches if m.get("circuito_detectado") in allowed]
+    else:
+        allowed = {"ATP", "WTA"}
+    return [m for m in matches if str(m.get("circuito_detectado", "")).upper().strip() in allowed]
 
 
 def _is_schedule_header_candidate(line, following=None):
@@ -6793,9 +6796,31 @@ def _row_pct(row, col, default=0.0):
 def _row_over_guard_active(row):
     """True solo cuando el Over está bloqueado.
     v23.29.1: WATCH ya no bloquea automáticamente; solo avisa/no combi visual.
+    v23.36.4: en Challenger, un bloqueo por baja muestra no debe matar
+    automáticamente un Over muy alto si la línea 19.5 también acompaña.
+    No cambia el cálculo del Over; solo afina el selector.
     """
     label = str(row.get("Over Quality Guard", "") or "").upper()
-    return "BLOQUEADO" in label
+    if "BLOQUEADO" not in label:
+        return False
+    circuito_txt = " ".join([
+        str(row.get("Circuito fuente", "") or ""),
+        str(row.get("Circuito datos", "") or ""),
+        str(row.get("Circuito cálculo", "") or ""),
+        str(row.get("Torneo", "") or ""),
+    ])
+    is_chall = _is_challenger_context(circuito_txt)
+    over18 = _row_pct(row, "Over 18.5", 0.0)
+    over19 = _row_pct(row, "Over 19.5", 0.0)
+    motivos = str(row.get("Motivos Over Guard", "") or "").lower()
+    solo_baja_muestra = (
+        "confianza" in motivos
+        or "muestra" in motivos
+        or "rating sanity" in motivos
+    ) and "favorito 2-0" not in motivos and "perfil 2-0" not in motivos
+    if is_chall and solo_baja_muestra and over18 >= 0.76 and over19 >= 0.66:
+        return False
+    return True
 
 def _row_over_guard_watch(row):
     label = str(row.get("Over Quality Guard", "") or "").upper()
@@ -7010,6 +7035,31 @@ def alinear_market_selector_v23266(row):
         or "DATOS INCOMPLETOS" in risk_u
     )
 
+    # v23.36.4 Challenger Over Selector Fix
+    # Problema detectado en los Excel de hoy: muchos Challenger venían con
+    # Confianza mínima=25% y Mín. partidos superficie=0, lo que convertía casi
+    # todos los Over APTO en WATCH aunque la lectura de juegos fuera alta.
+    # No se toca el motor Over ni sus probabilidades: solo impedimos que el
+    # aviso genérico de baja muestra degrade automáticamente un Over Challenger
+    # realmente alto. El Over Guard BLOQUEADO sigue mandando.
+    circuito_txt_fix = " ".join([
+        str(row.get("Circuito fuente", "") or ""),
+        str(row.get("Circuito datos", "") or ""),
+        str(row.get("Circuito cálculo", "") or ""),
+        str(row.get("Torneo", "") or ""),
+    ])
+    is_chall_fix = _is_challenger_context(circuito_txt_fix)
+    over18_fix = _row_pct(row, "Over 18.5", 0.0)
+    over19_fix = _row_pct(row, "Over 19.5", 0.0)
+    challenger_over_release = (
+        is_chall_fix
+        and not _row_over_guard_active(row)
+        and (
+            over18_fix >= 0.78
+            or (over18_fix >= 0.76 and over19_fix >= 0.68)
+        )
+    )
+
     def fmt_prob(col):
         p = _row_pct(row, col, None)
         try:
@@ -7063,14 +7113,14 @@ def alinear_market_selector_v23266(row):
     emoji = "🔥" if (rec.startswith("🔥") or "FUERTE" in rec_u) else "✅"
 
     if "OVER 19.5" in rec_u:
-        if force_watch_signal:
+        if force_watch_signal and not challenger_over_release:
             return out("👀 WATCH OVER 19.5", fmt_prob("Over 19.5"), "Signal Trust en watch/datos parciales: no apuesta fuerte")
-        return out(f"{emoji} OVER 19.5", fmt_prob("Over 19.5"), "mercado alineado con recomendación final")
+        return out(f"{emoji} OVER 19.5", fmt_prob("Over 19.5"), "mercado alineado con recomendación final" + (" · v23.36.4 release Challenger Over" if challenger_over_release else ""))
 
     if "OVER 18.5" in rec_u:
-        if force_watch_signal:
+        if force_watch_signal and not challenger_over_release:
             return out("👀 WATCH OVER 18.5", fmt_prob("Over 18.5"), "Signal Trust en watch/datos parciales: no apuesta fuerte")
-        return out(f"{emoji} OVER 18.5", fmt_prob("Over 18.5"), "mercado alineado con recomendación final")
+        return out(f"{emoji} OVER 18.5", fmt_prob("Over 18.5"), "mercado alineado con recomendación final" + (" · v23.36.4 release Challenger Over" if challenger_over_release else ""))
 
     if "OVER 17.5" in rec_u:
         return out(f"{emoji} OVER 17.5", fmt_prob("Over 17.5"), "mercado alineado con recomendación final")
@@ -8732,12 +8782,22 @@ def render_api_tennis_mobile_loader(circuito):
         with c3:
             default_surface_label = st.selectbox("Superficie si falta", ["Clay", "Hard", "Grass"], index=0, key="api_tennis_default_surface")
 
-        incluir_challenger_api = st.toggle("Incluir Challenger / WTA 125", value=True, key="api_tennis_include_challenger")
-        incluir_itf_api = st.toggle("Incluir ITF", value=False, key="api_tennis_include_itf")
-        if incluir_challenger_api:
-            st.caption("Challenger/125 incluido. Si salen demasiados y ningún pick, prueba desactivarlo para ver solo ATP/WTA principales.")
+        circuito_ui_api = str(circuito).upper().strip()
+        if circuito_ui_api == "ATP":
+            secondary_label = "Incluir Challenger ATP"
+            secondary_on_msg = "Challenger ATP incluido. Se analizará con el motor Challenger si hay datos; si no hay muestra suficiente, la app lo bloqueará como contexto."
+            secondary_off_msg = "Challenger ATP excluido: solo ATP principal / Grand Slam / qualy ATP."
         else:
-            st.caption("Challenger/125 excluido: modo ATP/WTA principales y Grand Slam/qualy.")
+            secondary_label = "Incluir WTA 125 / Challenger WTA"
+            secondary_on_msg = "WTA 125 / Challenger WTA incluido. No se mezclará con ATP."
+            secondary_off_msg = "WTA 125 / Challenger WTA excluido: solo WTA principal / Grand Slam / qualy WTA."
+
+        incluir_challenger_api = st.toggle(secondary_label, value=True, key="api_tennis_include_challenger")
+        incluir_itf_api = st.toggle(f"Incluir ITF {'ATP' if circuito_ui_api == 'ATP' else 'WTA'}", value=False, key="api_tennis_include_itf")
+        if incluir_challenger_api:
+            st.caption(secondary_on_msg)
+        else:
+            st.caption(secondary_off_msg)
         if incluir_itf_api:
             st.warning("ITF activado solo para observación: puede tener menos datos y más ruido. No recomendado para picks oficiales.")
         else:
@@ -8756,24 +8816,30 @@ def render_api_tennis_mobile_loader(circuito):
                 matches = res.get("matches", [])
                 total = len(matches)
                 raw_count = res.get("raw_count", total)
+                from collections import Counter as _Counter
+                circuit_counts_before = _Counter(str(m.get("circuito_detectado", "DESCONOCIDO")) for m in matches)
                 itf_count = sum(1 for m in matches if "ITF" in str(m.get("circuito_detectado", "")).upper())
+
                 if solo_circuito_api:
                     matches = filtrar_matches_por_circuito_pegado(matches, circuito, incluir_itf=incluir_itf_api, incluir_challenger=incluir_challenger_api)
                 elif not incluir_itf_api:
                     matches = [m for m in matches if "ITF" not in str(m.get("circuito_detectado", "")).upper()]
-                from collections import Counter as _Counter
+
                 circuit_counts = _Counter(str(m.get("circuito_detectado", "DESCONOCIDO")) for m in matches)
                 texto = sofascore_matches_to_paste_text(matches)
                 st.session_state["sofa_raw_batch"] = texto
                 st.success(f"API Tennis cargó {len(matches)} partidos para {circuito} ({total} singles útiles / {raw_count} eventos brutos). Revisa el cuadro y pulsa ANALIZAR LISTA.")
+
+                if circuit_counts_before:
+                    st.caption("API devolvió: " + " · ".join([f"{k}: {v}" for k, v in circuit_counts_before.items()]))
                 if circuit_counts:
-                    st.caption("Circuitos cargados: " + " · ".join([f"{k}: {v}" for k, v in circuit_counts.items()]))
+                    st.caption("Tras filtro del menú lateral: " + " · ".join([f"{k}: {v}" for k, v in circuit_counts.items()]))
                 if itf_count and not incluir_itf_api:
                     st.info(f"Se han excluido {itf_count} partidos ITF por defecto para no ensuciar los pronósticos.")
                 if len(matches) > 0 and all("CHALLENGER" in str(m.get("circuito_detectado", "")).upper() for m in matches):
-                    st.warning("Solo han quedado partidos Challenger/125. Es normal que salgan pocos o ningún pick oficial por baja muestra. Para buscar ATP/WTA principales, desactiva Challenger/125 o revisa fecha/circuito.")
+                    st.warning("Solo han quedado partidos Challenger. El motor Challenger sigue activo, pero si los jugadores no tienen muestra/elo suficiente saldrán como contexto y no como oficiales. No es un fallo del Over.")
                 if len(matches) == 0:
-                    st.warning("La API respondió, pero no quedaron partidos tras filtrar. Prueba cambiar ATP/WTA, activar Challenger/125 o revisar la fecha.")
+                    st.warning("La API respondió, pero no quedaron partidos tras filtrar. Prueba cambiar ATP/WTA, activar secundarios del circuito correcto o revisar la fecha.")
                 st.rerun()
 
 # =========================================================
