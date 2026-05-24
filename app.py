@@ -6074,6 +6074,17 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
 
     set3 = _safe_float_v23370(sim.get("set3", sim.get("market_3sets", sim.get("prob_3sets", 0.0))), 0.0)
 
+    # v23.37.2: selector orientado SOLO a máxima tasa de acierto.
+    # Ajuste tras backtest manual:
+    # - Prioridad real: Over 18.5 + favorito gana set + ML muy filtrado.
+    # - Under/2-0 no debe competir como mercado principal salvo caso clarísimo.
+    # - Over 19.5/20.5 solo compiten si salen muy fuertes; si no, preferimos Over 18.5.
+    fav20 = _safe_float_v23370(sim.get("p1_2_0", 0.0) if fav_is_p1 else sim.get("p2_2_0", 0.0), 0.0)
+    over18_p = _safe_float_v23370(over18, 0.0)
+    over19_p = _safe_float_v23370(over19, 0.0)
+    over20_p = _safe_float_v23370(over20, 0.0)
+    under_ok_principal = (fav20 >= 0.72 and fav_prob >= 0.76 and set3 <= 0.28 and over18_p < 0.70)
+
     candidatos = [
         {
             "mercado": f"{fav_name} gana al menos 1 set",
@@ -6133,10 +6144,32 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
             "motivo": "Línea WTA más conservadora"
         })
 
-    # Limpieza básica: no dejar señales sin sentido.
+    # Limpieza básica + filtros v23.37.2: no dejar señales que el backtest mostró peligrosas
+    # competir como mercado principal de acierto.
     limpios = []
     for c in candidatos:
         p = _safe_float_v23370(c.get("prob", 0.0), 0.0)
+        mercado_u = str(c.get("mercado", "")).upper()
+        tipo_u = str(c.get("tipo", "")).upper()
+
+        # Under/2-0 solo como principal si el partido está MUY controlado.
+        if tipo_u == "UNDER" and not under_ok_principal:
+            continue
+
+        # Over 19.5/20.5 no deben quitarle el sitio al Over 18.5 salvo señal claramente superior.
+        if "OVER 19.5" in mercado_u and p < 0.76:
+            continue
+        if "OVER 20.5" in mercado_u and p < 0.80:
+            continue
+
+        # +2.5 sets solo si es una señal fuerte; si no, es mercado de cuota, no de máximo acierto.
+        if tipo_u == "SETS3" and p < 0.62:
+            continue
+
+        # ML solo si es realmente limpio. Si no, el mercado prudente es gana al menos 1 set.
+        if tipo_u == "ML" and p < 0.78:
+            continue
+
         if 0.01 <= p <= 0.995:
             c = c.copy()
             c["prob"] = float(np.clip(p, 0.0, 0.995))
@@ -6177,7 +6210,12 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
     elif top["tipo"] == "ML" and fav_prob >= 0.78:
         top["motivo"] = "Superioridad suficiente para recomendar ganador sin bajar a mercado de set"
     elif top["tipo"] == "OVER":
-        top["motivo"] = "El total de juegos ofrece más probabilidad que elegir ganador"
+        if str(top.get("mercado", "")).upper() == "OVER 18.5":
+            top["motivo"] = "Over 18.5 priorizado: línea baja validada mejor en el backtest"
+        else:
+            top["motivo"] = "Total de juegos fuerte; pasa filtro restrictivo de máximo acierto"
+    elif top["tipo"] == "UNDER":
+        top["motivo"] = "Under solo permitido por control muy alto: favorito 2-0 fuerte, ML alto y bajo riesgo de 3 sets"
 
     return {
         "mercado": top["mercado"],
@@ -8162,18 +8200,28 @@ def decision_acierto_v23371(row):
             '🎯 Aviso acierto': 'Probabilidad estimada por fallback o muestra baja: no tratar como pick fuerte.'
         })
 
-    if prob >= 0.84:
+    mercado_u = mercado.upper()
+
+    if 'UNDER' in mercado_u or '2-0' in mercado_u:
+        # Tras los dos backtests, Under/2-0 queda capado visualmente aunque pase el filtro estricto.
+        dec = '👀 Observar / under restrictivo'
+        aviso_ok = 'Under/2-0 capado: revisar solo si el favorito 2-0 y el ML son muy claros.'
+    elif prob >= 0.84:
         dec = '🔥 Alto acierto'
+        aviso_ok = 'OK para revisar como mercado principal de máximo acierto.'
     elif prob >= 0.78:
         dec = '✅ Buen acierto'
+        aviso_ok = 'OK para revisar como mercado principal de máximo acierto.'
     elif prob >= 0.70:
         dec = '⚖️ Apto prudente'
+        aviso_ok = 'OK, pero no tratar como pick fuerte.'
     else:
         dec = '👀 Observar'
+        aviso_ok = 'Probabilidad útil, pero por debajo de zona fuerte.'
 
     return pd.Series({
         '🎯 Decisión acierto': dec,
-        '🎯 Aviso acierto': 'OK para revisar como mercado principal de máximo acierto.'
+        '🎯 Aviso acierto': aviso_ok
     })
 
 
