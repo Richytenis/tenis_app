@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.5-accion-final-max-acierto"
+APP_VERSION = "v23.37.6-accion-final-export-FIX"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -6300,12 +6300,10 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         if p1_status != "OK" or p2_status != "OK":
             rationale = (rationale + " · " if rationale else "") + "fallback estimado: datos incompletos"
             trust = "⚠️ DATOS PARCIALES"
-            # No permitimos que un partido con jugador estimado se vea como recomendación fuerte.
-            if best_prob >= 0.70:
-                best_label = f"OBSERVAR {best_label}"
-            if isinstance(max_acierto, dict) and max_acierto.get("mercado") and not str(max_acierto.get("mercado")).startswith(("⛔", "OBSERVAR")):
+            # v23.37.6: NO contaminamos el nombre del mercado con "OBSERVAR".
+            # La columna 🎯 Acción final decide si es JUGAR/OBSERVAR/EVITAR.
+            if isinstance(max_acierto, dict) and max_acierto.get("mercado"):
                 max_acierto = max_acierto.copy()
-                max_acierto["mercado"] = f"OBSERVAR {max_acierto.get('mercado')}"
                 max_acierto["confianza"] = "⚠️ Datos parciales"
                 max_acierto["motivo"] = str(max_acierto.get("motivo", "")) + " · fallback estimado: no tratar como pick fuerte"
 
@@ -10007,6 +10005,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "Versión app",
                     "Fecha",
                     "Partido",
+                    "🎯 Acción final",
                     "🎯 Decisión acierto",
                     "🎯 Mercado más probable",
                     "🎯 Prob máxima",
