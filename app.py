@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.4-export-max-acierto-FIX"
+APP_VERSION = "v23.37.5-accion-final-max-acierto"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8190,12 +8190,14 @@ def decision_acierto_v23371(row):
 
     if not mercado or mercado.startswith('⛔') or 'evitar' in mercado.lower() or prob < 0.62:
         return pd.Series({
+            '🎯 Acción final': '⛔ EVITAR',
             '🎯 Decisión acierto': '⛔ Evitar',
             '🎯 Aviso acierto': 'Ningún mercado supera el mínimo de seguridad.'
         })
 
     if datos_pobres:
         return pd.Series({
+            '🎯 Acción final': '👀 OBSERVAR',
             '🎯 Decisión acierto': '👀 Observar / datos pobres',
             '🎯 Aviso acierto': 'Probabilidad estimada por fallback o muestra baja: no tratar como pick fuerte.'
         })
@@ -8219,7 +8221,18 @@ def decision_acierto_v23371(row):
         dec = '👀 Observar'
         aviso_ok = 'Probabilidad útil, pero por debajo de zona fuerte.'
 
+    # v23.37.5: acción final simple.
+    # Solo 🔥 Alto acierto y ✅ Buen acierto son jugables.
+    # ⚖️ Apto prudente, 👀 Observar, datos pobres y Under/2-0 quedan fuera.
+    if dec in ['🔥 Alto acierto', '✅ Buen acierto']:
+        accion = '✅ JUGAR'
+    elif dec.startswith('⛔'):
+        accion = '⛔ EVITAR'
+    else:
+        accion = '👀 OBSERVAR'
+
     return pd.Series({
+        '🎯 Acción final': accion,
         '🎯 Decisión acierto': dec,
         '🎯 Aviso acierto': aviso_ok
     })
@@ -8281,7 +8294,7 @@ def prepare_batch_display_table(ok_df):
     # v23.30.1: columna visible con el pick oficial real para revisar antes de descargar Excel.
     df["Pick oficial"] = df.apply(pick_oficial_v23301, axis=1)
 
-    # v23.37.1: decisión visual específica para el nuevo objetivo: máximo acierto, sin cuotas.
+    # v23.37.5: decisión visual + acción final específica para máximo acierto, sin cuotas.
     if "🎯 Mercado más probable" in df.columns and "🎯 Prob máxima" in df.columns:
         decision_cols = df.apply(decision_acierto_v23371, axis=1)
         df = pd.concat([df, decision_cols], axis=1)
@@ -8296,6 +8309,7 @@ def prepare_batch_display_table(ok_df):
         "Fecha",
         "Hora",
         "Partido",
+        "🎯 Acción final",
         "🎯 Decisión acierto",
         "🎯 Mercado más probable",
         "🎯 Prob máxima",
