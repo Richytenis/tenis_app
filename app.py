@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.36.1-api-tennis-no-itf-default"
+APP_VERSION = "v23.36.2-api-tennis-grandslam-filter-fix"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -4797,21 +4797,27 @@ def es_linea_torneo_pegado(line):
     return False
 
 
-def filtrar_matches_por_circuito_pegado(matches, circuito, incluir_itf=False):
+def filtrar_matches_por_circuito_pegado(matches, circuito, incluir_itf=False, incluir_challenger=True):
     """
-    Si la app está en ATP, deja ATP+Challenger ATP. Si está en WTA, deja WTA/WTA125.
+    Si la app está en ATP, deja ATP y opcionalmente Challenger ATP. Si está en WTA, deja WTA/WTA125
+    y opcionalmente Challenger WTA/WTA125.
 
-    v23.36.1: ITF queda fuera por defecto porque el modelo actual no lo usa
-    como flujo principal de pronósticos y puede ensuciar el análisis. Se puede
-    activar manualmente solo para observación/debug.
+    v23.36.2:
+    - ITF queda fuera por defecto porque el modelo actual no lo usa como flujo principal.
+    - Challenger/125 se puede activar/desactivar desde el cargador móvil.
+    - Grand Slam/ATP/WTA principales se conservan como ATP/WTA aunque API Tennis los etiquete genéricos.
     """
     circuito = str(circuito).upper()
     if circuito == "ATP":
-        allowed = {"ATP", "CHALLENGER_ATP"}
+        allowed = {"ATP"}
+        if incluir_challenger:
+            allowed.add("CHALLENGER_ATP")
         if incluir_itf:
             allowed.add("ITF_ATP")
     else:
-        allowed = {"WTA", "WTA_125", "CHALLENGER_WTA"}
+        allowed = {"WTA", "WTA_125"}
+        if incluir_challenger:
+            allowed.add("CHALLENGER_WTA")
         if incluir_itf:
             allowed.add("ITF_WTA")
     return [m for m in matches if m.get("circuito_detectado") in allowed]
@@ -8525,7 +8531,7 @@ def render_sofascore_auto_extractor(circuito):
 # Solo rellena el cuadro de texto en formato ya soportado. NO toca Over ni simulaciones.
 # =========================================================
 
-API_TENNIS_IMPORT_VERSION = "v23.36.1-api-tennis-no-itf-default"
+API_TENNIS_IMPORT_VERSION = "v23.36.2-api-tennis-grandslam-filter-fix"
 API_TENNIS_BASE_URL = "https://api.api-tennis.com/tennis/"
 
 
@@ -8548,22 +8554,48 @@ def _secret_value(*names, default=""):
     return default
 
 
-def _api_tennis_event_type_to_circuit(event_type):
-    txt = normalizar_texto(event_type).upper()
-    if "DOUBLES" in txt:
+def _api_tennis_event_type_to_circuit(event_type, tournament_name="", preferred_circuit=""):
+    """Clasifica eventos de API Tennis.
+
+    v23.36.2 corrige un caso importante: algunos Grand Slam/qualy vienen con
+    event_type_type genérico y el circuito aparece solo en el torneo o se debe
+    heredar del selector lateral ATP/WTA. Si no lo hacemos, la app se queda con
+    Challenger y parece que no hay picks ATP/WTA.
+    """
+    txt = normalizar_texto(f"{event_type} {tournament_name}").upper()
+    pref = str(preferred_circuit or "").upper().strip()
+
+    if "DOUBLES" in txt or "DOUBLES" in limpiar(txt):
         return "DOBLES"
-    if "WTA" in txt or "WOMEN" in txt:
+
+    # ITF primero: no debe entrar como WTA/ATP normal.
+    if "ITF" in txt:
+        if "WOMEN" in txt or "WTA" in txt or pref == "WTA":
+            return "ITF_WTA"
+        return "ITF_ATP"
+
+    if "WTA" in txt or "WOMEN" in txt or "WOMAN" in txt:
         if "CHALLENGER" in txt or "125" in txt:
             return "WTA_125"
-        if "ITF" in txt:
-            return "ITF_WTA"
         return "WTA"
+
     if "CHALLENGER" in txt:
+        if "WOMEN" in txt or "WTA" in txt or pref == "WTA":
+            return "CHALLENGER_WTA"
         return "CHALLENGER_ATP"
-    if "ITF" in txt:
-        return "ITF_ATP"
-    if "ATP" in txt or "MEN" in txt:
+
+    if "ATP" in txt or "MEN" in txt or "MAN" in txt:
         return "ATP"
+
+    # Grand Slam / Major / Qualy genéricos: heredan ATP/WTA del selector de la app.
+    major_tokens = [
+        "GRAND SLAM", "GRANDSLAM", "ROLAND GARROS", "FRENCH OPEN",
+        "AUSTRALIAN OPEN", "WIMBLEDON", "US OPEN", "QUALIFYING", "QUALIFICATION"
+    ]
+    if any(tok in txt for tok in major_tokens):
+        if pref in {"ATP", "WTA"}:
+            return pref
+
     return "DESCONOCIDO"
 
 
@@ -8586,7 +8618,7 @@ def _api_tennis_surface(item, default_surface="Clay"):
     return normalizar_superficie_pegada(txt, default=default_surface)
 
 
-def _api_tennis_to_match(item, fecha_iso="", default_surface="Clay"):
+def _api_tennis_to_match(item, fecha_iso="", default_surface="Clay", preferred_circuit=""):
     p1 = normalizar_texto(item.get("event_first_player", ""))
     p2 = normalizar_texto(item.get("event_second_player", ""))
     if not p1 or not p2:
@@ -8596,7 +8628,7 @@ def _api_tennis_to_match(item, fecha_iso="", default_surface="Clay"):
     if es_rival_pendiente_pegado(p1) or es_rival_pendiente_pegado(p2):
         return None
 
-    circuito_detectado = _api_tennis_event_type_to_circuit(item.get("event_type_type", ""))
+    circuito_detectado = _api_tennis_event_type_to_circuit(item.get("event_type_type", ""), item.get("tournament_name", ""), preferred_circuit=preferred_circuit)
     if circuito_detectado == "DOBLES":
         return None
 
@@ -8627,7 +8659,7 @@ def _api_tennis_to_match(item, fecha_iso="", default_surface="Clay"):
 
 
 @st.cache_data(show_spinner=False, ttl=900)
-def fetch_api_tennis_fixtures(fecha_iso, default_surface="Clay"):
+def fetch_api_tennis_fixtures(fecha_iso, default_surface="Clay", preferred_circuit=""):
     """
     Carga fixtures desde API-Tennis. Requiere API_TENNIS_KEY en secrets.toml.
     Solo convierte datos a formato de pegado; no modifica análisis ni mercados.
@@ -8672,7 +8704,7 @@ def fetch_api_tennis_fixtures(fecha_iso, default_surface="Clay"):
     for item in result:
         if not isinstance(item, dict):
             continue
-        m = _api_tennis_to_match(item, fecha_iso=fecha_iso, default_surface=default_surface)
+        m = _api_tennis_to_match(item, fecha_iso=fecha_iso, default_surface=default_surface, preferred_circuit=preferred_circuit)
         if m:
             matches.append(m)
 
@@ -8700,17 +8732,22 @@ def render_api_tennis_mobile_loader(circuito):
         with c3:
             default_surface_label = st.selectbox("Superficie si falta", ["Clay", "Hard", "Grass"], index=0, key="api_tennis_default_surface")
 
+        incluir_challenger_api = st.toggle("Incluir Challenger / WTA 125", value=True, key="api_tennis_include_challenger")
         incluir_itf_api = st.toggle("Incluir ITF", value=False, key="api_tennis_include_itf")
+        if incluir_challenger_api:
+            st.caption("Challenger/125 incluido. Si salen demasiados y ningún pick, prueba desactivarlo para ver solo ATP/WTA principales.")
+        else:
+            st.caption("Challenger/125 excluido: modo ATP/WTA principales y Grand Slam/qualy.")
         if incluir_itf_api:
             st.warning("ITF activado solo para observación: puede tener menos datos y más ruido. No recomendado para picks oficiales.")
         else:
-            st.caption("ITF queda excluido por defecto. La app se centra en ATP/WTA/Challenger/Qualy.")
+            st.caption("ITF queda excluido por defecto para no ensuciar los pronósticos.")
 
         do_api_fetch = st.button("📥 Cargar desde API Tennis", width='stretch', key="btn_fetch_api_tennis_mobile")
 
         if do_api_fetch:
             fecha_iso = pd.to_datetime(fecha_api).strftime("%Y-%m-%d")
-            res = fetch_api_tennis_fixtures(fecha_iso, default_surface=default_surface_label)
+            res = fetch_api_tennis_fixtures(fecha_iso, default_surface=default_surface_label, preferred_circuit=(circuito if solo_circuito_api else ""))
             if not res.get("ok"):
                 st.error(f"No se pudo cargar API Tennis: {res.get('error', 'error desconocido')}")
                 if mostrar_debug:
@@ -8721,16 +8758,22 @@ def render_api_tennis_mobile_loader(circuito):
                 raw_count = res.get("raw_count", total)
                 itf_count = sum(1 for m in matches if "ITF" in str(m.get("circuito_detectado", "")).upper())
                 if solo_circuito_api:
-                    matches = filtrar_matches_por_circuito_pegado(matches, circuito, incluir_itf=incluir_itf_api)
+                    matches = filtrar_matches_por_circuito_pegado(matches, circuito, incluir_itf=incluir_itf_api, incluir_challenger=incluir_challenger_api)
                 elif not incluir_itf_api:
                     matches = [m for m in matches if "ITF" not in str(m.get("circuito_detectado", "")).upper()]
+                from collections import Counter as _Counter
+                circuit_counts = _Counter(str(m.get("circuito_detectado", "DESCONOCIDO")) for m in matches)
                 texto = sofascore_matches_to_paste_text(matches)
                 st.session_state["sofa_raw_batch"] = texto
                 st.success(f"API Tennis cargó {len(matches)} partidos para {circuito} ({total} singles útiles / {raw_count} eventos brutos). Revisa el cuadro y pulsa ANALIZAR LISTA.")
+                if circuit_counts:
+                    st.caption("Circuitos cargados: " + " · ".join([f"{k}: {v}" for k, v in circuit_counts.items()]))
                 if itf_count and not incluir_itf_api:
                     st.info(f"Se han excluido {itf_count} partidos ITF por defecto para no ensuciar los pronósticos.")
+                if len(matches) > 0 and all("CHALLENGER" in str(m.get("circuito_detectado", "")).upper() for m in matches):
+                    st.warning("Solo han quedado partidos Challenger/125. Es normal que salgan pocos o ningún pick oficial por baja muestra. Para buscar ATP/WTA principales, desactiva Challenger/125 o revisa fecha/circuito.")
                 if len(matches) == 0:
-                    st.warning("La API respondió, pero no quedaron partidos tras filtrar. Prueba cambiar ATP/WTA o desactivar el filtro.")
+                    st.warning("La API respondió, pero no quedaron partidos tras filtrar. Prueba cambiar ATP/WTA, activar Challenger/125 o revisar la fecha.")
                 st.rerun()
 
 # =========================================================
@@ -9464,6 +9507,8 @@ Sebastián Baez - Roberto Carballés Baena"""
             st.stop()
 
         best_of = 5 if "5" in formato else 3
+        if best_of == 5:
+            st.warning("Modo Grand Slam 5 sets detectado: el motor puede simular BO5, pero los Over 18.5/19.5 del selector están calibrados para partidos BO3. No uses Over 18.5/19.5 como oficial en BO5 hasta que añadamos líneas BO5 específicas.")
 
         status = st.status(f"📋 Analizando {len(parsed)} partidos...", expanded=True)
         with status:
