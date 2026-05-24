@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.8-alto-only-jugar-estricto"
+APP_VERSION = "v23.37.9-hibrida-over18-fuerte"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -6184,6 +6184,32 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
             "tipo": "EVITAR",
         }
 
+    # v23.37.9 híbrida:
+    # Recuperamos Over 18.5 como mercado principal cuando está realmente fuerte.
+    # Motivo: en los backtests manuales Over 18.5 >= 76% fue mucho más estable
+    # que muchos mercados de "gana al menos 1 set". No cambia el motor Over;
+    # solo cambia la prioridad visual del selector de máximo acierto.
+    over18_candidate = None
+    for c in limpios:
+        if str(c.get("mercado", "")).upper() == "OVER 18.5":
+            over18_candidate = c.copy()
+            break
+
+    if over18_candidate is not None and over18_p >= 0.76:
+        # Solo mantenemos el set como primera opción si es un set market de élite:
+        # probabilidad muy alta y favorito suficientemente claro.
+        set_elite = (fav_set >= 0.93 and fav_prob >= 0.75)
+        if not set_elite:
+            over18_candidate["prob"] = float(np.clip(over18_p, 0.0, 0.995))
+            over18_candidate["motivo"] = "Over 18.5 fuerte priorizado por backtest: línea baja con soporte >= 76%"
+            return {
+                "mercado": over18_candidate["mercado"],
+                "prob": float(over18_candidate["prob"]),
+                "confianza": _confianza_acierto_v23370(over18_candidate["prob"]),
+                "motivo": over18_candidate["motivo"],
+                "tipo": over18_candidate.get("tipo", "OVER"),
+            }
+
     # Orden por máxima probabilidad. En empate, priorizamos el mercado más prudente.
     prioridad_tipo = {"SET_FAV": 5, "ML": 4, "OVER": 3, "UNDER": 3, "SET_DOG": 2, "SETS3": 1}
     limpios.sort(key=lambda c: (c["prob"], prioridad_tipo.get(c["tipo"], 0)), reverse=True)
@@ -8248,7 +8274,7 @@ def decision_acierto_v23371(row):
         dec = '👀 Observar'
         aviso_ok = 'Probabilidad útil, pero por debajo de zona fuerte.'
 
-    # v23.37.8: acción final ultra estricta.
+    # v23.37.9: acción final híbrida; 🔥 alto + Over 18.5 fuerte pueden ser JUGAR.
     # ✅ JUGAR solo si es 🔥 Alto acierto, o ✅ Buen acierto cuando viene de Over 18.5 fuerte/apto.
     # Los mercados de set en zona ✅ Buen acierto pasan a OBSERVAR por backtest irregular.
     if dec == '🔥 Alto acierto' or (dec == '✅ Buen acierto' and 'OVER 18.5' in mercado_u):
