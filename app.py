@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.3-max-acierto-over18-set-ml-FIX"
+APP_VERSION = "v23.37.4-export-max-acierto-FIX"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -9986,10 +9986,19 @@ Sebastián Baez - Roberto Carballés Baena"""
 
             # v23.11: vista simple para backtest de resultados.
             if formato_pegado in ["Sofascore resultados", "Sofascore resultados auto ATP/WTA/Challenger"] and vista_resultados_simple:
+                # v23.37.4: la vista simple de backtest NO debe ocultar el Selector Maestro.
+                # Antes esta lista recortaba las columnas 🎯 y por eso el Excel parecía igual
+                # aunque el motor nuevo ya estuviera calculándolas.
                 simple_cols = [
                     "Versión app",
                     "Fecha",
                     "Partido",
+                    "🎯 Decisión acierto",
+                    "🎯 Mercado más probable",
+                    "🎯 Prob máxima",
+                    "🎯 Confianza acierto",
+                    "🎯 Aviso acierto",
+                    "🎯 Motivo acierto",
                     "Favorito modelo",
                     "ML favorito",
                     "Ganador real",
@@ -10010,7 +10019,8 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "Prob mercado recomendado",
                     "Motivo Market Selector",
                     "Favorito 2-0",
-                    "Riesgos"
+                    "Riesgos",
+                    "Pick oficial"
                 ]
                 ok = ok[[c for c in simple_cols if c in ok.columns]]
 
