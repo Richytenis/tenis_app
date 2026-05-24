@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.7-accion-final-tight-FIX"
+APP_VERSION = "v23.37.8-alto-only-jugar-estricto"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8213,7 +8213,7 @@ def decision_acierto_v23371(row):
         dec = '👀 Observar / under restrictivo'
         aviso_ok = 'Under/2-0 capado: revisar solo si el favorito 2-0 y el ML son muy claros.'
     elif is_set_market:
-        # v23.37.7 Tight Set Guard:
+        # v23.37.8 Alto Only Set Guard:
         # Un "gana al menos 1 set" solo es JUGAR si además del % alto hay soporte del contexto.
         # Esto baja a OBSERVAR casos tipo ML muy justo, spot dudoso + NO BET, o Over18 flojo.
         set_context_ok = (ml_fav >= 0.62 and (over18 >= 0.72 or ml_fav >= 0.70 or not spot_dudoso) and not oficial_no_bet)
@@ -8223,8 +8223,8 @@ def decision_acierto_v23371(row):
             dec = '🔥 Alto acierto'
             aviso_ok = 'OK: set market muy alto y contexto suficientemente limpio.'
         elif prob >= 0.82 and set_context_ok:
-            dec = '✅ Buen acierto'
-            aviso_ok = 'OK: set market alto con soporte de ML/Over18/contexto.'
+            dec = '👀 Observar / buen set no jugable'
+            aviso_ok = 'Set market alto, pero en backtest ✅ Buen acierto fue irregular: solo observar.'
         elif prob >= 0.78:
             dec = '👀 Observar / set con contexto débil'
             aviso_ok = 'Probabilidad alta, pero el contexto no es lo bastante limpio para JUGAR.'
@@ -8235,8 +8235,12 @@ def decision_acierto_v23371(row):
         dec = '🔥 Alto acierto'
         aviso_ok = 'OK para revisar como mercado principal de máximo acierto.'
     elif prob >= 0.78 and not oficial_no_bet:
-        dec = '✅ Buen acierto'
-        aviso_ok = 'OK para revisar como mercado principal de máximo acierto.'
+        if 'OVER 18.5' in mercado_u and (over18 >= 0.74 or 'fuerte' in trust or 'apto' in trust):
+            dec = '✅ Buen acierto'
+            aviso_ok = 'OK: Over 18.5 con soporte fuerte/apto para máximo acierto.'
+        else:
+            dec = '👀 Observar / buen acierto no jugable'
+            aviso_ok = 'Buen acierto, pero no es 🔥 Alto ni Over 18.5 fuerte: observar.'
     elif prob >= 0.70:
         dec = '⚖️ Apto prudente'
         aviso_ok = 'OK, pero no tratar como pick fuerte.'
@@ -8244,10 +8248,10 @@ def decision_acierto_v23371(row):
         dec = '👀 Observar'
         aviso_ok = 'Probabilidad útil, pero por debajo de zona fuerte.'
 
-    # v23.37.7: acción final más estricta.
-    # Solo 🔥 Alto acierto y ✅ Buen acierto son jugables.
-    # ⚖️ Apto prudente, 👀 Observar, datos pobres, set con contexto débil y Under/2-0 quedan fuera.
-    if dec in ['🔥 Alto acierto', '✅ Buen acierto']:
+    # v23.37.8: acción final ultra estricta.
+    # ✅ JUGAR solo si es 🔥 Alto acierto, o ✅ Buen acierto cuando viene de Over 18.5 fuerte/apto.
+    # Los mercados de set en zona ✅ Buen acierto pasan a OBSERVAR por backtest irregular.
+    if dec == '🔥 Alto acierto' or (dec == '✅ Buen acierto' and 'OVER 18.5' in mercado_u):
         accion = '✅ JUGAR'
     elif dec.startswith('⛔'):
         accion = '⛔ EVITAR'
