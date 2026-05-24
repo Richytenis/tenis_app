@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.0-max-acierto-selector"
+APP_VERSION = "v23.37.1-max-acierto-claridad"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8099,6 +8099,84 @@ def batch_recommendation(row):
 
     return "ML SOLO CONTEXTO"
 
+
+
+# =========================================================
+# v23.37.1 CLARIDAD SELECTOR MÁXIMO ACIERTO
+# =========================================================
+def _pct_text_to_float_v23371(x, default=0.0):
+    """Convierte '84.5%' o 0.845 a float 0-1 sin romper la tabla."""
+    try:
+        if x is None or pd.isna(x):
+            return default
+        s = str(x).replace('%', '').replace(',', '.').strip()
+        if s == '' or s.lower() in {'nan', 'none'}:
+            return default
+        v = float(s)
+        if v > 1:
+            v /= 100.0
+        return float(np.clip(v, 0.0, 1.0))
+    except Exception:
+        return default
+
+
+def decision_acierto_v23371(row):
+    """
+    Etiqueta final para el objetivo actual del proyecto:
+    máxima tasa de acierto por partido, sin cuotas ni value.
+
+    No cambia ningún cálculo. Solo traduce el selector 🎯 a una decisión visual.
+    """
+    mercado = str(row.get('🎯 Mercado más probable', '')).strip()
+    motivo = str(row.get('🎯 Motivo acierto', '')).lower()
+    estado = str(row.get('Estado', '')).lower()
+    aviso = str(row.get('Aviso datos', '')).lower()
+    trust = str(row.get('Signal Trust', '')).lower()
+    lectura1 = str(row.get('Lectura J1', '')).lower()
+    lectura2 = str(row.get('Lectura J2', '')).lower()
+    prob = _pct_text_to_float_v23371(row.get('🎯 Prob máxima', 0), 0.0)
+    min_surface = _pct_text_to_float_v23371(row.get('Mín. partidos superficie', ''), -1.0)
+    # Mín. partidos superficie suele venir como entero/string. Lo parseamos aparte.
+    try:
+        ms_raw = str(row.get('Mín. partidos superficie', '')).replace(',', '.').strip()
+        ms = float(ms_raw) if ms_raw not in {'', 'nan', 'None'} else 99.0
+    except Exception:
+        ms = 99.0
+    min_conf = _pct_text_to_float_v23371(row.get('Confianza mínima', ''), 1.0)
+
+    datos_pobres = (
+        'fallback' in motivo or 'fallback' in aviso or 'estimado' in estado or
+        'estimado' in lectura1 or 'estimado' in lectura2 or 'datos parciales' in trust or
+        ms <= 3 or min_conf < 0.45
+    )
+
+    if not mercado or mercado.startswith('⛔') or 'evitar' in mercado.lower() or prob < 0.62:
+        return pd.Series({
+            '🎯 Decisión acierto': '⛔ Evitar',
+            '🎯 Aviso acierto': 'Ningún mercado supera el mínimo de seguridad.'
+        })
+
+    if datos_pobres:
+        return pd.Series({
+            '🎯 Decisión acierto': '👀 Observar / datos pobres',
+            '🎯 Aviso acierto': 'Probabilidad estimada por fallback o muestra baja: no tratar como pick fuerte.'
+        })
+
+    if prob >= 0.84:
+        dec = '🔥 Alto acierto'
+    elif prob >= 0.78:
+        dec = '✅ Buen acierto'
+    elif prob >= 0.70:
+        dec = '⚖️ Apto prudente'
+    else:
+        dec = '👀 Observar'
+
+    return pd.Series({
+        '🎯 Decisión acierto': dec,
+        '🎯 Aviso acierto': 'OK para revisar como mercado principal de máximo acierto.'
+    })
+
+
 def prepare_batch_display_table(ok_df):
     if ok_df is None or ok_df.empty:
         return ok_df
@@ -8155,6 +8233,11 @@ def prepare_batch_display_table(ok_df):
     # v23.30.1: columna visible con el pick oficial real para revisar antes de descargar Excel.
     df["Pick oficial"] = df.apply(pick_oficial_v23301, axis=1)
 
+    # v23.37.1: decisión visual específica para el nuevo objetivo: máximo acierto, sin cuotas.
+    if "🎯 Mercado más probable" in df.columns and "🎯 Prob máxima" in df.columns:
+        decision_cols = df.apply(decision_acierto_v23371, axis=1)
+        df = pd.concat([df, decision_cols], axis=1)
+
     preferred = [
         "Versión app",
         "Recomendación",
@@ -8165,12 +8248,14 @@ def prepare_batch_display_table(ok_df):
         "Fecha",
         "Hora",
         "Partido",
-        "Favorito modelo",
-        "ML favorito",
+        "🎯 Decisión acierto",
         "🎯 Mercado más probable",
         "🎯 Prob máxima",
         "🎯 Confianza acierto",
+        "🎯 Aviso acierto",
         "🎯 Motivo acierto",
+        "Favorito modelo",
+        "ML favorito",
         "Mejor señal",
         "Prob señal",
         "Mejor mercado Over Focus",
