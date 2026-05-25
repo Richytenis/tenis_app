@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.14-winamax-captura-ocr"
+APP_VERSION = "v23.37.15-winamax-2-capturas-jugador"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8827,9 +8827,68 @@ def _extraer_winamax_desde_texto(raw_text, row=None):
     return data
 
 
+def _combinar_lecturas_winamax_jugadores(text_j1, text_j2, row=None):
+    """Combina dos capturas separadas de Winamax: una del jugador 1 y otra del jugador 2.
+    Así evitamos que el OCR mezcle balances/partidos de ambos jugadores.
+    """
+    d1 = _extraer_winamax_desde_texto(text_j1 or "", row)
+    d2 = _extraer_winamax_desde_texto(text_j2 or "", row)
+
+    def first_win(d):
+        v = d.get("j1_v", None)
+        if v is None:
+            v = d.get("j2_v", None)
+        return v
+
+    def rank_largos(v):
+        s = str(v or "")
+        if s.startswith("Muchos"):
+            return 3
+        if s.startswith("Algunos"):
+            return 2
+        if s.startswith("Pocos"):
+            return 1
+        return 0
+
+    def rank_palizas(v):
+        s = str(v or "")
+        if s.startswith("Muchas"):
+            return 3
+        if s.startswith("No se ve claro"):
+            return 1
+        return 0
+
+    largos_vals = [d1.get("largos", ""), d2.get("largos", "")]
+    palizas_vals = [d1.get("palizas", ""), d2.get("palizas", "")]
+    best_largos = max(largos_vals, key=rank_largos) if largos_vals else ""
+    worst_palizas = max(palizas_vals, key=rank_palizas) if palizas_vals else ""
+
+    combined_text = ("[JUGADOR 1]\n" + str(text_j1 or "") + "\n\n[JUGADOR 2]\n" + str(text_j2 or "")).strip()
+    notas = []
+    if d1.get("nota"):
+        notas.append("J1: " + str(d1.get("nota")))
+    if d2.get("nota"):
+        notas.append("J2: " + str(d2.get("nota")))
+
+    return {
+        "j1_v": first_win(d1),
+        "j2_v": first_win(d2),
+        "largos": best_largos or "No se ve claro",
+        "palizas": worst_palizas or "No se ven muchas",
+        "h2h": "No aparece",
+        "manual": "Auto",
+        "nota": " | ".join(notas),
+        "ocr_text": combined_text[:1600],
+        "ocr_j1": str(text_j1 or "")[:900],
+        "ocr_j2": str(text_j2 or "")[:900],
+        "lectura_j1": d1,
+        "lectura_j2": d2,
+    }
+
+
 def render_winamax_reanalysis_panel(ok_saved):
-    """Panel paso 2 por captura Winamax: subir imagen o pegar texto bruto.
-    La app intenta extraer automáticamente últimos 10 y marcadores.
+    """Panel paso 2 por capturas Winamax separadas por jugador.
+    Para cada partido permite subir una captura del jugador 1 y otra del jugador 2.
     """
     if ok_saved is None or ok_saved.empty:
         return
@@ -8841,8 +8900,8 @@ def render_winamax_reanalysis_panel(ok_saved):
         st.info("📥 Radar Winamax: no hay partidos que necesiten revisión extra.")
         return
 
-    st.subheader("📥 Paso 2 · Reanálisis con captura de Winamax")
-    st.caption("Sube una captura de la pestaña Forma/Stats Center o pega el texto copiado. La app intenta leer últimos 10, marcadores largos y palizas. No usa cuotas.")
+    st.subheader("📥 Paso 2 · Reanálisis con capturas Winamax")
+    st.caption("Sube capturas separadas: una con la pestaña Forma del jugador 1 y otra con la del jugador 2. La app combina ambas lecturas y decide si confirma, mantiene o baja el pick. No usa cuotas.")
 
     include_media = st.checkbox("Incluir también prioridad MEDIA", value=False, key="wm_include_media")
     if not include_media and "📥 Prioridad Winamax" in cand.columns:
@@ -8856,50 +8915,74 @@ def render_winamax_reanalysis_panel(ok_saved):
     show_cols = [c for c in ["Hora", "Partido", "🎯 Acción final", "🎯 Mercado más probable", "🎯 Prob máxima", "📥 Prioridad Winamax", "📥 Qué mirar Winamax"] if c in cand.columns]
     st.dataframe(cand[show_cols], width='stretch', hide_index=True)
 
-    st.info("Uso rápido: sube la captura de Winamax del partido. Si el OCR falla, puedes pegar debajo el texto copiado de la pantalla. Después pulsa Reanalizar.")
+    st.info("Uso recomendado: en Winamax abre el partido, pestaña Forma, toca primero el jugador 1 y sube captura; luego toca el jugador 2 y sube otra captura. Con los dos lados el análisis es mucho más fiable.")
 
-    with st.form("wm_reanalysis_ocr_form"):
+    with st.form("wm_reanalysis_ocr_form_2_players"):
         ajustes = {}
         for idx, row in cand.iterrows():
             partido = str(row.get("Partido", ""))
             mercado = str(row.get("🎯 Mercado más probable", ""))
             prob = row.get("🎯 Prob máxima", "")
+            if " vs " in partido:
+                p1, p2 = [x.strip() for x in partido.split(" vs ", 1)]
+            else:
+                p1, p2 = "Jugador 1", "Jugador 2"
 
             st.markdown(f"**{partido}** · {mercado} · {prob}")
-            up = st.file_uploader(
-                "Captura Winamax del partido",
-                type=["png", "jpg", "jpeg"],
-                key=f"wm_img_{idx}"
+            c_up1, c_up2 = st.columns(2)
+            with c_up1:
+                up1 = st.file_uploader(
+                    f"Captura Winamax · {p1}",
+                    type=["png", "jpg", "jpeg"],
+                    key=f"wm_img_j1_{idx}"
+                )
+            with c_up2:
+                up2 = st.file_uploader(
+                    f"Captura Winamax · {p2}",
+                    type=["png", "jpg", "jpeg"],
+                    key=f"wm_img_j2_{idx}"
+                )
+
+            ocr1, err1 = _ocr_winamax_image(up1) if up1 is not None else ("", "")
+            ocr2, err2 = _ocr_winamax_image(up2) if up2 is not None else ("", "")
+            if err1:
+                st.warning(f"OCR {p1}: {err1}")
+            if err2:
+                st.warning(f"OCR {p2}: {err2}")
+
+            t1, t2 = st.columns(2)
+            with t1:
+                raw1 = st.text_area(
+                    f"Texto detectado / pega texto de {p1}",
+                    value=ocr1,
+                    height=120,
+                    key=f"wm_raw_j1_{idx}",
+                    placeholder="Captura del jugador 1: últimos 10, marcadores recientes..."
+                )
+            with t2:
+                raw2 = st.text_area(
+                    f"Texto detectado / pega texto de {p2}",
+                    value=ocr2,
+                    height=120,
+                    key=f"wm_raw_j2_{idx}",
+                    placeholder="Captura del jugador 2: últimos 10, marcadores recientes..."
+                )
+
+            auto_data = _combinar_lecturas_winamax_jugadores(raw1, raw2, row)
+            d1 = auto_data.get("lectura_j1", {}) or {}
+            d2 = auto_data.get("lectura_j2", {}) or {}
+            st.caption(
+                f"Lectura automática · {p1}: {auto_data.get('j1_v')}/10 victorias, largos={d1.get('largos')} · "
+                f"{p2}: {auto_data.get('j2_v')}/10 victorias, largos={d2.get('largos')} · "
+                f"Señal conjunta: largos={auto_data.get('largos')}, palizas={auto_data.get('palizas')}"
             )
 
-            ocr_text, ocr_err = _ocr_winamax_image(up) if up is not None else ("", "")
-            if ocr_err:
-                st.warning(ocr_err)
-
-            text_key = f"wm_raw_{idx}"
-            raw_text = st.text_area(
-                "Texto detectado / pega aquí el texto Winamax si lo prefieres",
-                value=ocr_text,
-                height=130,
-                key=text_key,
-                placeholder="Ej: Últimos 10 partidos, 6 victorias, 4 derrotas, marcadores 7-6 6-4, 4-6 6-3 6-4..."
+            manual = st.selectbox(
+                "Forzar valoración",
+                ["Auto", "✅ Confirmar", "⚠️ Neutral", "❌ Descartar"],
+                key=f"wm_manual_ocr2_{idx}"
             )
-
-            auto_data = _extraer_winamax_desde_texto(raw_text, row)
-            c1, c2 = st.columns([1.2, 1])
-            with c1:
-                st.caption(
-                    f"Lectura automática: J1={auto_data.get('j1_v')} victorias, "
-                    f"J2={auto_data.get('j2_v')} victorias · "
-                    f"Largos: {auto_data.get('largos')} · Palizas: {auto_data.get('palizas')}"
-                )
-            with c2:
-                manual = st.selectbox(
-                    "Forzar valoración",
-                    ["Auto", "✅ Confirmar", "⚠️ Neutral", "❌ Descartar"],
-                    key=f"wm_manual_ocr_{idx}"
-                )
-            nota_extra = st.text_input("Nota opcional", key=f"wm_nota_ocr_{idx}", placeholder="Ej: veo muchos 7-6 / 3 sets, o muchas palizas 2-0")
+            nota_extra = st.text_input("Nota opcional", key=f"wm_nota_ocr2_{idx}", placeholder="Ej: ambos muestran 7-6/3 sets; o uno pierde fácil 2-0")
 
             auto_data["manual"] = manual
             if nota_extra:
