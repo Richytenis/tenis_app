@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.15-winamax-2-capturas-jugador"
+APP_VERSION = "v23.37.17-flashscore-ficha-texto"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -4368,7 +4368,7 @@ def _match_quoted_player(quoted, p1_raw, p2_raw):
     return 1 if s1 >= s2 else 2
 
 
-def parse_winamax_paste(raw_text):
+def parse_datos_extra_paste(raw_text):
     """
     Acepta formatos como:
     Jugador A - Jugador B
@@ -8293,11 +8293,11 @@ def decision_acierto_v23371(row):
 
 
 
-def radar_winamax_v233710(row):
+def radar_datos_extra_v233710(row):
     """
-    v23.37.10 Radar Winamax.
+    v23.37.10 Radar Datos extra.
     No cambia probabilidades ni motores. Solo decide qué partidos merecen revisión extra
-    en Stats Center de Winamax para no revisar 40 partidos a mano.
+    en Stats Center de Datos extra para no revisar 40 partidos a mano.
     """
     def pct(x, default=0.0):
         try:
@@ -8362,18 +8362,18 @@ def radar_winamax_v233710(row):
 
     if accion == '⛔ EVITAR':
         return pd.Series({
-            '📥 Necesita Winamax': 'NO',
-            '📥 Prioridad Winamax': '',
-            '📥 Qué mirar Winamax': '',
-            '📥 Motivo Winamax': 'Evitar: no merece revisión manual.'
+            '📥 Necesita Datos extra': 'NO',
+            '📥 Prioridad Datos extra': '',
+            '📥 Qué mirar Datos extra': '',
+            '📥 Motivo Datos extra': 'Evitar: no merece revisión manual.'
         })
 
-    # 1) Over fuerte en observar: principal candidato para subir a JUGAR si Winamax confirma marcadores largos.
+    # 1) Over fuerte en observar: principal candidato para subir a JUGAR si Datos extra confirma marcadores largos.
     if accion == '👀 OBSERVAR' and over18 >= 0.76 and not is_under:
         necesita = 'SÍ'
         prioridad = 'ALTA' if over18 >= 0.79 or over_fuerte else 'MEDIA'
         mirar = 'Últimos 10 de ambos; marcadores 20+ juegos; 7-6/7-5; partidos a 3 sets; derrotas/palizas 2-0.'
-        why = f'Over 18.5 alto ({over18:.1%}) pero la app lo dejó en OBSERVAR: Winamax puede confirmar si subirlo.'
+        why = f'Over 18.5 alto ({over18:.1%}) pero la app lo dejó en OBSERVAR: Datos extra puede confirmar si subirlo.'
 
     # 2) JUGAR con set market y datos pobres: confirmar que no viene de perder fácil.
     elif accion == '✅ JUGAR' and is_set and (datos_pobres or ml_fav < 0.70):
@@ -8394,7 +8394,7 @@ def radar_winamax_v233710(row):
         necesita = 'SÍ'
         prioridad = 'MEDIA'
         mirar = 'Forma últimos 10; superficie; marcadores recientes; si hay mucha retirada/paliza o partidos largos.'
-        why = 'Probabilidad alta, pero basada en muestra baja/fallback: confirmar en Winamax.'
+        why = 'Probabilidad alta, pero basada en muestra baja/fallback: confirmar en Datos extra.'
 
     # 5) Under/2-0 no lo priorizamos para el objetivo actual.
     elif is_under:
@@ -8404,10 +8404,10 @@ def radar_winamax_v233710(row):
         why = 'Under/2-0 no se prioriza por backtest irregular.'
 
     return pd.Series({
-        '📥 Necesita Winamax': necesita,
-        '📥 Prioridad Winamax': prioridad,
-        '📥 Qué mirar Winamax': mirar,
-        '📥 Motivo Winamax': why
+        '📥 Necesita Datos extra': necesita,
+        '📥 Prioridad Datos extra': prioridad,
+        '📥 Qué mirar Datos extra': mirar,
+        '📥 Motivo Datos extra': why
     })
 
 def prepare_batch_display_table(ok_df):
@@ -8471,8 +8471,8 @@ def prepare_batch_display_table(ok_df):
         decision_cols = df.apply(decision_acierto_v23371, axis=1)
         df = pd.concat([df, decision_cols], axis=1)
 
-        # v23.37.10: Radar Winamax. Solo dice qué partidos merece revisar manualmente.
-        radar_cols = df.apply(radar_winamax_v233710, axis=1)
+        # v23.37.10: Radar Datos extra. Solo dice qué partidos merece revisar manualmente.
+        radar_cols = df.apply(radar_datos_extra_v233710, axis=1)
         df = pd.concat([df, radar_cols], axis=1)
 
     preferred = [
@@ -8492,10 +8492,10 @@ def prepare_batch_display_table(ok_df):
         "🎯 Confianza acierto",
         "🎯 Aviso acierto",
         "🎯 Motivo acierto",
-        "📥 Necesita Winamax",
-        "📥 Prioridad Winamax",
-        "📥 Qué mirar Winamax",
-        "📥 Motivo Winamax",
+        "📥 Necesita Datos extra",
+        "📥 Prioridad Datos extra",
+        "📥 Qué mirar Datos extra",
+        "📥 Motivo Datos extra",
         "Favorito modelo",
         "ML favorito",
         "Mejor señal",
@@ -8576,10 +8576,10 @@ def prepare_batch_display_table(ok_df):
 
 
 # =========================================================
-# v23.37.12 REANÁLISIS WINAMAX MANUAL
+# v23.37.12 REANÁLISIS DATOS EXTRA MANUAL
 # =========================================================
 
-def _winamax_match_key(row):
+def _datos_extra_match_key(row):
     return str(row.get("Partido", "")).strip()
 
 
@@ -8601,8 +8601,8 @@ def _inferir_jugador_mercado(row):
     return "", ""
 
 
-def _evaluar_winamax_real(row, data):
-    """Convierte campos reales visibles de Winamax en confirmar/neutral/descartar.
+def _evaluar_datos_extra_real(row, data):
+    """Convierte campos reales visibles de Datos extra en confirmar/neutral/descartar.
     No usa cuotas. Solo refuerza o frena la acción final.
     """
     mercado = str(row.get("🎯 Mercado más probable", "")).upper()
@@ -8620,25 +8620,25 @@ def _evaluar_winamax_real(row, data):
     manual = str(data.get("manual", "Auto"))
 
     if manual.startswith("✅"):
-        return "confirmar", "Confirmado manualmente por revisión Winamax"
+        return "confirmar", "Confirmado manualmente por revisión Datos extra"
     if manual.startswith("❌"):
-        return "descartar", "Descartado manualmente por revisión Winamax"
+        return "descartar", "Descartado manualmente por revisión Datos extra"
     if manual.startswith("⚠️"):
-        return "neutral", "Winamax neutral manual"
+        return "neutral", "Datos extra neutral manual"
 
     # Si no hay datos suficientes, no tocar.
     if j1_v is None and j2_v is None and not largos and not palizas and not h2h:
-        return "sin_revisar", "Sin datos Winamax"
+        return "sin_revisar", "Sin datos Datos extra"
 
     # Mercado Over: lo que más nos interesa es que haya partidos largos y pocas palizas.
     if "OVER 18.5" in mercado or "OVER18" in mercado:
         if largos.startswith("Muchos") and not palizas.startswith("Muchas"):
-            return "confirmar", "Winamax confirma patrón de partidos largos"
+            return "confirmar", "Datos extra confirma patrón de partidos largos"
         if largos.startswith("Algunos") and prob >= 0.78 and not palizas.startswith("Muchas"):
-            return "confirmar", "Winamax apoya Over: algunos largos + probabilidad alta"
+            return "confirmar", "Datos extra apoya Over: algunos largos + probabilidad alta"
         if palizas.startswith("Muchas") or largos.startswith("Pocos"):
-            return "descartar", "Winamax no apoya Over: palizas o pocos marcadores largos"
-        return "neutral", "Winamax no confirma ni descarta claramente el Over"
+            return "descartar", "Datos extra no apoya Over: palizas o pocos marcadores largos"
+        return "neutral", "Datos extra no confirma ni descarta claramente el Over"
 
     # Mercado gana set: mirar forma del jugador elegido y si pierde fácil.
     lado, nombre = _inferir_jugador_mercado(row)
@@ -8650,29 +8650,29 @@ def _evaluar_winamax_real(row, data):
 
     if "GANA AL MENOS 1 SET" in mercado or "GANA SET" in mercado:
         if palizas.startswith("Jugador elegido pierde fácil"):
-            return "descartar", "Winamax muestra riesgo: el jugador elegido pierde fácil 2-0"
+            return "descartar", "Datos extra muestra riesgo: el jugador elegido pierde fácil 2-0"
         if chosen_wins is not None:
             if chosen_wins >= 6 and prob >= 0.88:
-                return "confirmar", f"Winamax confirma forma del elegido: {chosen_wins}/10"
+                return "confirmar", f"Datos extra confirma forma del elegido: {chosen_wins}/10"
             if chosen_wins <= 2:
-                return "descartar", f"Winamax no confirma: elegido solo {chosen_wins}/10"
+                return "descartar", f"Datos extra no confirma: elegido solo {chosen_wins}/10"
         if largos.startswith("Muchos") and prob >= 0.90:
-            return "confirmar", "Winamax apoya que compita set: marcadores largos + probabilidad alta"
-        return "neutral", "Winamax no confirma suficiente el gana-set"
+            return "confirmar", "Datos extra apoya que compita set: marcadores largos + probabilidad alta"
+        return "neutral", "Datos extra no confirma suficiente el gana-set"
 
     # Resto mercados: solo manual o neutral.
-    return "neutral", "Winamax revisado, sin señal automática fuerte"
+    return "neutral", "Datos extra revisado, sin señal automática fuerte"
 
 
-def aplicar_reanalisis_winamax_manual(df, ajustes):
-    """Aplica datos reales visibles de Winamax a la tabla ya analizada.
+def aplicar_reanalisis_datos_extra_manual(df, ajustes):
+    """Aplica datos reales visibles de Datos extra a la tabla ya analizada.
     No recalcula motores. Solo sube/baja la acción final y deja trazabilidad.
     ajustes: dict index -> dict(j1_v, j2_v, largos, palizas, h2h, manual, nota)
     """
     if df is None or df.empty:
         return df
     out = df.copy()
-    for c in ["📥 Estado Winamax", "📥 Ajuste Winamax"]:
+    for c in ["📥 Estado Datos extra", "📥 Ajuste Datos extra"]:
         if c not in out.columns:
             out[c] = ""
 
@@ -8680,7 +8680,7 @@ def aplicar_reanalisis_winamax_manual(df, ajustes):
         if idx not in out.index:
             continue
 
-        estado, motivo_estado = _evaluar_winamax_real(out.loc[idx], data)
+        estado, motivo_estado = _evaluar_datos_extra_real(out.loc[idx], data)
         if estado == "sin_revisar":
             continue
 
@@ -8688,22 +8688,22 @@ def aplicar_reanalisis_winamax_manual(df, ajustes):
         ajuste = [motivo_estado]
 
         if estado == "confirmar":
-            out.at[idx, "📥 Estado Winamax"] = "✅ Confirmado"
+            out.at[idx, "📥 Estado Datos extra"] = "✅ Confirmado"
             out.at[idx, "🎯 Acción final"] = "✅ JUGAR"
             if "🎯 Decisión acierto" in out.columns:
-                out.at[idx, "🎯 Decisión acierto"] = "🔥 Alto acierto + Winamax"
+                out.at[idx, "🎯 Decisión acierto"] = "🔥 Alto acierto + Datos extra"
             if "🎯 Aviso acierto" in out.columns:
-                out.at[idx, "🎯 Aviso acierto"] = "Winamax confirma datos recientes: subido o mantenido como JUGAR."
+                out.at[idx, "🎯 Aviso acierto"] = "Datos extra confirma datos recientes: subido o mantenido como JUGAR."
             ajuste.append(f"Sube/mantiene JUGAR desde {accion_old}")
         elif estado == "descartar":
-            out.at[idx, "📥 Estado Winamax"] = "❌ Descartado"
+            out.at[idx, "📥 Estado Datos extra"] = "❌ Descartado"
             out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
             if "🎯 Aviso acierto" in out.columns:
-                out.at[idx, "🎯 Aviso acierto"] = "Winamax no confirma: bajado a OBSERVAR."
+                out.at[idx, "🎯 Aviso acierto"] = "Datos extra no confirma: bajado a OBSERVAR."
             ajuste.append(f"Baja a OBSERVAR desde {accion_old}")
         else:
-            out.at[idx, "📥 Estado Winamax"] = "⚠️ Neutral"
-            ajuste.append("Sin cambio: Winamax no confirma ni descarta")
+            out.at[idx, "📥 Estado Datos extra"] = "⚠️ Neutral"
+            ajuste.append("Sin cambio: Datos extra no confirma ni descarta")
 
         for label, key in [
             ("J1 últimos 10", "j1_v"), ("J2 últimos 10", "j2_v"),
@@ -8713,13 +8713,13 @@ def aplicar_reanalisis_winamax_manual(df, ajustes):
             val = data.get(key, "")
             if val not in [None, ""]:
                 ajuste.append(f"{label}: {val}")
-        out.at[idx, "📥 Ajuste Winamax"] = " | ".join(map(str, ajuste))
+        out.at[idx, "📥 Ajuste Datos extra"] = " | ".join(map(str, ajuste))
 
     return out
 
 
-def _ocr_winamax_image(uploaded_file):
-    """Lee una captura Winamax con OCR opcional.
+def _ocr_datos_extra_image(uploaded_file):
+    """Lee una captura Datos extra con OCR opcional.
     Si pytesseract/tesseract no está instalado, devuelve aviso sin romper la app.
     """
     if uploaded_file is None:
@@ -8732,7 +8732,7 @@ def _ocr_winamax_image(uploaded_file):
 
     try:
         img = Image.open(uploaded_file).convert("RGB")
-        # Preprocesado simple para capturas oscuras de Winamax.
+        # Preprocesado simple para capturas oscuras de Datos extra.
         gray = ImageOps.grayscale(img)
         gray = ImageEnhance.Contrast(gray).enhance(1.8)
         gray = ImageEnhance.Sharpness(gray).enhance(1.4)
@@ -8747,8 +8747,120 @@ def _ocr_winamax_image(uploaded_file):
         return "", f"No he podido leer la captura con OCR: {e}"
 
 
-def _extraer_winamax_desde_texto(raw_text, row=None):
-    """Convierte texto OCR/copypaste de Winamax en los campos que usa el reanálisis.
+
+def _parse_flashscore_player_profile(raw_text):
+    """Extrae señales recientes desde una ficha copiada de Flashscore.
+    Funciona con texto pegado donde los marcadores vienen en líneas separadas:
+    2\n1\n3\n6\n6\n1\n6\n3\nP
+    Ignora bloques con Retirada y calcula Over 18.5, 3 sets y marcadores largos.
+    """
+    text = normalizar_texto(raw_text or "")
+    lines = [normalizar_texto(x).strip() for x in text.splitlines()]
+    completed = []
+    cur = []
+
+    def is_result_line(x):
+        return x.strip().upper() in {"G", "P", "W", "L"}
+
+    for line in lines:
+        if not line:
+            continue
+        cur.append(line)
+        if is_result_line(line):
+            block = cur[-45:]
+            cur = []
+            joined = " ".join(block).lower()
+            if "retirada" in joined or "retired" in joined or "walkover" in joined or "w/o" in joined:
+                continue
+            nums = []
+            for z in block:
+                zz = z.strip()
+                # Solo líneas que son números de marcador, no fechas/horas/rankings.
+                if re.fullmatch(r"\d{1,2}", zz):
+                    n = int(zz)
+                    if 0 <= n <= 8:
+                        nums.append(n)
+            if len(nums) < 6:
+                continue
+            match_sets = nums[:2]
+            score_nums = nums[2:]
+            # Flashscore a veces incluye puntos de tie-break extra; limitamos a 6 números de sets si encaja.
+            pairs = []
+            i = 0
+            while i + 1 < len(score_nums):
+                a, b = score_nums[i], score_nums[i + 1]
+                # Si aparece un 8 normalmente es tie-break points; no lo usamos como juegos.
+                if a <= 7 and b <= 7 and max(a, b) >= 3:
+                    pairs.append((a, b))
+                i += 2
+            if len(pairs) < 2:
+                continue
+            games = sum(a + b for a, b in pairs[:3])
+            three_sets = (len(pairs) >= 3) or (len(match_sets) >= 2 and sorted(match_sets[:2]) == [1, 2])
+            long_sets = sum(1 for a, b in pairs if (a + b >= 10 or 7 in (a, b)))
+            easy_sets = sum(1 for a, b in pairs if sorted([a, b]) in ([0, 6], [1, 6], [2, 6]))
+            result = block[-1].strip().upper()
+            win = result in {"G", "W"}
+            completed.append({
+                "win": win,
+                "pairs": pairs[:3],
+                "games": games,
+                "over18": games >= 19,
+                "three_sets": three_sets,
+                "long_sets": long_sets,
+                "easy_sets": easy_sets,
+            })
+            if len(completed) >= 10:
+                break
+
+    # Récord de temporada/superficie si aparece al final. No es imprescindible, solo informativo.
+    hard_record = ""
+    m = re.search(r"2026\s+\d+\s+\d+\s+\d+\s*:\s*\d+\s+(\d+\s*:\s*\d+)", text)
+    if m:
+        hard_record = m.group(1).replace(" ", "")
+
+    if not completed:
+        return None
+    n = len(completed)
+    wins = sum(1 for m in completed if m["win"])
+    overs = sum(1 for m in completed if m["over18"])
+    threes = sum(1 for m in completed if m["three_sets"])
+    long_sets = sum(m["long_sets"] for m in completed)
+    easy_sets = sum(m["easy_sets"] for m in completed)
+    under_easy = sum(1 for m in completed if m["games"] <= 17)
+
+    over_rate = overs / max(n, 1)
+    if over_rate >= 0.70 or threes >= 3 or long_sets >= 5:
+        largos = "Muchos: Flashscore muestra varios Over/3 sets/7-6/7-5"
+    elif over_rate >= 0.50 or threes >= 1 or long_sets >= 2:
+        largos = "Algunos"
+    else:
+        largos = "Pocos: pocos Overs recientes en Flashscore"
+
+    if under_easy >= max(3, n * 0.45) or easy_sets >= max(5, n):
+        palizas = "Muchas palizas en general"
+    elif under_easy >= 1 or easy_sets >= 2:
+        palizas = "No se ve claro"
+    else:
+        palizas = "No se ven muchas"
+
+    return {
+        "wins": wins,
+        "matches": n,
+        "overs": overs,
+        "over_rate": over_rate,
+        "three_sets": threes,
+        "long_sets": long_sets,
+        "easy_sets": easy_sets,
+        "under_easy": under_easy,
+        "largos": largos,
+        "palizas": palizas,
+        "hard_record": hard_record,
+        "summary": f"Flashscore: {wins}/{n} victorias, Over18.5 {overs}/{n}, 3 sets {threes}/{n}, sets largos {long_sets}, palizas/under corto {under_easy}/{n}" + (f", dura 2026 {hard_record}" if hard_record else ""),
+    }
+
+def _extraer_datos_extra_desde_texto(raw_text, row=None):
+    """Convierte texto OCR/copypaste de Datos extra en los campos que usa el reanálisis.
     No usa cuotas. Busca balance últimos 10 y patrones de marcadores.
     """
     text = normalizar_texto(raw_text or "")
@@ -8766,7 +8878,18 @@ def _extraer_winamax_desde_texto(raw_text, row=None):
     if not text.strip():
         return data
 
-    # 1) Últimos 10: Winamax suele mostrar "5 victorias / 5 derrotas".
+    # 0) Ficha Flashscore pegada: mucho más fiable que OCR si el usuario copia Resultados/Partidos.
+    fs = _parse_flashscore_player_profile(text)
+    if fs:
+        data["j1_v"] = int(fs.get("wins", 0))
+        data["largos"] = fs.get("largos", "")
+        data["palizas"] = fs.get("palizas", "")
+        data["h2h"] = "No aparece"
+        data["nota"] = fs.get("summary", "")
+        data["flashscore"] = fs
+        return data
+
+    # 1) Últimos 10: capturas/datos extra suelen mostrar "5 victorias / 5 derrotas".
     wins = []
     for m in re.finditer(r"(\d{1,2})\s*(?:victoria|victorias|win|wins|v)", low):
         try:
@@ -8827,12 +8950,12 @@ def _extraer_winamax_desde_texto(raw_text, row=None):
     return data
 
 
-def _combinar_lecturas_winamax_jugadores(text_j1, text_j2, row=None):
-    """Combina dos capturas separadas de Winamax: una del jugador 1 y otra del jugador 2.
+def _combinar_lecturas_datos_extra_jugadores(text_j1, text_j2, row=None):
+    """Combina dos capturas separadas de Datos extra: una del jugador 1 y otra del jugador 2.
     Así evitamos que el OCR mezcle balances/partidos de ambos jugadores.
     """
-    d1 = _extraer_winamax_desde_texto(text_j1 or "", row)
-    d2 = _extraer_winamax_desde_texto(text_j2 or "", row)
+    d1 = _extraer_datos_extra_desde_texto(text_j1 or "", row)
+    d2 = _extraer_datos_extra_desde_texto(text_j2 or "", row)
 
     def first_win(d):
         v = d.get("j1_v", None)
@@ -8886,36 +9009,36 @@ def _combinar_lecturas_winamax_jugadores(text_j1, text_j2, row=None):
     }
 
 
-def render_winamax_reanalysis_panel(ok_saved):
-    """Panel paso 2 por capturas Winamax separadas por jugador.
+def render_datos_extra_reanalysis_panel(ok_saved):
+    """Panel paso 2 por capturas Datos extra separadas por jugador.
     Para cada partido permite subir una captura del jugador 1 y otra del jugador 2.
     """
     if ok_saved is None or ok_saved.empty:
         return
-    if "📥 Necesita Winamax" not in ok_saved.columns:
+    if "📥 Necesita Datos extra" not in ok_saved.columns:
         return
 
-    cand = ok_saved[ok_saved["📥 Necesita Winamax"].astype(str).str.upper().str.contains("SÍ", na=False)].copy()
+    cand = ok_saved[ok_saved["📥 Necesita Datos extra"].astype(str).str.upper().str.contains("SÍ", na=False)].copy()
     if cand.empty:
-        st.info("📥 Radar Winamax: no hay partidos que necesiten revisión extra.")
+        st.info("📥 Radar datos extra: no hay partidos que necesiten revisión extra.")
         return
 
-    st.subheader("📥 Paso 2 · Reanálisis con capturas Winamax")
-    st.caption("Sube capturas separadas: una con la pestaña Forma del jugador 1 y otra con la del jugador 2. La app combina ambas lecturas y decide si confirma, mantiene o baja el pick. No usa cuotas.")
+    st.subheader("📥 Paso 2 · Reanálisis con ficha Flashscore o capturas")
+    st.caption("Pega la ficha de Flashscore de cada jugador o sube capturas separadas. La app combina ambas lecturas y decide si confirma, mantiene o baja el pick. No usa cuotas.")
 
     include_media = st.checkbox("Incluir también prioridad MEDIA", value=False, key="wm_include_media")
-    if not include_media and "📥 Prioridad Winamax" in cand.columns:
-        cand = cand[cand["📥 Prioridad Winamax"].astype(str).str.upper().eq("ALTA")].copy()
+    if not include_media and "📥 Prioridad Datos extra" in cand.columns:
+        cand = cand[cand["📥 Prioridad Datos extra"].astype(str).str.upper().eq("ALTA")].copy()
 
     cand = cand.head(10)
     if cand.empty:
         st.info("No hay prioridad ALTA. Activa MEDIA si quieres revisar más partidos.")
         return
 
-    show_cols = [c for c in ["Hora", "Partido", "🎯 Acción final", "🎯 Mercado más probable", "🎯 Prob máxima", "📥 Prioridad Winamax", "📥 Qué mirar Winamax"] if c in cand.columns]
+    show_cols = [c for c in ["Hora", "Partido", "🎯 Acción final", "🎯 Mercado más probable", "🎯 Prob máxima", "📥 Prioridad Datos extra", "📥 Qué mirar Datos extra"] if c in cand.columns]
     st.dataframe(cand[show_cols], width='stretch', hide_index=True)
 
-    st.info("Uso recomendado: en Winamax abre el partido, pestaña Forma, toca primero el jugador 1 y sube captura; luego toca el jugador 2 y sube otra captura. Con los dos lados el análisis es mucho más fiable.")
+    st.info("Uso recomendado: Flashscore → jugador → Resultados/Partidos → copiar la ficha completa y pegarla en el cuadro del jugador. También puedes subir capturas de SofaScore/Flashscore/Tennis Explorer/Winamax. Con los dos jugadores el análisis es mucho más fiable.")
 
     with st.form("wm_reanalysis_ocr_form_2_players"):
         ajustes = {}
@@ -8932,19 +9055,19 @@ def render_winamax_reanalysis_panel(ok_saved):
             c_up1, c_up2 = st.columns(2)
             with c_up1:
                 up1 = st.file_uploader(
-                    f"Captura Winamax · {p1}",
+                    f"Captura opcional · {p1}",
                     type=["png", "jpg", "jpeg"],
                     key=f"wm_img_j1_{idx}"
                 )
             with c_up2:
                 up2 = st.file_uploader(
-                    f"Captura Winamax · {p2}",
+                    f"Captura opcional · {p2}",
                     type=["png", "jpg", "jpeg"],
                     key=f"wm_img_j2_{idx}"
                 )
 
-            ocr1, err1 = _ocr_winamax_image(up1) if up1 is not None else ("", "")
-            ocr2, err2 = _ocr_winamax_image(up2) if up2 is not None else ("", "")
+            ocr1, err1 = _ocr_datos_extra_image(up1) if up1 is not None else ("", "")
+            ocr2, err2 = _ocr_datos_extra_image(up2) if up2 is not None else ("", "")
             if err1:
                 st.warning(f"OCR {p1}: {err1}")
             if err2:
@@ -8953,22 +9076,22 @@ def render_winamax_reanalysis_panel(ok_saved):
             t1, t2 = st.columns(2)
             with t1:
                 raw1 = st.text_area(
-                    f"Texto detectado / pega texto de {p1}",
+                    f"Pega ficha Flashscore o texto detectado · {p1}",
                     value=ocr1,
                     height=120,
                     key=f"wm_raw_j1_{idx}",
-                    placeholder="Captura del jugador 1: últimos 10, marcadores recientes..."
+                    placeholder="Pega aquí la ficha Flashscore del jugador 1 o texto OCR/captura..."
                 )
             with t2:
                 raw2 = st.text_area(
-                    f"Texto detectado / pega texto de {p2}",
+                    f"Pega ficha Flashscore o texto detectado · {p2}",
                     value=ocr2,
                     height=120,
                     key=f"wm_raw_j2_{idx}",
-                    placeholder="Captura del jugador 2: últimos 10, marcadores recientes..."
+                    placeholder="Pega aquí la ficha Flashscore del jugador 2 o texto OCR/captura..."
                 )
 
-            auto_data = _combinar_lecturas_winamax_jugadores(raw1, raw2, row)
+            auto_data = _combinar_lecturas_datos_extra_jugadores(raw1, raw2, row)
             d1 = auto_data.get("lectura_j1", {}) or {}
             d2 = auto_data.get("lectura_j2", {}) or {}
             st.caption(
@@ -8990,12 +9113,12 @@ def render_winamax_reanalysis_panel(ok_saved):
             ajustes[idx] = auto_data
             st.divider()
 
-        submitted = st.form_submit_button("🔁 Reanalizar con capturas Winamax")
+        submitted = st.form_submit_button("🔁 Reanalizar con Flashscore / datos extra")
 
     if submitted:
-        updated = aplicar_reanalisis_winamax_manual(ok_saved, ajustes)
+        updated = aplicar_reanalisis_datos_extra_manual(ok_saved, ajustes)
         st.session_state["batch_ok_df"] = updated
-        st.success("Reanálisis Winamax aplicado. La tabla y el Excel se actualizan con la nueva acción final.")
+        st.success("Reanálisis con Flashscore/datos extra aplicado. La tabla y el Excel se actualizan con la nueva acción final.")
         try:
             st.rerun()
         except Exception:
@@ -9008,15 +9131,15 @@ def render_winamax_reanalysis_panel(ok_saved):
 PICKS_LIMPIOS_COLS = [
     "Hora", "Fecha", "Torneo", "Superficie", "Partido",
     "🎯 Acción final", "🎯 Mercado más probable", "🎯 Prob máxima", "🎯 Confianza acierto",
-    "📥 Necesita Winamax", "📥 Prioridad Winamax", "📥 Estado Winamax", "📥 Ajuste Winamax", "📥 Qué mirar Winamax",
-    "🎯 Motivo acierto", "📥 Motivo Winamax",
+    "📥 Necesita Datos extra", "📥 Prioridad Datos extra", "📥 Estado Datos extra", "📥 Ajuste Datos extra", "📥 Qué mirar Datos extra",
+    "🎯 Motivo acierto", "📥 Motivo Datos extra",
 ]
 
 DETALLE_TECNICO_FIRST_COLS = [
     "Versión app", "Fecha", "Hora", "Torneo", "Superficie", "Partido",
     "🎯 Acción final", "🎯 Decisión acierto", "🎯 Mercado más probable", "🎯 Prob máxima",
     "🎯 Confianza acierto", "🎯 Aviso acierto", "🎯 Motivo acierto",
-    "📥 Necesita Winamax", "📥 Prioridad Winamax", "📥 Estado Winamax", "📥 Ajuste Winamax", "📥 Qué mirar Winamax", "📥 Motivo Winamax",
+    "📥 Necesita Datos extra", "📥 Prioridad Datos extra", "📥 Estado Datos extra", "📥 Ajuste Datos extra", "📥 Qué mirar Datos extra", "📥 Motivo Datos extra",
     "Recomendación", "Pick oficial", "Mercado recomendado", "Prob mercado recomendado",
     "Favorito modelo", "ML favorito", "Over 18.5", "Over 19.5", "Under 22.5",
     "Jugador gana set", "Prob gana set", "Favorito gana al menos 1 set",
@@ -9047,20 +9170,20 @@ def crear_picks_limpios_df(df):
         "🎯 Mercado más probable": "Mercado",
         "🎯 Prob máxima": "Prob.",
         "🎯 Confianza acierto": "Confianza",
-        "📥 Necesita Winamax": "Winamax",
-        "📥 Prioridad Winamax": "Prioridad Winamax",
-        "📥 Estado Winamax": "Estado Winamax",
-        "📥 Ajuste Winamax": "Ajuste Winamax",
-        "📥 Qué mirar Winamax": "Qué mirar",
+        "📥 Necesita Datos extra": "Datos extra",
+        "📥 Prioridad Datos extra": "Prioridad Datos extra",
+        "📥 Estado Datos extra": "Estado Datos extra",
+        "📥 Ajuste Datos extra": "Ajuste Datos extra",
+        "📥 Qué mirar Datos extra": "Qué mirar",
         "🎯 Motivo acierto": "Motivo",
-        "📥 Motivo Winamax": "Motivo Winamax",
+        "📥 Motivo Datos extra": "Motivo Datos extra",
     })
     if "Mercado" in picks.columns:
         picks["Mercado"] = picks["Mercado"].apply(_limpiar_texto_excel_cell)
 
     def _score(row):
         accion = str(row.get("Acción", "")).upper()
-        prio = str(row.get("Prioridad Winamax", "")).upper()
+        prio = str(row.get("Prioridad Datos extra", "")).upper()
         prob = leer_porcentaje(row.get("Prob.", 0), 0)
         if "JUGAR" in accion:
             base = 300
@@ -9119,23 +9242,23 @@ def aplicar_estilo_excel_limpio(writer):
             for r in range(2, min(ws.max_row, 80) + 1):
                 max_len = max(max_len, len(str(ws.cell(row=r, column=col_idx).value or "")))
             width = min(max(max_len + 2, 10), 42)
-            if header in ["Partido", "Mercado", "Qué mirar", "Motivo", "Motivo Winamax", "🎯 Motivo acierto", "📥 Qué mirar Winamax", "📥 Motivo Winamax"]:
+            if header in ["Partido", "Mercado", "Qué mirar", "Motivo", "Motivo Datos extra", "🎯 Motivo acierto", "📥 Qué mirar Datos extra", "📥 Motivo Datos extra"]:
                 width = min(max(width, 26), 50)
             ws.column_dimensions[letter].width = width
         headers = {str(ws.cell(row=1, column=i).value or ""): i for i in range(1, ws.max_column + 1)}
         accion_col = headers.get("Acción") or headers.get("🎯 Acción final")
-        winamax_col = headers.get("Winamax") or headers.get("📥 Necesita Winamax")
+        datos_extra_col = headers.get("Datos extra") or headers.get("📥 Necesita Datos extra")
         for r in range(2, ws.max_row + 1):
             fill = None
             accion = str(ws.cell(row=r, column=accion_col).value or "").upper() if accion_col else ""
-            winamax = str(ws.cell(row=r, column=winamax_col).value or "").upper() if winamax_col else ""
+            datos_extra = str(ws.cell(row=r, column=datos_extra_col).value or "").upper() if datos_extra_col else ""
             if "JUGAR" in accion:
                 fill = PatternFill("solid", fgColor="C6EFCE")
             elif "EVITAR" in accion:
                 fill = PatternFill("solid", fgColor="F4CCCC")
-            elif "ALTA" in winamax:
+            elif "ALTA" in datos_extra:
                 fill = PatternFill("solid", fgColor="FFF2CC")
-            elif "OBSERVAR" in accion or "MEDIA" in winamax:
+            elif "OBSERVAR" in accion or "MEDIA" in datos_extra:
                 fill = PatternFill("solid", fgColor="E2F0D9")
             if fill:
                 for c in range(1, ws.max_column + 1):
@@ -9150,11 +9273,11 @@ def batch_excel_bytes(df):
         picks_df.to_excel(writer, index=False, sheet_name="PICKS LIMPIOS")
         detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
         try:
-            wm_df = picks_df[picks_df.get("Winamax", "").astype(str).str.upper().str.contains("SÍ", na=False)].copy()
+            wm_df = picks_df[picks_df.get("Datos extra", "").astype(str).str.upper().str.contains("SÍ", na=False)].copy()
             if not wm_df.empty:
-                for _c in ["Resultado Winamax", "Forma últimos 10", "Marcadores largos", "Nota manual"]:
+                for _c in ["Resultado Datos extra", "Forma últimos 10", "Marcadores largos", "Nota manual"]:
                     wm_df[_c] = ""
-                wm_df.to_excel(writer, index=False, sheet_name="WINAMAX A REVISAR")
+                wm_df.to_excel(writer, index=False, sheet_name="DATOS EXTRA A REVISAR")
         except Exception:
             pass
         aplicar_estilo_excel_limpio(writer)
@@ -9226,7 +9349,7 @@ def render_control_panel(db, circuito):
     c4.metric("Over", "🔒 Blindado" if OVER_ENGINE_LOCKED else "Abierto")
 
     st.success(OVER_ENGINE_LOCK_NOTE)
-    st.info("Fuente de partidos fijada: SofaScore. Winamax/listas simples quedan fuera del flujo principal para evitar lecturas mezcladas.")
+    st.info("Fuente de partidos fijada: SofaScore. Datos extra/listas simples quedan fuera del flujo principal para evitar lecturas mezcladas.")
 
     st.divider()
     st.subheader("📁 Archivos detectados")
@@ -10443,7 +10566,7 @@ elif modo == "Predictor":
 elif modo == "Analizador por lista":
     st.subheader("📋 Analizador por lista pegada")
     st.caption("Pega lista diaria o resultados de SofaScore. Se ignoran dobles/cancelados/retirados.")
-    st.success("Fuente fijada: SofaScore. Esta pantalla ya no usa Winamax ni listas simples como flujo principal.")
+    st.success("Fuente fijada: SofaScore. Esta pantalla ya no usa Datos extra ni listas simples como flujo principal.")
     st.info("Nota: en Sofascore resultados, el ML se valida con ganador real. Si el pegado incluye juegos por set, también valida Over 18.5 y, solo en WTA, Over 17.5. En tie-breaks puede contar puntos extra si Sofascore los copia como números separados.")
 
     with st.sidebar:
@@ -10515,8 +10638,8 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.caption(f"Auto resultados detectado total: {len(preview_all)} · Se analizarán solo {circuito} según el selector lateral.")
                 preview = filtrar_matches_por_circuito_pegado(preview_all, circuito)
             else:
-                preview = parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch)
-                # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Winamax.
+                preview = parse_datos_extra_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch)
+                # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Datos extra.
                 if not preview and any(is_time_line_sofa(x.strip()) for x in raw_batch.splitlines()):
                     preview = parse_sofascore_paste(raw_batch)
                 if not preview and any(is_date_line_sofa_result(x.strip()) for x in raw_batch.splitlines()):
@@ -10575,8 +10698,8 @@ Sebastián Baez - Roberto Carballés Baena"""
             parsed_all = parse_sofascore_results_grouped_paste(raw_batch)
             parsed = filtrar_matches_por_circuito_pegado(parsed_all, circuito)[:int(max_batch)]
         else:
-            parsed = (parse_winamax_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch))
-            # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Winamax.
+            parsed = (parse_datos_extra_paste(raw_batch) if usar_cuotas else parse_simple_match_list(raw_batch))
+            # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Datos extra.
             if not parsed and any(is_time_line_sofa(x.strip()) for x in raw_batch.splitlines()):
                 parsed = parse_sofascore_paste(raw_batch)
             if not parsed and any(is_date_line_sofa_result(x.strip()) for x in raw_batch.splitlines()):
@@ -10683,10 +10806,10 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "🎯 Confianza acierto",
                     "🎯 Aviso acierto",
                     "🎯 Motivo acierto",
-                    "📥 Necesita Winamax",
-                    "📥 Prioridad Winamax",
-                    "📥 Qué mirar Winamax",
-                    "📥 Motivo Winamax",
+                    "📥 Necesita Datos extra",
+                    "📥 Prioridad Datos extra",
+                    "📥 Qué mirar Datos extra",
+                    "📥 Motivo Datos extra",
                     "Favorito modelo",
                     "ML favorito",
                     "Ganador real",
@@ -10793,7 +10916,7 @@ Sebastián Baez - Roberto Carballés Baena"""
             with st.expander("📲 Enviar picks a Telegram", expanded=False):
                 render_telegram_sender_panel(ok_saved)
 
-            render_winamax_reanalysis_panel(ok_saved)
+            render_datos_extra_reanalysis_panel(ok_saved)
 
             st.subheader("🔥 Resumen ordenado completo")
             st.dataframe(ok_saved, width='stretch', hide_index=True)
