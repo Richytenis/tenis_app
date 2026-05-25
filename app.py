@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.17-flashscore-ficha-texto"
+APP_VERSION = "v23.37.18-tennisabstract-all-markets"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8626,6 +8626,16 @@ def _evaluar_datos_extra_real(row, data):
     if manual.startswith("⚠️"):
         return "neutral", "Datos extra neutral manual"
 
+    # Tennis Abstract All-Markets: si hay dos fichas TA, puede cambiar el mercado candidato,
+    # no solo confirmar el Over inicial.
+    ta_sig = data.get("ta_all_markets") if isinstance(data, dict) else None
+    if ta_sig:
+        estado = ta_sig.get("estado", "neutral")
+        motivo = ta_sig.get("motivo", "Tennis Abstract revisado")
+        if estado == "confirmar":
+            return "confirmar", "Tennis Abstract confirma mejor mercado: " + motivo
+        return "neutral", "Tennis Abstract revisa todos los mercados: " + motivo
+
     # Si no hay datos suficientes, no tocar.
     if j1_v is None and j2_v is None and not largos and not palizas and not h2h:
         return "sin_revisar", "Sin datos Datos extra"
@@ -8690,10 +8700,16 @@ def aplicar_reanalisis_datos_extra_manual(df, ajustes):
         if estado == "confirmar":
             out.at[idx, "📥 Estado Datos extra"] = "✅ Confirmado"
             out.at[idx, "🎯 Acción final"] = "✅ JUGAR"
+            ta_sig = data.get("ta_all_markets") if isinstance(data, dict) else None
+            if ta_sig and ta_sig.get("nuevo_mercado"):
+                if "🎯 Mercado más probable" in out.columns:
+                    out.at[idx, "🎯 Mercado más probable"] = ta_sig.get("nuevo_mercado")
+                if "🎯 Prob máxima" in out.columns and ta_sig.get("nueva_prob") is not None:
+                    out.at[idx, "🎯 Prob máxima"] = float(ta_sig.get("nueva_prob"))
             if "🎯 Decisión acierto" in out.columns:
-                out.at[idx, "🎯 Decisión acierto"] = "🔥 Alto acierto + Datos extra"
+                out.at[idx, "🎯 Decisión acierto"] = (data.get("ta_all_markets", {}) or {}).get("decision", "🔥 Alto acierto + Datos extra")
             if "🎯 Aviso acierto" in out.columns:
-                out.at[idx, "🎯 Aviso acierto"] = "Datos extra confirma datos recientes: subido o mantenido como JUGAR."
+                out.at[idx, "🎯 Aviso acierto"] = "Datos extra/Tennis Abstract confirma datos recientes: subido o mantenido como JUGAR."
             ajuste.append(f"Sube/mantiene JUGAR desde {accion_old}")
         elif estado == "descartar":
             out.at[idx, "📥 Estado Datos extra"] = "❌ Descartado"
@@ -8703,7 +8719,17 @@ def aplicar_reanalisis_datos_extra_manual(df, ajustes):
             ajuste.append(f"Baja a OBSERVAR desde {accion_old}")
         else:
             out.at[idx, "📥 Estado Datos extra"] = "⚠️ Neutral"
-            ajuste.append("Sin cambio: Datos extra no confirma ni descarta")
+            ta_sig = data.get("ta_all_markets") if isinstance(data, dict) else None
+            if ta_sig and ta_sig.get("nuevo_mercado"):
+                if "🎯 Mercado más probable" in out.columns:
+                    out.at[idx, "🎯 Mercado más probable"] = ta_sig.get("nuevo_mercado")
+                if "🎯 Prob máxima" in out.columns and ta_sig.get("nueva_prob") is not None:
+                    out.at[idx, "🎯 Prob máxima"] = float(ta_sig.get("nueva_prob"))
+                if "🎯 Decisión acierto" in out.columns:
+                    out.at[idx, "🎯 Decisión acierto"] = ta_sig.get("decision", "👀 Observar + TA")
+                if "🎯 Acción final" in out.columns:
+                    out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
+            ajuste.append("Sin cambio: Datos extra no confirma lo suficiente para JUGAR")
 
         for label, key in [
             ("J1 últimos 10", "j1_v"), ("J2 últimos 10", "j2_v"),
@@ -8747,6 +8773,326 @@ def _ocr_datos_extra_image(uploaded_file):
         return "", f"No he podido leer la captura con OCR: {e}"
 
 
+
+
+
+def _score_pairs_from_ta_score(score):
+    """Parsea scores tipo '4-6 6-3 6-3' o '7-6(4) 7-5' en parejas de juegos.
+    Devuelve solo juegos, ignora tie-break entre paréntesis.
+    """
+    pairs = []
+    for part in str(score or '').split():
+        part = re.sub(r"\([^)]*\)", "", part.strip())
+        m = re.match(r"^(\d{1,2})-(\d{1,2})$", part)
+        if not m:
+            continue
+        a, b = int(m.group(1)), int(m.group(2))
+        if 0 <= a <= 7 and 0 <= b <= 7 and max(a, b) >= 4:
+            pairs.append((a, b))
+    return pairs
+
+
+def _parse_tennisabstract_player_profile(raw_text):
+    """Extrae señales desde una ficha copiada de Tennis Abstract.
+    Usa Recent Results para calcular Over18.5, Over19.5, 3 sets, set ganado,
+    derrotas 0-2 y palizas cortas. También intenta leer Elo/hElo/cElo/gElo.
+    """
+    text = normalizar_texto(raw_text or "")
+    if "Tennis Abstract" not in text and "Recent Results" not in text and "Elo rank" not in text:
+        return None
+    lines = [normalizar_texto(x).strip() for x in text.splitlines() if normalizar_texto(x).strip()]
+    if not lines:
+        return None
+
+    # Nombre del jugador: primera línea normalmente "Luca Nardi [ITA]".
+    player_line = lines[0]
+    player_name = re.sub(r"\[[A-Z]{2,3}\].*$", "", player_line).strip()
+    player_clean = limpiar(player_name)
+    player_surname = surname_key(player_name)
+
+    # Elo general de cabecera.
+    elo = None
+    m = re.search(r"Elo rank:\s*\d+\s*\(rating:\s*(\d+)\)", text)
+    if m:
+        try: elo = int(m.group(1))
+        except Exception: elo = None
+
+    # Línea Current de Year-End Rankings: ATP Rank Points Elo Rank Elo hElo Rank hElo cElo Rank cElo gElo Rank gElo...
+    helo = celo = gelo = None
+    for ln in lines:
+        if ln.startswith("Current") and re.search(r"\b\d{3,4}\b", ln):
+            nums = [int(x) for x in re.findall(r"\b\d{2,4}\b", ln)]
+            # En TA suele ser: year/date nums includes 2026,05,25, ATP rank, points, EloRank, Elo, hEloRank, hElo, cEloRank, cElo, gEloRank, gElo
+            # Tomamos los ratings cercanos a 1200-2300. El primero suele ser año; filtramos.
+            ratings = [x for x in nums if 1200 <= x <= 2300]
+            # Para Nardi: [2026, 163, 366, 171, 1608, 150, 1583, 159, 1557, 199, 1440] -> ratings incluye 2026,1608,1583,1557,1440.
+            ratings = [x for x in ratings if x != 2026]
+            if len(ratings) >= 1: elo = elo or ratings[0]
+            if len(ratings) >= 2: helo = ratings[1]
+            if len(ratings) >= 3: celo = ratings[2]
+            if len(ratings) >= 4: gelo = ratings[3]
+            break
+
+    # Challenger 2026 resumen si aparece.
+    ch_2026 = {}
+    in_ch = False
+    for ln in lines:
+        if ln.startswith("Challenger Seasons"):
+            in_ch = True
+            continue
+        if in_ch and ln.startswith("2026"):
+            parts = re.split(r"\s+", ln)
+            try:
+                # Year M W L Win% Set W-L ... Game W-L ...
+                ch_2026 = {"matches": int(parts[1]), "wins": int(parts[2]), "losses": int(parts[3])}
+            except Exception:
+                pass
+            break
+        if in_ch and ln.startswith("Recent Titles"):
+            break
+
+    matches = []
+    in_recent = False
+    for ln in lines:
+        if ln.startswith("Recent Results"):
+            in_recent = True
+            continue
+        if in_recent and ln.startswith("Tour-Level Seasons"):
+            break
+        if not in_recent:
+            continue
+        if not re.match(r"^\d{2}-[A-Za-z]{3}-\d{4}\t", ln):
+            continue
+        cols = ln.split("\t")
+        if len(cols) < 8:
+            continue
+        try:
+            date, tournament, surface, rd = cols[0], cols[1], cols[2], cols[3]
+            desc = cols[6] if len(cols) > 6 else ""
+            score = cols[7] if len(cols) > 7 else ""
+        except Exception:
+            continue
+        if " d. " not in desc or not re.search(r"\d+-\d+", score):
+            continue
+        pairs = _score_pairs_from_ta_score(score)
+        if len(pairs) < 2:
+            continue
+        left, right = desc.split(" d. ", 1)
+        left_clean, right_clean = limpiar(left), limpiar(right)
+        # Detecta si el jugador de la ficha ganó o perdió.
+        player_on_left = player_clean and (player_clean in left_clean or (player_surname and player_surname in left_clean))
+        player_on_right = player_clean and (player_clean in right_clean or (player_surname and player_surname in right_clean))
+        if not (player_on_left or player_on_right):
+            # Si no lo detecta, saltar para no orientar mal set ganado.
+            continue
+        win = bool(player_on_left)
+        games = sum(a+b for a,b in pairs)
+        three_sets = len(pairs) >= 3
+        # Score está desde el ganador. Si el jugador ganó, sus juegos son a; si perdió, sus juegos son b.
+        player_sets_won = 0
+        opp_sets_won = 0
+        for a,b in pairs:
+            if win:
+                player_sets_won += int(a > b)
+                opp_sets_won += int(b > a)
+            else:
+                player_sets_won += int(b > a)
+                opp_sets_won += int(a > b)
+        set_won = player_sets_won >= 1
+        lost_0_2 = (not win and player_sets_won == 0 and len(pairs) == 2)
+        lost_0_2_easy = lost_0_2 and games <= 17
+        easy_short = games <= 17 or any(sorted([a,b]) in ([0,6],[1,6],[2,6]) for a,b in pairs)
+        long_sets = sum(1 for a,b in pairs if a+b >= 10 or 7 in (a,b))
+        tb_sets = str(score).count("(")
+        matches.append({
+            "date": date, "surface": surface, "tournament": tournament,
+            "win": win, "pairs": pairs, "games": games,
+            "over18": games >= 19, "over19": games >= 20,
+            "three_sets": three_sets, "set_won": set_won,
+            "lost_0_2": lost_0_2, "lost_0_2_easy": lost_0_2_easy,
+            "easy_short": easy_short, "long_sets": long_sets, "tb_sets": tb_sets,
+        })
+        if len(matches) >= 12:
+            break
+
+    if not matches and elo is None and not ch_2026:
+        return None
+    n = len(matches)
+    wins = sum(m["win"] for m in matches)
+    overs18 = sum(m["over18"] for m in matches)
+    overs19 = sum(m["over19"] for m in matches)
+    threes = sum(m["three_sets"] for m in matches)
+    set_won = sum(m["set_won"] for m in matches)
+    lost02 = sum(m["lost_0_2"] for m in matches)
+    lost02easy = sum(m["lost_0_2_easy"] for m in matches)
+    easy_short = sum(m["easy_short"] for m in matches)
+    long_sets = sum(m["long_sets"] for m in matches)
+    tb_sets = sum(m["tb_sets"] for m in matches)
+    avg_games = (sum(m["games"] for m in matches) / n) if n else 0.0
+    hard_n = sum(1 for m in matches if str(m["surface"]).lower().startswith("hard"))
+    clay_n = sum(1 for m in matches if str(m["surface"]).lower().startswith("clay"))
+    hard_over = sum(1 for m in matches if str(m["surface"]).lower().startswith("hard") and m["over18"])
+    clay_over = sum(1 for m in matches if str(m["surface"]).lower().startswith("clay") and m["over18"])
+
+    over_rate = overs18 / max(n, 1)
+    over19_rate = overs19 / max(n, 1)
+    set_rate = set_won / max(n, 1)
+    three_rate = threes / max(n, 1)
+    lost02_rate = lost02 / max(n, 1)
+    easy_rate = easy_short / max(n, 1)
+
+    if over_rate >= 0.70 or avg_games >= 22 or threes >= 3 or long_sets >= 5:
+        largos = "Muchos: Tennis Abstract muestra Over/3 sets/7-6/7-5"
+    elif over_rate >= 0.50 or avg_games >= 20.0 or threes >= 1 or long_sets >= 2:
+        largos = "Algunos"
+    else:
+        largos = "Pocos: pocos Overs recientes en Tennis Abstract"
+
+    if easy_rate >= 0.45 or lost02easy >= 3:
+        palizas = "Muchas palizas en general"
+    elif easy_rate >= 0.20 or lost02 >= 2:
+        palizas = "No se ve claro"
+    else:
+        palizas = "No se ven muchas"
+
+    summary = (
+        f"TA {player_name}: n={n}, W={wins}/{n}, Over18={overs18}/{n}, Over19={overs19}/{n}, "
+        f"3sets={threes}/{n}, set ganado={set_won}/{n}, perdió 0-2={lost02}/{n}, "
+        f"media juegos={avg_games:.1f}, Elo={elo or 'N/A'}"
+    )
+    return {
+        "source": "Tennis Abstract", "player": player_name, "matches": n, "wins": wins,
+        "overs": overs18, "over_rate": over_rate, "overs19": overs19, "over19_rate": over19_rate,
+        "three_sets": threes, "three_rate": three_rate,
+        "set_won": set_won, "set_rate": set_rate,
+        "lost02": lost02, "lost02_rate": lost02_rate, "lost02_easy": lost02easy,
+        "easy_short": easy_short, "easy_rate": easy_rate,
+        "long_sets": long_sets, "tb_sets": tb_sets, "avg_games": avg_games,
+        "hard_n": hard_n, "hard_over": hard_over, "clay_n": clay_n, "clay_over": clay_over,
+        "elo": elo, "hElo": helo, "cElo": celo, "gElo": gelo, "challenger_2026": ch_2026,
+        "largos": largos, "palizas": palizas, "summary": summary,
+    }
+
+
+def _safe_pct_from_row(row, col, default=0.0):
+    try:
+        return float(leer_porcentaje(row.get(col, default), default))
+    except Exception:
+        return default
+
+
+def _tennisabstract_all_markets_signal(row, ta1, ta2):
+    """Con dos fichas TA, reelige el mejor mercado entre Over18/Over19/gana-set/ML/+2.5.
+    No usa cuotas. Devuelve selección y señal de confirmación.
+    """
+    if not ta1 and not ta2:
+        return None
+    partido = str(row.get("Partido", ""))
+    if " vs " in partido:
+        p1, p2 = [x.strip() for x in partido.split(" vs ", 1)]
+    else:
+        p1, p2 = "Jugador 1", "Jugador 2"
+    base_over18 = _safe_pct_from_row(row, "Over 18.5", 0.0)
+    base_over19 = _safe_pct_from_row(row, "Over 19.5", 0.0)
+    base_ml = _safe_pct_from_row(row, "ML favorito", 0.0)
+    old_market = str(row.get("🎯 Mercado más probable", ""))
+    old_prob = _safe_pct_from_row(row, "🎯 Prob máxima", 0.0)
+
+    def g(d, k, default=0.0):
+        try:
+            if not d: return default
+            return float(d.get(k, default) or default)
+        except Exception:
+            return default
+    n1, n2 = g(ta1,"matches"), g(ta2,"matches")
+    avg_over = np.mean([g(ta1,"over_rate",0.0), g(ta2,"over_rate",0.0)]) if (ta1 and ta2) else max(g(ta1,"over_rate",0), g(ta2,"over_rate",0))
+    avg_over19 = np.mean([g(ta1,"over19_rate",0.0), g(ta2,"over19_rate",0.0)]) if (ta1 and ta2) else max(g(ta1,"over19_rate",0), g(ta2,"over19_rate",0))
+    avg_three = np.mean([g(ta1,"three_rate",0.0), g(ta2,"three_rate",0.0)]) if (ta1 and ta2) else max(g(ta1,"three_rate",0), g(ta2,"three_rate",0))
+    avg_easy = np.mean([g(ta1,"easy_rate",0.0), g(ta2,"easy_rate",0.0)]) if (ta1 and ta2) else max(g(ta1,"easy_rate",0), g(ta2,"easy_rate",0))
+    avg_games = np.mean([g(ta1,"avg_games",0.0), g(ta2,"avg_games",0.0)]) if (ta1 and ta2) else max(g(ta1,"avg_games",0), g(ta2,"avg_games",0))
+    set1, set2 = g(ta1,"set_rate",0.0), g(ta2,"set_rate",0.0)
+    lost1, lost2 = g(ta1,"lost02_rate",0.0), g(ta2,"lost02_rate",0.0)
+    elo1, elo2 = g(ta1,"elo",0.0), g(ta2,"elo",0.0)
+
+    candidates = []
+    reasons = []
+    enough_both = (n1 >= 5 and n2 >= 5)
+    enough_one = (max(n1, n2) >= 6)
+
+    # Over18 confirmado por TA.
+    if base_over18 >= 0.70 and enough_one:
+        ta_boost = 0.06 if avg_over >= 0.70 else 0.035 if avg_over >= 0.60 else 0.0
+        three_boost = 0.025 if avg_three >= 0.30 else 0.0
+        easy_cut = 0.06 if avg_easy >= 0.45 else 0.03 if avg_easy >= 0.30 else 0.0
+        p = float(np.clip(max(base_over18, 0.67 + avg_over*0.18 + avg_three*0.06 + min(avg_games,26)/260) + ta_boost + three_boost - easy_cut, 0.55, 0.88))
+        if p >= 0.76 and avg_over >= 0.55 and avg_easy < 0.45:
+            candidates.append((p, "Over 18.5", "OVER18", f"TA confirma Over: over_rate combinado {avg_over:.0%}, 3 sets {avg_three:.0%}, media juegos {avg_games:.1f}"))
+
+    # Over19 exige más.
+    if base_over19 >= 0.68 and enough_one and avg_over19 >= 0.50 and avg_easy < 0.35:
+        p = float(np.clip(max(base_over19, 0.62 + avg_over19*0.20 + avg_three*0.05), 0.55, 0.82))
+        if p >= 0.72:
+            candidates.append((p, "Over 19.5", "OVER19", f"TA apoya Over19: over19 combinado {avg_over19:.0%}, 3 sets {avg_three:.0%}"))
+
+    # Gana al menos 1 set por jugador.
+    if ta1 and n1 >= 5 and set1 >= 0.75 and lost1 <= 0.25:
+        p = float(np.clip(0.76 + set1*0.12 - lost1*0.12 + (0.02 if g(ta1,'wins',0)/max(n1,1)>=0.50 else 0), 0.65, 0.92))
+        if p >= 0.82:
+            candidates.append((p, f"{p1} gana al menos 1 set", "SET_J1", f"TA set ganado {set1:.0%}, derrotas 0-2 {lost1:.0%}"))
+    if ta2 and n2 >= 5 and set2 >= 0.75 and lost2 <= 0.25:
+        p = float(np.clip(0.76 + set2*0.12 - lost2*0.12 + (0.02 if g(ta2,'wins',0)/max(n2,1)>=0.50 else 0), 0.65, 0.92))
+        if p >= 0.82:
+            candidates.append((p, f"{p2} gana al menos 1 set", "SET_J2", f"TA set ganado {set2:.0%}, derrotas 0-2 {lost2:.0%}"))
+
+    # ML por Elo si ambos tienen TA y diferencia clara.
+    if elo1 and elo2 and abs(elo1-elo2) >= 120:
+        p1_ml = float(elo_prob(elo1, elo2))
+        fav_name = p1 if p1_ml >= 0.5 else p2
+        fav_p = max(p1_ml, 1-p1_ml)
+        # No sobreagresivo: requiere forma y evita que TA sustituya al modelo sin soporte.
+        fav_ta = ta1 if p1_ml >= 0.5 else ta2
+        fav_n = g(fav_ta,"matches",0)
+        fav_w = g(fav_ta,"wins",0) / max(fav_n,1)
+        if fav_p >= 0.68 and fav_w >= 0.45 and base_ml >= 0.62:
+            p = float(np.clip((fav_p*0.55 + base_ml*0.45), 0.55, 0.84))
+            if p >= 0.72:
+                candidates.append((p, f"{fav_name} gana", "ML", f"TA Elo diferencial {abs(elo1-elo2):.0f}, forma favorita {fav_w:.0%}"))
+
+    # +2.5 sets: útil como señal, rara vez JUGAR por probabilidad.
+    if enough_both and avg_three >= 0.35 and avg_over >= 0.65 and elo1 and elo2 and abs(elo1-elo2) <= 90:
+        p = float(np.clip(0.50 + avg_three*0.20 + avg_over*0.08, 0.45, 0.66))
+        candidates.append((p, "+2.5 sets", "3SETS", f"TA igualdad + 3 sets frecuentes: 3sets {avg_three:.0%}, Elo gap {abs(elo1-elo2):.0f}"))
+
+    if not candidates:
+        return {
+            "estado": "neutral",
+            "motivo": f"TA revisado, pero no confirma mercado jugable. Over {avg_over:.0%}, set J1 {set1:.0%}, set J2 {set2:.0%}, palizas {avg_easy:.0%}",
+            "nuevo_mercado": "", "nueva_prob": None, "decision": "👀 OBSERVAR"
+        }
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    p, label, typ, why = candidates[0]
+    # Umbrales jugables por tipo.
+    jugar = False
+    if typ == "OVER18" and p >= 0.76:
+        jugar = True
+    elif typ.startswith("SET") and p >= 0.88:
+        jugar = True
+    elif typ == "ML" and p >= 0.76:
+        jugar = True
+    elif typ == "OVER19" and p >= 0.78:
+        jugar = True
+    # 3SETS no lo subimos automáticamente salvo prob imposible; lo dejamos observación.
+    estado = "confirmar" if jugar else "neutral"
+    decision = "🔥 Alto acierto + TA" if jugar else "👀 Observar + TA"
+    return {
+        "estado": estado,
+        "motivo": why,
+        "nuevo_mercado": label,
+        "nueva_prob": p,
+        "decision": decision,
+        "candidates": candidates[:5],
+    }
 
 def _parse_flashscore_player_profile(raw_text):
     """Extrae señales recientes desde una ficha copiada de Flashscore.
@@ -8878,7 +9224,18 @@ def _extraer_datos_extra_desde_texto(raw_text, row=None):
     if not text.strip():
         return data
 
-    # 0) Ficha Flashscore pegada: mucho más fiable que OCR si el usuario copia Resultados/Partidos.
+    # 0) Ficha Tennis Abstract pegada: nivel real + resultados recientes detallados.
+    ta = _parse_tennisabstract_player_profile(text)
+    if ta:
+        data["j1_v"] = int(ta.get("wins", 0))
+        data["largos"] = ta.get("largos", "")
+        data["palizas"] = ta.get("palizas", "")
+        data["h2h"] = "No aparece"
+        data["nota"] = ta.get("summary", "")
+        data["tennisabstract"] = ta
+        return data
+
+    # 1) Ficha Flashscore pegada: resultados recientes y marcadores.
     fs = _parse_flashscore_player_profile(text)
     if fs:
         data["j1_v"] = int(fs.get("wins", 0))
@@ -8993,7 +9350,7 @@ def _combinar_lecturas_datos_extra_jugadores(text_j1, text_j2, row=None):
     if d2.get("nota"):
         notas.append("J2: " + str(d2.get("nota")))
 
-    return {
+    combined = {
         "j1_v": first_win(d1),
         "j2_v": first_win(d2),
         "largos": best_largos or "No se ve claro",
@@ -9007,6 +9364,15 @@ def _combinar_lecturas_datos_extra_jugadores(text_j1, text_j2, row=None):
         "lectura_j1": d1,
         "lectura_j2": d2,
     }
+    ta1 = d1.get("tennisabstract") if isinstance(d1, dict) else None
+    ta2 = d2.get("tennisabstract") if isinstance(d2, dict) else None
+    if ta1 or ta2:
+        sig = _tennisabstract_all_markets_signal(row or {}, ta1, ta2)
+        if sig:
+            combined["ta_all_markets"] = sig
+            extra = f"TA All Markets: {sig.get('motivo','')}"
+            combined["nota"] = (combined.get("nota", "") + " | " + extra).strip(" |")
+    return combined
 
 
 def render_datos_extra_reanalysis_panel(ok_saved):
@@ -9023,8 +9389,8 @@ def render_datos_extra_reanalysis_panel(ok_saved):
         st.info("📥 Radar datos extra: no hay partidos que necesiten revisión extra.")
         return
 
-    st.subheader("📥 Paso 2 · Reanálisis con ficha Flashscore o capturas")
-    st.caption("Pega la ficha de Flashscore de cada jugador o sube capturas separadas. La app combina ambas lecturas y decide si confirma, mantiene o baja el pick. No usa cuotas.")
+    st.subheader("📥 Paso 2 · Reanálisis con Tennis Abstract / Flashscore")
+    st.caption("Pega la ficha de Tennis Abstract o Flashscore de cada jugador. Con Tennis Abstract la app revisa todos los mercados posibles, no solo el Over. No usa cuotas.")
 
     include_media = st.checkbox("Incluir también prioridad MEDIA", value=False, key="wm_include_media")
     if not include_media and "📥 Prioridad Datos extra" in cand.columns:
@@ -9038,7 +9404,7 @@ def render_datos_extra_reanalysis_panel(ok_saved):
     show_cols = [c for c in ["Hora", "Partido", "🎯 Acción final", "🎯 Mercado más probable", "🎯 Prob máxima", "📥 Prioridad Datos extra", "📥 Qué mirar Datos extra"] if c in cand.columns]
     st.dataframe(cand[show_cols], width='stretch', hide_index=True)
 
-    st.info("Uso recomendado: Flashscore → jugador → Resultados/Partidos → copiar la ficha completa y pegarla en el cuadro del jugador. También puedes subir capturas de SofaScore/Flashscore/Tennis Explorer/Winamax. Con los dos jugadores el análisis es mucho más fiable.")
+    st.info("Uso recomendado: Tennis Abstract → ficha del jugador completa, o Flashscore → jugador → Resultados/Partidos. Pega una ficha por jugador. Con los dos jugadores el análisis es mucho más fiable.")
 
     with st.form("wm_reanalysis_ocr_form_2_players"):
         ajustes = {}
@@ -9076,19 +9442,19 @@ def render_datos_extra_reanalysis_panel(ok_saved):
             t1, t2 = st.columns(2)
             with t1:
                 raw1 = st.text_area(
-                    f"Pega ficha Flashscore o texto detectado · {p1}",
+                    f"Pega ficha Tennis Abstract / Flashscore o texto detectado · {p1}",
                     value=ocr1,
                     height=120,
                     key=f"wm_raw_j1_{idx}",
-                    placeholder="Pega aquí la ficha Flashscore del jugador 1 o texto OCR/captura..."
+                    placeholder="Pega aquí la ficha Tennis Abstract o Flashscore del jugador 1..."
                 )
             with t2:
                 raw2 = st.text_area(
-                    f"Pega ficha Flashscore o texto detectado · {p2}",
+                    f"Pega ficha Tennis Abstract / Flashscore o texto detectado · {p2}",
                     value=ocr2,
                     height=120,
                     key=f"wm_raw_j2_{idx}",
-                    placeholder="Pega aquí la ficha Flashscore del jugador 2 o texto OCR/captura..."
+                    placeholder="Pega aquí la ficha Tennis Abstract o Flashscore del jugador 2..."
                 )
 
             auto_data = _combinar_lecturas_datos_extra_jugadores(raw1, raw2, row)
@@ -9113,12 +9479,12 @@ def render_datos_extra_reanalysis_panel(ok_saved):
             ajustes[idx] = auto_data
             st.divider()
 
-        submitted = st.form_submit_button("🔁 Reanalizar con Flashscore / datos extra")
+        submitted = st.form_submit_button("🔁 Reanalizar con Tennis Abstract / datos extra")
 
     if submitted:
         updated = aplicar_reanalisis_datos_extra_manual(ok_saved, ajustes)
         st.session_state["batch_ok_df"] = updated
-        st.success("Reanálisis con Flashscore/datos extra aplicado. La tabla y el Excel se actualizan con la nueva acción final.")
+        st.success("Reanálisis con Tennis Abstract/datos extra aplicado. La tabla y el Excel se actualizan con la nueva acción final.")
         try:
             st.rerun()
         except Exception:
