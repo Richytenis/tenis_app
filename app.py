@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.21-check-ficha-leida"
+APP_VERSION = "v23.37.22-ta-name-match-session-fix"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8583,6 +8583,71 @@ def _datos_extra_match_key(row):
     return str(row.get("Partido", "")).strip()
 
 
+def _match_key_ui(row, idx=""):
+    """Clave por partido para que Streamlit no reutilice fichas de otro análisis."""
+    try:
+        raw = f"{idx}_{row.get('Fecha','')}_{row.get('Hora','')}_{row.get('Torneo','')}_{row.get('Partido','')}"
+    except Exception:
+        raw = f"{idx}"
+    key = limpiar(raw)[:90]
+    return key or str(idx)
+
+
+def _nombre_ficha_extra(d):
+    if not isinstance(d, dict):
+        return ""
+    ta = d.get("tennisabstract")
+    fs = d.get("flashscore")
+    if isinstance(ta, dict):
+        return str(ta.get("player", "") or "")
+    if isinstance(fs, dict):
+        return str(fs.get("player", "") or "")
+    return ""
+
+
+def _ficha_corresponde_jugador(d, jugador_esperado):
+    """Comprueba que la ficha pegada pertenece al jugador de esa fila."""
+    nombre = _nombre_ficha_extra(d)
+    if not nombre:
+        return True, ""
+    esperado = normalizar_texto(jugador_esperado or "")
+    if not esperado:
+        return True, ""
+    sc, reason = nombre_score_quality_direct(esperado, nombre)
+    exp_surname = surname_key(esperado)
+    ficha_surname = surname_key(nombre)
+    exp_clean = limpiar(esperado)
+    ficha_clean = limpiar(nombre)
+    ok = False
+    if sc >= 0.84:
+        ok = True
+    if exp_surname and ficha_surname and exp_surname == ficha_surname:
+        ok = True
+    if exp_clean and ficha_clean and (exp_clean in ficha_clean or ficha_clean in exp_clean):
+        ok = True
+    if ok:
+        return True, f"Ficha coincide con {esperado}: {nombre}"
+    return False, f"❌ Ficha no coincide: esperábamos {esperado} pero la ficha es de {nombre}. No se aplica al reanálisis."
+
+
+def _invalidar_lectura_si_no_coincide(d, jugador_esperado):
+    if not isinstance(d, dict):
+        return d
+    ok, msg = _ficha_corresponde_jugador(d, jugador_esperado)
+    if ok:
+        if msg:
+            d["name_match_ok"] = msg
+        return d
+    d = d.copy()
+    d["mismatch"] = msg
+    d.pop("tennisabstract", None)
+    d.pop("flashscore", None)
+    d["largos"] = ""
+    d["palizas"] = ""
+    d["nota"] = (str(d.get("nota", "")) + " | " + msg).strip(" |")
+    return d
+
+
 def _inferir_jugador_mercado(row):
     """Intenta saber qué jugador es el elegido en mercados tipo 'X gana al menos 1 set'."""
     mercado = str(row.get("🎯 Mercado más probable", ""))
@@ -9315,6 +9380,14 @@ def _combinar_lecturas_datos_extra_jugadores(text_j1, text_j2, row=None):
     """
     d1 = _extraer_datos_extra_desde_texto(text_j1 or "", row)
     d2 = _extraer_datos_extra_desde_texto(text_j2 or "", row)
+    try:
+        partido_tmp = str(row.get("Partido", "")) if row is not None else ""
+    except Exception:
+        partido_tmp = ""
+    if " vs " in partido_tmp:
+        expected_p1, expected_p2 = [x.strip() for x in partido_tmp.split(" vs ", 1)]
+        d1 = _invalidar_lectura_si_no_coincide(d1, expected_p1)
+        d2 = _invalidar_lectura_si_no_coincide(d2, expected_p2)
 
     def first_win(d):
         v = d.get("j1_v", None)
@@ -9383,6 +9456,8 @@ def _estado_lectura_ficha_datos_extra(d):
     """Devuelve estado legible para mostrar si una ficha pegada se ha leído bien."""
     if not isinstance(d, dict):
         return "❌ No leída", "No se pudo interpretar el bloque pegado."
+    if d.get("mismatch"):
+        return "❌ Ficha no coincide", str(d.get("mismatch"))
     ta = d.get("tennisabstract")
     fs = d.get("flashscore")
     if isinstance(ta, dict):
@@ -9458,6 +9533,7 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                 p1, p2 = [x.strip() for x in partido.split(" vs ", 1)]
             else:
                 p1, p2 = "Jugador 1", "Jugador 2"
+            key_base = _match_key_ui(row, idx)
 
             st.markdown(f"**{partido}** · {mercado} · {prob}")
             c_up1, c_up2 = st.columns(2)
@@ -9465,13 +9541,13 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                 up1 = st.file_uploader(
                     f"Captura opcional · {p1}",
                     type=["png", "jpg", "jpeg"],
-                    key=f"wm_img_j1_{idx}"
+                    key=f"wm_img_j1_{key_base}"
                 )
             with c_up2:
                 up2 = st.file_uploader(
                     f"Captura opcional · {p2}",
                     type=["png", "jpg", "jpeg"],
-                    key=f"wm_img_j2_{idx}"
+                    key=f"wm_img_j2_{key_base}"
                 )
 
             ocr1, err1 = _ocr_datos_extra_image(up1) if up1 is not None else ("", "")
@@ -9487,7 +9563,7 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                     f"Pega ficha Tennis Abstract / Flashscore o texto detectado · {p1}",
                     value=ocr1,
                     height=120,
-                    key=f"wm_raw_j1_{idx}",
+                    key=f"wm_raw_j1_{key_base}",
                     placeholder="Pega aquí la ficha Tennis Abstract o Flashscore del jugador 1..."
                 )
             with t2:
@@ -9495,7 +9571,7 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                     f"Pega ficha Tennis Abstract / Flashscore o texto detectado · {p2}",
                     value=ocr2,
                     height=120,
-                    key=f"wm_raw_j2_{idx}",
+                    key=f"wm_raw_j2_{key_base}",
                     placeholder="Pega aquí la ficha Tennis Abstract o Flashscore del jugador 2..."
                 )
 
@@ -9539,9 +9615,9 @@ def render_datos_extra_reanalysis_panel(ok_saved):
             manual = st.selectbox(
                 "Forzar valoración",
                 ["Auto", "✅ Confirmar", "⚠️ Neutral", "❌ Descartar"],
-                key=f"wm_manual_ocr2_{idx}"
+                key=f"wm_manual_ocr2_{key_base}"
             )
-            nota_extra = st.text_input("Nota opcional", key=f"wm_nota_ocr2_{idx}", placeholder="Ej: ambos muestran 7-6/3 sets; o uno pierde fácil 2-0")
+            nota_extra = st.text_input("Nota opcional", key=f"wm_nota_ocr2_{key_base}", placeholder="Ej: ambos muestran 7-6/3 sets; o uno pierde fácil 2-0")
 
             auto_data["manual"] = manual
             if nota_extra:
