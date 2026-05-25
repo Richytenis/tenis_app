@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.18-tennisabstract-all-markets"
+APP_VERSION = "v23.37.19-tennisabstract-all-markets-FORM-FIX"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8987,6 +8987,8 @@ def _tennisabstract_all_markets_signal(row, ta1, ta2):
     """
     if not ta1 and not ta2:
         return None
+    if row is None:
+        row = {}
     partido = str(row.get("Partido", ""))
     if " vs " in partido:
         p1, p2 = [x.strip() for x in partido.split(" vs ", 1)]
@@ -9367,7 +9369,7 @@ def _combinar_lecturas_datos_extra_jugadores(text_j1, text_j2, row=None):
     ta1 = d1.get("tennisabstract") if isinstance(d1, dict) else None
     ta2 = d2.get("tennisabstract") if isinstance(d2, dict) else None
     if ta1 or ta2:
-        sig = _tennisabstract_all_markets_signal(row or {}, ta1, ta2)
+        sig = _tennisabstract_all_markets_signal(row if row is not None else {}, ta1, ta2)
         if sig:
             combined["ta_all_markets"] = sig
             extra = f"TA All Markets: {sig.get('motivo','')}"
