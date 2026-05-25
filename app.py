@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.19-tennisabstract-all-markets-FORM-FIX"
+APP_VERSION = "v23.37.21-check-ficha-leida"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8705,7 +8705,7 @@ def aplicar_reanalisis_datos_extra_manual(df, ajustes):
                 if "🎯 Mercado más probable" in out.columns:
                     out.at[idx, "🎯 Mercado más probable"] = ta_sig.get("nuevo_mercado")
                 if "🎯 Prob máxima" in out.columns and ta_sig.get("nueva_prob") is not None:
-                    out.at[idx, "🎯 Prob máxima"] = float(ta_sig.get("nueva_prob"))
+                    out.at[idx, "🎯 Prob máxima"] = f"{float(ta_sig.get('nueva_prob')):.1%}"
             if "🎯 Decisión acierto" in out.columns:
                 out.at[idx, "🎯 Decisión acierto"] = (data.get("ta_all_markets", {}) or {}).get("decision", "🔥 Alto acierto + Datos extra")
             if "🎯 Aviso acierto" in out.columns:
@@ -8724,7 +8724,7 @@ def aplicar_reanalisis_datos_extra_manual(df, ajustes):
                 if "🎯 Mercado más probable" in out.columns:
                     out.at[idx, "🎯 Mercado más probable"] = ta_sig.get("nuevo_mercado")
                 if "🎯 Prob máxima" in out.columns and ta_sig.get("nueva_prob") is not None:
-                    out.at[idx, "🎯 Prob máxima"] = float(ta_sig.get("nueva_prob"))
+                    out.at[idx, "🎯 Prob máxima"] = f"{float(ta_sig.get('nueva_prob')):.1%}"
                 if "🎯 Decisión acierto" in out.columns:
                     out.at[idx, "🎯 Decisión acierto"] = ta_sig.get("decision", "👀 Observar + TA")
                 if "🎯 Acción final" in out.columns:
@@ -9377,6 +9377,46 @@ def _combinar_lecturas_datos_extra_jugadores(text_j1, text_j2, row=None):
     return combined
 
 
+
+
+def _estado_lectura_ficha_datos_extra(d):
+    """Devuelve estado legible para mostrar si una ficha pegada se ha leído bien."""
+    if not isinstance(d, dict):
+        return "❌ No leída", "No se pudo interpretar el bloque pegado."
+    ta = d.get("tennisabstract")
+    fs = d.get("flashscore")
+    if isinstance(ta, dict):
+        player = ta.get("player") or "jugador"
+        n = int(ta.get("matches", 0) or 0)
+        over = int(ta.get("overs", 0) or 0)
+        setwon = int(ta.get("set_won", 0) or 0)
+        threes = int(ta.get("three_sets", 0) or 0)
+        elo = ta.get("elo") or "N/A"
+        avg = ta.get("avg_games", 0) or 0
+        if n >= 5:
+            return "✅ Tennis Abstract leído", f"{player}: {n} partidos · Over18 {over}/{n} · Set ganado {setwon}/{n} · 3 sets {threes}/{n} · media {avg:.1f} juegos · Elo {elo}"
+        return "⚠️ Tennis Abstract parcial", f"{player}: solo {n} partidos detectados · Elo {elo}. Sirve, pero con menos confianza."
+    if isinstance(fs, dict):
+        player = fs.get("player") or "jugador"
+        n = int(fs.get("matches", 0) or 0)
+        wins = int(fs.get("wins", 0) or 0)
+        overs = int(fs.get("overs", 0) or 0)
+        threes = int(fs.get("three_sets", 0) or 0)
+        hard_record = fs.get("hard_record") or ""
+        extra = f" · dura {hard_record}" if hard_record else ""
+        if n >= 5:
+            return "✅ Flashscore leído", f"{player}: {n} partidos · W {wins}/{n} · Over18 {overs}/{n} · 3 sets {threes}/{n}{extra}"
+        return "⚠️ Flashscore parcial", f"{player}: solo {n} partidos detectados{extra}. Sirve, pero con menos confianza."
+    raw = str(d.get("ocr_text", "") or "").strip()
+    largos = str(d.get("largos", "") or "")
+    nota = str(d.get("nota", "") or "")
+    # OCR/texto genérico: se considera parcial si al menos detectó marcadores o alguna señal.
+    if raw and ("sets detectados=" in nota or largos in ["Muchos: varios 7-6/7-5/3 sets", "Algunos", "Pocos: muchos 6-2/6-3"]):
+        return "⚠️ Texto parcial leído", f"No reconoce ficha completa TA/Flashscore, pero detecta señales: {largos or 'sin largos claros'} · {nota[:140]}"
+    if raw:
+        return "❌ Ficha no reconocida", "Hay texto pegado, pero no se reconoció como Tennis Abstract/Flashscore ni se detectaron marcadores fiables."
+    return "⬜ Sin ficha", "No has pegado texto ni subido captura para este jugador."
+
 def render_datos_extra_reanalysis_panel(ok_saved):
     """Panel paso 2 por capturas Datos extra separadas por jugador.
     Para cada partido permite subir una captura del jugador 1 y otra del jugador 2.
@@ -9462,11 +9502,39 @@ def render_datos_extra_reanalysis_panel(ok_saved):
             auto_data = _combinar_lecturas_datos_extra_jugadores(raw1, raw2, row)
             d1 = auto_data.get("lectura_j1", {}) or {}
             d2 = auto_data.get("lectura_j2", {}) or {}
-            st.caption(
-                f"Lectura automática · {p1}: {auto_data.get('j1_v')}/10 victorias, largos={d1.get('largos')} · "
-                f"{p2}: {auto_data.get('j2_v')}/10 victorias, largos={d2.get('largos')} · "
-                f"Señal conjunta: largos={auto_data.get('largos')}, palizas={auto_data.get('palizas')}"
-            )
+            estado1, detalle1 = _estado_lectura_ficha_datos_extra(d1)
+            estado2, detalle2 = _estado_lectura_ficha_datos_extra(d2)
+            chk1, chk2 = st.columns(2)
+            with chk1:
+                if estado1.startswith("✅"):
+                    st.success(f"{estado1} · {p1}\n\n{detalle1}")
+                elif estado1.startswith("⚠️"):
+                    st.warning(f"{estado1} · {p1}\n\n{detalle1}")
+                elif estado1.startswith("⬜"):
+                    st.info(f"{estado1} · {p1}\n\n{detalle1}")
+                else:
+                    st.error(f"{estado1} · {p1}\n\n{detalle1}")
+            with chk2:
+                if estado2.startswith("✅"):
+                    st.success(f"{estado2} · {p2}\n\n{detalle2}")
+                elif estado2.startswith("⚠️"):
+                    st.warning(f"{estado2} · {p2}\n\n{detalle2}")
+                elif estado2.startswith("⬜"):
+                    st.info(f"{estado2} · {p2}\n\n{detalle2}")
+                else:
+                    st.error(f"{estado2} · {p2}\n\n{detalle2}")
+
+            ta_sig = auto_data.get("ta_all_markets", {}) if isinstance(auto_data, dict) else {}
+            if ta_sig:
+                st.info(
+                    f"🧠 Reanálisis TA: {ta_sig.get('mercado', '')} · "
+                    f"prob. {float(ta_sig.get('nueva_prob', 0) or 0)*100:.1f}% · "
+                    f"acción sugerida {ta_sig.get('accion', '')} · {ta_sig.get('motivo', '')}"
+                )
+            else:
+                st.caption(
+                    f"Lectura conjunta: largos={auto_data.get('largos')}, palizas={auto_data.get('palizas')}"
+                )
 
             manual = st.selectbox(
                 "Forzar valoración",
