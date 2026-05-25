@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.10-radar-winamax"
+APP_VERSION = "v23.37.11-excel-limpio-2-hojas"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8572,121 +8572,173 @@ def prepare_batch_display_table(ok_df):
     return df[cols]
 
 
-def batch_excel_bytes(df):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Analisis")
-        ws = writer.book["Analisis"]
 
-        # Formato básico tipo tabla legible.
+
+# =========================================================
+# v23.37.11 EXCEL LIMPIO 2 HOJAS
+# =========================================================
+
+PICKS_LIMPIOS_COLS = [
+    "Hora", "Fecha", "Torneo", "Superficie", "Partido",
+    "🎯 Acción final", "🎯 Mercado más probable", "🎯 Prob máxima", "🎯 Confianza acierto",
+    "📥 Necesita Winamax", "📥 Prioridad Winamax", "📥 Qué mirar Winamax",
+    "🎯 Motivo acierto", "📥 Motivo Winamax",
+]
+
+DETALLE_TECNICO_FIRST_COLS = [
+    "Versión app", "Fecha", "Hora", "Torneo", "Superficie", "Partido",
+    "🎯 Acción final", "🎯 Decisión acierto", "🎯 Mercado más probable", "🎯 Prob máxima",
+    "🎯 Confianza acierto", "🎯 Aviso acierto", "🎯 Motivo acierto",
+    "📥 Necesita Winamax", "📥 Prioridad Winamax", "📥 Qué mirar Winamax", "📥 Motivo Winamax",
+    "Recomendación", "Pick oficial", "Mercado recomendado", "Prob mercado recomendado",
+    "Favorito modelo", "ML favorito", "Over 18.5", "Over 19.5", "Under 22.5",
+    "Jugador gana set", "Prob gana set", "Favorito gana al menos 1 set",
+    "Signal Trust", "Confianza mínima", "Mín. partidos superficie", "Riesgos",
+]
+
+
+def _limpiar_texto_excel_cell(v):
+    try:
+        if pd.isna(v):
+            return ""
+    except Exception:
+        pass
+    return str(v).replace("OBSERVAR ", "").replace("JUGAR ", "").strip()
+
+
+def crear_picks_limpios_df(df):
+    """Hoja simple para decidir: una fila por partido y solo columnas útiles."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=PICKS_LIMPIOS_COLS)
+    out = df.copy()
+    for c in PICKS_LIMPIOS_COLS:
+        if c not in out.columns:
+            out[c] = ""
+    picks = out[[c for c in PICKS_LIMPIOS_COLS if c in out.columns]].copy()
+    picks = picks.rename(columns={
+        "🎯 Acción final": "Acción",
+        "🎯 Mercado más probable": "Mercado",
+        "🎯 Prob máxima": "Prob.",
+        "🎯 Confianza acierto": "Confianza",
+        "📥 Necesita Winamax": "Winamax",
+        "📥 Prioridad Winamax": "Prioridad Winamax",
+        "📥 Qué mirar Winamax": "Qué mirar",
+        "🎯 Motivo acierto": "Motivo",
+        "📥 Motivo Winamax": "Motivo Winamax",
+    })
+    if "Mercado" in picks.columns:
+        picks["Mercado"] = picks["Mercado"].apply(_limpiar_texto_excel_cell)
+
+    def _score(row):
+        accion = str(row.get("Acción", "")).upper()
+        prio = str(row.get("Prioridad Winamax", "")).upper()
+        prob = leer_porcentaje(row.get("Prob.", 0), 0)
+        if "JUGAR" in accion:
+            base = 300
+        elif "ALTA" in prio:
+            base = 220
+        elif "MEDIA" in prio:
+            base = 160
+        elif "OBSERVAR" in accion:
+            base = 80
+        else:
+            base = 0
+        return base + float(prob or 0)
+
+    try:
+        picks["_orden"] = picks.apply(_score, axis=1)
+        picks = picks.sort_values("_orden", ascending=False).drop(columns=["_orden"], errors="ignore")
+    except Exception:
+        pass
+    return picks
+
+
+def crear_detalle_tecnico_df(df):
+    """Hoja completa con todo lo técnico, pero con lo importante al principio."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    cols = [c for c in DETALLE_TECNICO_FIRST_COLS if c in out.columns] + [c for c in out.columns if c not in DETALLE_TECNICO_FIRST_COLS]
+    return out[cols]
+
+
+def aplicar_estilo_excel_limpio(writer):
+    """Formato común para las hojas exportadas."""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    thin = Side(style="thin", color="D9E2F3")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for ws in writer.book.worksheets:
         ws.freeze_panes = "A2"
-        ws.auto_filter.ref = ws.dimensions
-
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        header_fill = PatternFill("solid", fgColor="1F4E78")
-        header_font = Font(color="FFFFFF", bold=True)
-        thin = Side(style="thin", color="D9E2F3")
-        border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
+        if ws.max_row >= 1 and ws.max_column >= 1:
+            ws.auto_filter.ref = ws.dimensions
         for cell in ws[1]:
             cell.fill = header_fill
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
             cell.border = border
-
         for row in ws.iter_rows(min_row=2):
             for cell in row:
                 cell.border = border
                 cell.alignment = Alignment(vertical="center", wrap_text=False)
+        for col_idx in range(1, ws.max_column + 1):
+            letter = get_column_letter(col_idx)
+            header = str(ws.cell(row=1, column=col_idx).value or "")
+            max_len = len(header)
+            for r in range(2, min(ws.max_row, 80) + 1):
+                max_len = max(max_len, len(str(ws.cell(row=r, column=col_idx).value or "")))
+            width = min(max(max_len + 2, 10), 42)
+            if header in ["Partido", "Mercado", "Qué mirar", "Motivo", "Motivo Winamax", "🎯 Motivo acierto", "📥 Qué mirar Winamax", "📥 Motivo Winamax"]:
+                width = min(max(width, 26), 50)
+            ws.column_dimensions[letter].width = width
+        headers = {str(ws.cell(row=1, column=i).value or ""): i for i in range(1, ws.max_column + 1)}
+        accion_col = headers.get("Acción") or headers.get("🎯 Acción final")
+        winamax_col = headers.get("Winamax") or headers.get("📥 Necesita Winamax")
+        for r in range(2, ws.max_row + 1):
+            fill = None
+            accion = str(ws.cell(row=r, column=accion_col).value or "").upper() if accion_col else ""
+            winamax = str(ws.cell(row=r, column=winamax_col).value or "").upper() if winamax_col else ""
+            if "JUGAR" in accion:
+                fill = PatternFill("solid", fgColor="C6EFCE")
+            elif "EVITAR" in accion:
+                fill = PatternFill("solid", fgColor="F4CCCC")
+            elif "ALTA" in winamax:
+                fill = PatternFill("solid", fgColor="FFF2CC")
+            elif "OBSERVAR" in accion or "MEDIA" in winamax:
+                fill = PatternFill("solid", fgColor="E2F0D9")
+            if fill:
+                for c in range(1, ws.max_column + 1):
+                    ws.cell(row=r, column=c).fill = fill
 
-        widths = {
-            "A": 24, "B": 34, "C": 22, "D": 12, "E": 28, "F": 12,
-            "G": 18, "H": 12, "I": 22, "J": 12, "K": 12,
-            "L": 12, "M": 12, "N": 12, "O": 22, "P": 12,
-            "Q": 10, "R": 10, "S": 11, "T": 42
-        }
-        for col, width in widths.items():
-            ws.column_dimensions[col].width = width
-
-        # Resaltar recomendación
-        rec_col = None
-        for idx, cell in enumerate(ws[1], start=1):
-            if cell.value == "Recomendación":
-                rec_col = idx
-                break
-
-        if rec_col:
-            fills = {
-                "APTA": "E2F0D9",
-                "APTA + VALUE": "C6EFCE",
-                "DUDOSA": "FFF2CC",
-                "DUDOSA CON VALUE": "FCE4D6",
-                "WATCHLIST OVER": "D9EAD3",
-                "OBSERVAR OVER": "D9EAD3",
-                "OBSERVAR OVER 17.5": "D9EAD3",
-                "OBSERVAR OVER 18.5": "D9EAD3",
-                "🔥 OVER 18.5 FUERTE": "B6D7A8",
-                "🔥 OVER 17.5 FUERTE": "B6D7A8",
-                "✅ OVER 18.5 APTO": "D9EAD3",
-                "✅ OVER 17.5 APTO": "D9EAD3",
-                "✅ OVER 19.5 APTO": "D9EAD3",
-                "🎯 3 SETS WATCH": "FFF2CC",
-                "✅ MIRAR FAVORITO 2-0 / UNDER 2.5 SETS": "D9EAD3",
-                "👀 WATCH FAVORITO 2-0 / UNDER 2.5 SETS": "FFF2CC",
-                "NO BET": "F4CCCC",
-                "VALUE NUMÉRICO PERO RIESGO": "FCE4D6",
-            }
-            for row in range(2, ws.max_row + 1):
-                val = str(ws.cell(row=row, column=rec_col).value or "")
-                color = None
-                for key, fill in fills.items():
-                    if key in val:
-                        color = fill
-                        break
-                if color:
-                    ws.cell(row=row, column=rec_col).fill = PatternFill("solid", fgColor=color)
-
+def batch_excel_bytes(df):
+    """Exporta Excel limpio: hoja diaria + detalle técnico."""
+    output = io.BytesIO()
+    picks_df = crear_picks_limpios_df(df)
+    detalle_df = crear_detalle_tecnico_df(df)
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        picks_df.to_excel(writer, index=False, sheet_name="PICKS LIMPIOS")
+        detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
+        aplicar_estilo_excel_limpio(writer)
     output.seek(0)
     return output.getvalue()
 
-
 def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
+    """Exporta Excel con 2 hojas útiles + no encontrados si existen."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         ok_sheet = ok_df.copy() if ok_df is not None else pd.DataFrame()
         ko_sheet = enrich_not_found_with_suggestions(ko_df, db) if ko_df is not None and not ko_df.empty else pd.DataFrame()
-
-        ok_sheet.to_excel(writer, index=False, sheet_name="Analisis")
+        picks_df = crear_picks_limpios_df(ok_sheet)
+        detalle_df = crear_detalle_tecnico_df(ok_sheet)
+        picks_df.to_excel(writer, index=False, sheet_name="PICKS LIMPIOS")
+        detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
         if not ko_sheet.empty:
-            ko_sheet.to_excel(writer, index=False, sheet_name="No encontrados")
-
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        header_fill = PatternFill("solid", fgColor="1F4E78")
-        header_font = Font(color="FFFFFF", bold=True)
-        thin = Side(style="thin", color="D9E2F3")
-        border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-        for ws in writer.book.worksheets:
-            ws.freeze_panes = "A2"
-            ws.auto_filter.ref = ws.dimensions
-            for cell in ws[1]:
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-                cell.border = border
-            for row in ws.iter_rows(min_row=2):
-                for cell in row:
-                    cell.border = border
-                    cell.alignment = Alignment(vertical="center", wrap_text=False)
-
-            for col_cells in ws.columns:
-                letter = col_cells[0].column_letter
-                max_len = max([len(str(c.value)) if c.value is not None else 0 for c in col_cells] + [10])
-                ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 42)
-
+            ko_sheet.to_excel(writer, index=False, sheet_name="NO ENCONTRADOS")
+        aplicar_estilo_excel_limpio(writer)
     output.seek(0)
     return output.getvalue()
-
 
 # =========================================================
 # v23.33 Control Panel + Safe UX Helpers
@@ -10194,6 +10246,10 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "🎯 Confianza acierto",
                     "🎯 Aviso acierto",
                     "🎯 Motivo acierto",
+                    "📥 Necesita Winamax",
+                    "📥 Prioridad Winamax",
+                    "📥 Qué mirar Winamax",
+                    "📥 Motivo Winamax",
                     "Favorito modelo",
                     "ML favorito",
                     "Ganador real",
