@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.11-excel-limpio-2-hojas"
+APP_VERSION = "v23.37.12-winamax-reanalisis"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8574,6 +8574,141 @@ def prepare_batch_display_table(ok_df):
 
 
 
+
+# =========================================================
+# v23.37.12 REANÁLISIS WINAMAX MANUAL
+# =========================================================
+
+def _winamax_match_key(row):
+    return str(row.get("Partido", "")).strip()
+
+
+def aplicar_reanalisis_winamax_manual(df, ajustes):
+    """Aplica confirmaciones manuales de Winamax a la tabla ya analizada.
+    No recalcula motores. Solo sube/baja la acción final y deja trazabilidad.
+    ajustes: dict index -> dict(decision, forma, largos, nota)
+    """
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    for c in ["📥 Estado Winamax", "📥 Ajuste Winamax"]:
+        if c not in out.columns:
+            out[c] = ""
+
+    for idx, data in (ajustes or {}).items():
+        if idx not in out.index:
+            continue
+        decision = str(data.get("decision", "Sin revisar"))
+        forma = str(data.get("forma", ""))
+        largos = str(data.get("largos", ""))
+        nota = str(data.get("nota", "")).strip()
+        if decision == "Sin revisar":
+            continue
+
+        mercado = str(out.at[idx, "🎯 Mercado más probable"] if "🎯 Mercado más probable" in out.columns else "").upper()
+        accion_old = str(out.at[idx, "🎯 Acción final"] if "🎯 Acción final" in out.columns else "")
+        ajuste = []
+
+        if decision.startswith("✅"):
+            out.at[idx, "📥 Estado Winamax"] = "✅ Confirmado"
+            # Si Winamax confirma y el mercado es Over 18.5 fuerte en observar, se puede subir a JUGAR.
+            # También permitimos subir set-market solo si el usuario lo marca explícitamente como confirmado.
+            out.at[idx, "🎯 Acción final"] = "✅ JUGAR"
+            if "🎯 Decisión acierto" in out.columns:
+                out.at[idx, "🎯 Decisión acierto"] = "🔥 Alto acierto + Winamax"
+            if "🎯 Aviso acierto" in out.columns:
+                out.at[idx, "🎯 Aviso acierto"] = "Winamax confirma forma/marcadores: subido o mantenido como JUGAR."
+            ajuste.append(f"Sube/mantiene JUGAR desde {accion_old}")
+        elif decision.startswith("❌"):
+            out.at[idx, "📥 Estado Winamax"] = "❌ Descartado"
+            out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
+            if "🎯 Aviso acierto" in out.columns:
+                out.at[idx, "🎯 Aviso acierto"] = "Winamax no confirma: bajado a OBSERVAR."
+            ajuste.append(f"Baja a OBSERVAR desde {accion_old}")
+        else:
+            out.at[idx, "📥 Estado Winamax"] = "⚠️ Neutral"
+            ajuste.append("Sin cambio: Winamax no confirma ni descarta")
+
+        if forma:
+            ajuste.append(f"Forma: {forma}")
+        if largos:
+            ajuste.append(f"Marcadores largos: {largos}")
+        if nota:
+            ajuste.append(f"Nota: {nota}")
+        out.at[idx, "📥 Ajuste Winamax"] = " | ".join(ajuste)
+
+    return out
+
+
+def render_winamax_reanalysis_panel(ok_saved):
+    """Panel paso 2: la app pide solo los partidos prioritarios y permite reanalizar la acción final."""
+    if ok_saved is None or ok_saved.empty:
+        return
+    if "📥 Necesita Winamax" not in ok_saved.columns:
+        return
+
+    cand = ok_saved[ok_saved["📥 Necesita Winamax"].astype(str).str.upper().str.contains("SÍ", na=False)].copy()
+    if cand.empty:
+        st.info("📥 Radar Winamax: no hay partidos que necesiten revisión extra.")
+        return
+
+    st.subheader("📥 Paso 2 · Reanálisis con datos Winamax")
+    st.caption("Rellena solo los partidos que la app marca como Winamax ALTA. Si quieres, activa también MEDIA. No cambia motores; solo confirma/sube/baja la acción final.")
+
+    include_media = st.checkbox("Incluir también prioridad MEDIA", value=False, key="wm_include_media")
+    if not include_media and "📥 Prioridad Winamax" in cand.columns:
+        cand = cand[cand["📥 Prioridad Winamax"].astype(str).str.upper().eq("ALTA")].copy()
+
+    # No hacer el formulario infinito.
+    cand = cand.head(12)
+    if cand.empty:
+        st.info("No hay prioridad ALTA. Activa MEDIA si quieres revisar más partidos.")
+        return
+
+    show_cols = [c for c in ["Hora", "Partido", "🎯 Acción final", "🎯 Mercado más probable", "🎯 Prob máxima", "📥 Prioridad Winamax", "📥 Qué mirar Winamax"] if c in cand.columns]
+    st.dataframe(cand[show_cols], width='stretch', hide_index=True)
+
+    with st.form("wm_reanalysis_form"):
+        ajustes = {}
+        for idx, row in cand.iterrows():
+            partido = str(row.get("Partido", ""))
+            mercado = str(row.get("🎯 Mercado más probable", ""))
+            prob = row.get("🎯 Prob máxima", "")
+            st.markdown(f"**{partido}** · {mercado} · {prob}")
+            c1, c2, c3 = st.columns([1.1, 1, 1])
+            with c1:
+                decision = st.selectbox(
+                    "Resultado Winamax",
+                    ["Sin revisar", "✅ Confirma / subir a JUGAR", "⚠️ Neutral / mantener", "❌ No confirma / bajar"],
+                    key=f"wm_decision_{idx}"
+                )
+            with c2:
+                forma = st.selectbox(
+                    "Forma últimos 10",
+                    ["", "Buena", "Normal", "Mala"],
+                    key=f"wm_forma_{idx}"
+                )
+            with c3:
+                largos = st.selectbox(
+                    "Marcadores largos",
+                    ["", "Sí", "Mixto", "No"],
+                    key=f"wm_largos_{idx}"
+                )
+            nota = st.text_input("Nota rápida", key=f"wm_nota_{idx}", placeholder="Ej: ambos con 7-6/3 sets, o rival pierde mucho 2-0")
+            ajustes[idx] = {"decision": decision, "forma": forma, "largos": largos, "nota": nota}
+            st.divider()
+
+        submitted = st.form_submit_button("🔁 Reanalizar con Winamax")
+
+    if submitted:
+        updated = aplicar_reanalisis_winamax_manual(ok_saved, ajustes)
+        st.session_state["batch_ok_df"] = updated
+        st.success("Reanálisis Winamax aplicado. La tabla y el Excel se actualizan con la nueva acción final.")
+        try:
+            st.rerun()
+        except Exception:
+            pass
+
 # =========================================================
 # v23.37.11 EXCEL LIMPIO 2 HOJAS
 # =========================================================
@@ -8581,7 +8716,7 @@ def prepare_batch_display_table(ok_df):
 PICKS_LIMPIOS_COLS = [
     "Hora", "Fecha", "Torneo", "Superficie", "Partido",
     "🎯 Acción final", "🎯 Mercado más probable", "🎯 Prob máxima", "🎯 Confianza acierto",
-    "📥 Necesita Winamax", "📥 Prioridad Winamax", "📥 Qué mirar Winamax",
+    "📥 Necesita Winamax", "📥 Prioridad Winamax", "📥 Estado Winamax", "📥 Ajuste Winamax", "📥 Qué mirar Winamax",
     "🎯 Motivo acierto", "📥 Motivo Winamax",
 ]
 
@@ -8589,7 +8724,7 @@ DETALLE_TECNICO_FIRST_COLS = [
     "Versión app", "Fecha", "Hora", "Torneo", "Superficie", "Partido",
     "🎯 Acción final", "🎯 Decisión acierto", "🎯 Mercado más probable", "🎯 Prob máxima",
     "🎯 Confianza acierto", "🎯 Aviso acierto", "🎯 Motivo acierto",
-    "📥 Necesita Winamax", "📥 Prioridad Winamax", "📥 Qué mirar Winamax", "📥 Motivo Winamax",
+    "📥 Necesita Winamax", "📥 Prioridad Winamax", "📥 Estado Winamax", "📥 Ajuste Winamax", "📥 Qué mirar Winamax", "📥 Motivo Winamax",
     "Recomendación", "Pick oficial", "Mercado recomendado", "Prob mercado recomendado",
     "Favorito modelo", "ML favorito", "Over 18.5", "Over 19.5", "Under 22.5",
     "Jugador gana set", "Prob gana set", "Favorito gana al menos 1 set",
@@ -8622,6 +8757,8 @@ def crear_picks_limpios_df(df):
         "🎯 Confianza acierto": "Confianza",
         "📥 Necesita Winamax": "Winamax",
         "📥 Prioridad Winamax": "Prioridad Winamax",
+        "📥 Estado Winamax": "Estado Winamax",
+        "📥 Ajuste Winamax": "Ajuste Winamax",
         "📥 Qué mirar Winamax": "Qué mirar",
         "🎯 Motivo acierto": "Motivo",
         "📥 Motivo Winamax": "Motivo Winamax",
@@ -8720,6 +8857,14 @@ def batch_excel_bytes(df):
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         picks_df.to_excel(writer, index=False, sheet_name="PICKS LIMPIOS")
         detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
+        try:
+            wm_df = picks_df[picks_df.get("Winamax", "").astype(str).str.upper().str.contains("SÍ", na=False)].copy()
+            if not wm_df.empty:
+                for _c in ["Resultado Winamax", "Forma últimos 10", "Marcadores largos", "Nota manual"]:
+                    wm_df[_c] = ""
+                wm_df.to_excel(writer, index=False, sheet_name="WINAMAX A REVISAR")
+        except Exception:
+            pass
         aplicar_estilo_excel_limpio(writer)
     output.seek(0)
     return output.getvalue()
@@ -10355,6 +10500,8 @@ Sebastián Baez - Roberto Carballés Baena"""
 
             with st.expander("📲 Enviar picks a Telegram", expanded=False):
                 render_telegram_sender_panel(ok_saved)
+
+            render_winamax_reanalysis_panel(ok_saved)
 
             st.subheader("🔥 Resumen ordenado completo")
             st.dataframe(ok_saved, width='stretch', hide_index=True)
