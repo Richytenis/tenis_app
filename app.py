@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.13-winamax-campos-reales"
+APP_VERSION = "v23.37.14-winamax-captura-ocr"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8717,8 +8717,120 @@ def aplicar_reanalisis_winamax_manual(df, ajustes):
 
     return out
 
+
+def _ocr_winamax_image(uploaded_file):
+    """Lee una captura Winamax con OCR opcional.
+    Si pytesseract/tesseract no está instalado, devuelve aviso sin romper la app.
+    """
+    if uploaded_file is None:
+        return "", ""
+    try:
+        from PIL import Image, ImageOps, ImageEnhance
+        import pytesseract
+    except Exception as e:
+        return "", "OCR no disponible. Instala: pip install pytesseract pillow y Tesseract OCR en Windows."
+
+    try:
+        img = Image.open(uploaded_file).convert("RGB")
+        # Preprocesado simple para capturas oscuras de Winamax.
+        gray = ImageOps.grayscale(img)
+        gray = ImageEnhance.Contrast(gray).enhance(1.8)
+        gray = ImageEnhance.Sharpness(gray).enhance(1.4)
+        # Reescalar ayuda mucho con texto pequeño.
+        w, h = gray.size
+        if w < 1600:
+            scale = 1600 / max(w, 1)
+            gray = gray.resize((int(w * scale), int(h * scale)))
+        txt = pytesseract.image_to_string(gray, lang="eng")
+        return txt.strip(), ""
+    except Exception as e:
+        return "", f"No he podido leer la captura con OCR: {e}"
+
+
+def _extraer_winamax_desde_texto(raw_text, row=None):
+    """Convierte texto OCR/copypaste de Winamax en los campos que usa el reanálisis.
+    No usa cuotas. Busca balance últimos 10 y patrones de marcadores.
+    """
+    text = normalizar_texto(raw_text or "")
+    low = text.lower()
+    data = {
+        "j1_v": None,
+        "j2_v": None,
+        "largos": "",
+        "palizas": "",
+        "h2h": "",
+        "manual": "Auto",
+        "nota": "",
+        "ocr_text": text[:1200]
+    }
+    if not text.strip():
+        return data
+
+    # 1) Últimos 10: Winamax suele mostrar "5 victorias / 5 derrotas".
+    wins = []
+    for m in re.finditer(r"(\d{1,2})\s*(?:victoria|victorias|win|wins|v)", low):
+        try:
+            n = int(m.group(1))
+            if 0 <= n <= 10:
+                wins.append(n)
+        except Exception:
+            pass
+    # Fallback: líneas tipo "5 5" cerca de últimos 10 no es fiable; no inventamos.
+    if len(wins) >= 1:
+        data["j1_v"] = wins[0]
+    if len(wins) >= 2:
+        data["j2_v"] = wins[1]
+
+    # 2) Marcadores: 7-6, 6:4, etc.
+    score_pairs = []
+    for a, b in re.findall(r"\b([0-7])\s*[-:]\s*([0-7])\b", text):
+        try:
+            x, y = int(a), int(b)
+            # Evita horas tipo 17:00, pero acepta sets plausibles.
+            if 0 <= x <= 7 and 0 <= y <= 7 and max(x, y) >= 4:
+                score_pairs.append((x, y))
+        except Exception:
+            pass
+
+    long_sets = 0
+    easy_sets = 0
+    for x, y in score_pairs:
+        if sorted([x, y]) in ([6, 7], [5, 7]) or (x + y >= 10):
+            long_sets += 1
+        if sorted([x, y]) in ([0, 6], [1, 6], [2, 6]):
+            easy_sets += 1
+
+    # 3 sets si hay muchas parejas de marcador o texto explícito.
+    three_set_words = any(k in low for k in ["3 sets", "tres sets", "set decisivo", "deciding set"])
+    if long_sets >= 3 or three_set_words:
+        data["largos"] = "Muchos: varios 7-6/7-5/3 sets"
+    elif long_sets >= 1:
+        data["largos"] = "Algunos"
+    elif len(score_pairs) >= 3:
+        data["largos"] = "Pocos: muchos 6-2/6-3"
+    else:
+        data["largos"] = "No se ve claro"
+
+    if easy_sets >= 3:
+        data["palizas"] = "Muchas palizas en general"
+    elif easy_sets >= 1:
+        data["palizas"] = "No se ve claro"
+    else:
+        data["palizas"] = "No se ven muchas"
+
+    if any(k in low for k in ["cara a cara", "head to head", "h2h"]):
+        data["h2h"] = "No se ve claro"
+    else:
+        data["h2h"] = "No aparece"
+
+    data["nota"] = f"OCR: victorias detectadas={wins[:2]}; sets detectados={len(score_pairs)}; sets largos={long_sets}; sets fáciles={easy_sets}"
+    return data
+
+
 def render_winamax_reanalysis_panel(ok_saved):
-    """Panel paso 2 adaptado a lo que realmente se ve en Winamax Stats Center."""
+    """Panel paso 2 por captura Winamax: subir imagen o pegar texto bruto.
+    La app intenta extraer automáticamente últimos 10 y marcadores.
+    """
     if ok_saved is None or ok_saved.empty:
         return
     if "📥 Necesita Winamax" not in ok_saved.columns:
@@ -8729,14 +8841,14 @@ def render_winamax_reanalysis_panel(ok_saved):
         st.info("📥 Radar Winamax: no hay partidos que necesiten revisión extra.")
         return
 
-    st.subheader("📥 Paso 2 · Reanálisis con datos Winamax")
-    st.caption("Ahora solo pide datos que aparecen en Winamax: balance últimos 10, marcadores recientes largos/cortos, palizas 2-0 y H2H si aparece.")
+    st.subheader("📥 Paso 2 · Reanálisis con captura de Winamax")
+    st.caption("Sube una captura de la pestaña Forma/Stats Center o pega el texto copiado. La app intenta leer últimos 10, marcadores largos y palizas. No usa cuotas.")
 
     include_media = st.checkbox("Incluir también prioridad MEDIA", value=False, key="wm_include_media")
     if not include_media and "📥 Prioridad Winamax" in cand.columns:
         cand = cand[cand["📥 Prioridad Winamax"].astype(str).str.upper().eq("ALTA")].copy()
 
-    cand = cand.head(12)
+    cand = cand.head(10)
     if cand.empty:
         st.info("No hay prioridad ALTA. Activa MEDIA si quieres revisar más partidos.")
         return
@@ -8744,57 +8856,58 @@ def render_winamax_reanalysis_panel(ok_saved):
     show_cols = [c for c in ["Hora", "Partido", "🎯 Acción final", "🎯 Mercado más probable", "🎯 Prob máxima", "📥 Prioridad Winamax", "📥 Qué mirar Winamax"] if c in cand.columns]
     st.dataframe(cand[show_cols], width='stretch', hide_index=True)
 
-    st.info("Cómo rellenarlo: en Winamax mira la pestaña Forma. Si pone 'últimos 10 partidos: 6 victorias / 4 derrotas', pon 6 en victorias. En marcadores recientes, marca si ves varios 7-6, 7-5, 6-4 6-4 o partidos a 3 sets.")
+    st.info("Uso rápido: sube la captura de Winamax del partido. Si el OCR falla, puedes pegar debajo el texto copiado de la pantalla. Después pulsa Reanalizar.")
 
-    with st.form("wm_reanalysis_form"):
+    with st.form("wm_reanalysis_ocr_form"):
         ajustes = {}
         for idx, row in cand.iterrows():
             partido = str(row.get("Partido", ""))
             mercado = str(row.get("🎯 Mercado más probable", ""))
             prob = row.get("🎯 Prob máxima", "")
-            if " vs " in partido:
-                p1, p2 = [x.strip() for x in partido.split(" vs ", 1)]
-            else:
-                p1, p2 = "Jugador 1", "Jugador 2"
 
             st.markdown(f"**{partido}** · {mercado} · {prob}")
-            c1, c2, c3 = st.columns([1, 1, 1.25])
-            with c1:
-                j1_v = st.number_input(f"Victorias últimos 10 · {p1}", min_value=0, max_value=10, value=5, step=1, key=f"wm_j1v_{idx}")
-            with c2:
-                j2_v = st.number_input(f"Victorias últimos 10 · {p2}", min_value=0, max_value=10, value=5, step=1, key=f"wm_j2v_{idx}")
-            with c3:
-                largos = st.selectbox(
-                    "Marcadores recientes largos",
-                    ["", "Muchos: varios 7-6/7-5/3 sets", "Algunos", "Pocos: muchos 6-2/6-3", "No se ve claro"],
-                    key=f"wm_largos_{idx}"
-                )
+            up = st.file_uploader(
+                "Captura Winamax del partido",
+                type=["png", "jpg", "jpeg"],
+                key=f"wm_img_{idx}"
+            )
 
-            c4, c5, c6 = st.columns([1.25, 1, 1])
-            with c4:
-                palizas = st.selectbox(
-                    "Palizas / derrotas fáciles 2-0",
-                    ["", "No se ven muchas", "Muchas palizas en general", "Jugador elegido pierde fácil 2-0", "Rival pierde fácil 2-0", "No se ve claro"],
-                    key=f"wm_palizas_{idx}"
+            ocr_text, ocr_err = _ocr_winamax_image(up) if up is not None else ("", "")
+            if ocr_err:
+                st.warning(ocr_err)
+
+            text_key = f"wm_raw_{idx}"
+            raw_text = st.text_area(
+                "Texto detectado / pega aquí el texto Winamax si lo prefieres",
+                value=ocr_text,
+                height=130,
+                key=text_key,
+                placeholder="Ej: Últimos 10 partidos, 6 victorias, 4 derrotas, marcadores 7-6 6-4, 4-6 6-3 6-4..."
+            )
+
+            auto_data = _extraer_winamax_desde_texto(raw_text, row)
+            c1, c2 = st.columns([1.2, 1])
+            with c1:
+                st.caption(
+                    f"Lectura automática: J1={auto_data.get('j1_v')} victorias, "
+                    f"J2={auto_data.get('j2_v')} victorias · "
+                    f"Largos: {auto_data.get('largos')} · Palizas: {auto_data.get('palizas')}"
                 )
-            with c5:
-                h2h = st.selectbox(
-                    "Cara a cara",
-                    ["", "No aparece", "Igualado/largo", "Dominio claro", "No se ve claro"],
-                    key=f"wm_h2h_{idx}"
-                )
-            with c6:
+            with c2:
                 manual = st.selectbox(
                     "Forzar valoración",
                     ["Auto", "✅ Confirmar", "⚠️ Neutral", "❌ Descartar"],
-                    key=f"wm_manual_{idx}"
+                    key=f"wm_manual_ocr_{idx}"
                 )
+            nota_extra = st.text_input("Nota opcional", key=f"wm_nota_ocr_{idx}", placeholder="Ej: veo muchos 7-6 / 3 sets, o muchas palizas 2-0")
 
-            nota = st.text_input("Nota opcional", key=f"wm_nota_{idx}", placeholder="Ej: J1 6-4, J2 5-5, varios 7-6 y un 3 sets")
-            ajustes[idx] = {"j1_v": int(j1_v), "j2_v": int(j2_v), "largos": largos, "palizas": palizas, "h2h": h2h, "manual": manual, "nota": nota}
+            auto_data["manual"] = manual
+            if nota_extra:
+                auto_data["nota"] = str(auto_data.get("nota", "")) + " | " + nota_extra
+            ajustes[idx] = auto_data
             st.divider()
 
-        submitted = st.form_submit_button("🔁 Reanalizar con Winamax")
+        submitted = st.form_submit_button("🔁 Reanalizar con capturas Winamax")
 
     if submitted:
         updated = aplicar_reanalisis_winamax_manual(ok_saved, ajustes)
