@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.9-hibrida-over18-fuerte"
+APP_VERSION = "v23.37.10-radar-winamax"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8291,6 +8291,125 @@ def decision_acierto_v23371(row):
     })
 
 
+
+
+def radar_winamax_v233710(row):
+    """
+    v23.37.10 Radar Winamax.
+    No cambia probabilidades ni motores. Solo decide qué partidos merecen revisión extra
+    en Stats Center de Winamax para no revisar 40 partidos a mano.
+    """
+    def pct(x, default=0.0):
+        try:
+            if x is None or pd.isna(x):
+                return default
+            t = str(x).replace('%','').replace(',','.').strip()
+            if t == '' or t.lower() in {'nan','none'}:
+                return default
+            v = float(t)
+            if v > 1:
+                v /= 100.0
+            return float(np.clip(v, 0, 1))
+        except Exception:
+            return default
+
+    def num(x, default=99.0):
+        try:
+            if x is None or pd.isna(x):
+                return default
+            t = str(x).replace(',','.').strip()
+            if t == '' or t.lower() in {'nan','none'}:
+                return default
+            return float(t)
+        except Exception:
+            return default
+
+    accion = str(row.get('🎯 Acción final', '')).strip()
+    mercado = str(row.get('🎯 Mercado más probable', '')).strip()
+    mercado_u = mercado.upper()
+    decision = str(row.get('🎯 Decisión acierto', '')).lower()
+    aviso = str(row.get('🎯 Aviso acierto', '')).lower()
+    motivo = str(row.get('🎯 Motivo acierto', '')).lower()
+    estado = str(row.get('Estado', '')).lower()
+    trust = str(row.get('Signal Trust', '')).lower()
+    over_guard = str(row.get('Over Quality Guard', '')).lower()
+    motivos_over = str(row.get('Motivos Over Guard', '')).lower()
+    reco = str(row.get('Recomendación', '')).lower()
+    oficial = str(row.get('Pick oficial', '')).lower()
+
+    prob = pct(row.get('🎯 Prob máxima', 0), 0.0)
+    ml_fav = pct(row.get('ML favorito', 0), 0.0)
+    over18 = pct(row.get('Over 18.5', 0), 0.0)
+    over19 = pct(row.get('Over 19.5', 0), 0.0)
+    set3 = pct(row.get('Partido a 3 sets', 0), 0.0)
+    min_conf = pct(row.get('Confianza mínima', ''), 1.0)
+    min_surface = num(row.get('Mín. partidos superficie', ''), 99.0)
+
+    is_set = 'GANA AL MENOS 1 SET' in mercado_u
+    is_over18 = 'OVER 18.5' in mercado_u
+    is_under = 'UNDER' in mercado_u or '2-0' in mercado_u
+    datos_pobres = (
+        'fallback' in aviso or 'fallback' in motivo or 'estimado' in estado or
+        'datos parciales' in trust or min_surface <= 8 or min_conf < 0.58
+    )
+    over_fuerte = over18 >= 0.76 or 'fuerte' in trust or 'apto' in trust or 'watch' in reco or 'over' in oficial
+
+    # Por defecto no pedir nada: ya es claro, malo o no merece perder tiempo.
+    necesita = 'NO'
+    prioridad = ''
+    mirar = ''
+    why = 'No necesita datos extra: decisión suficientemente clara o sin potencial jugable.'
+
+    if accion == '⛔ EVITAR':
+        return pd.Series({
+            '📥 Necesita Winamax': 'NO',
+            '📥 Prioridad Winamax': '',
+            '📥 Qué mirar Winamax': '',
+            '📥 Motivo Winamax': 'Evitar: no merece revisión manual.'
+        })
+
+    # 1) Over fuerte en observar: principal candidato para subir a JUGAR si Winamax confirma marcadores largos.
+    if accion == '👀 OBSERVAR' and over18 >= 0.76 and not is_under:
+        necesita = 'SÍ'
+        prioridad = 'ALTA' if over18 >= 0.79 or over_fuerte else 'MEDIA'
+        mirar = 'Últimos 10 de ambos; marcadores 20+ juegos; 7-6/7-5; partidos a 3 sets; derrotas/palizas 2-0.'
+        why = f'Over 18.5 alto ({over18:.1%}) pero la app lo dejó en OBSERVAR: Winamax puede confirmar si subirlo.'
+
+    # 2) JUGAR con set market y datos pobres: confirmar que no viene de perder fácil.
+    elif accion == '✅ JUGAR' and is_set and (datos_pobres or ml_fav < 0.70):
+        necesita = 'SÍ'
+        prioridad = 'ALTA'
+        mirar = 'Forma últimos 10; si el jugador elegido gana sets con frecuencia; derrotas 2-0; marcadores recientes del elegido.'
+        why = 'Es JUGAR por gana-set, pero conviene confirmar forma reciente y que no pierda fácil 2-0.'
+
+    # 3) Set muy alto en observar: puede ser útil, pero necesita confirmación.
+    elif accion == '👀 OBSERVAR' and is_set and prob >= 0.84 and 0.58 <= ml_fav <= 0.72:
+        necesita = 'SÍ'
+        prioridad = 'MEDIA'
+        mirar = 'Forma últimos 10; derrotas 2-0 del jugador elegido; si compite sets ante rivales similares.'
+        why = f'Gana-set alto ({prob:.1%}) con ML no totalmente claro ({ml_fav:.1%}); necesita confirmación de forma.'
+
+    # 4) Datos pobres con probabilidad muy alta: revisar solo si hay potencial real.
+    elif accion in {'✅ JUGAR', '👀 OBSERVAR'} and datos_pobres and prob >= 0.84:
+        necesita = 'SÍ'
+        prioridad = 'MEDIA'
+        mirar = 'Forma últimos 10; superficie; marcadores recientes; si hay mucha retirada/paliza o partidos largos.'
+        why = 'Probabilidad alta, pero basada en muestra baja/fallback: confirmar en Winamax.'
+
+    # 5) Under/2-0 no lo priorizamos para el objetivo actual.
+    elif is_under:
+        necesita = 'NO'
+        prioridad = ''
+        mirar = ''
+        why = 'Under/2-0 no se prioriza por backtest irregular.'
+
+    return pd.Series({
+        '📥 Necesita Winamax': necesita,
+        '📥 Prioridad Winamax': prioridad,
+        '📥 Qué mirar Winamax': mirar,
+        '📥 Motivo Winamax': why
+    })
+
 def prepare_batch_display_table(ok_df):
     if ok_df is None or ok_df.empty:
         return ok_df
@@ -8352,6 +8471,10 @@ def prepare_batch_display_table(ok_df):
         decision_cols = df.apply(decision_acierto_v23371, axis=1)
         df = pd.concat([df, decision_cols], axis=1)
 
+        # v23.37.10: Radar Winamax. Solo dice qué partidos merece revisar manualmente.
+        radar_cols = df.apply(radar_winamax_v233710, axis=1)
+        df = pd.concat([df, radar_cols], axis=1)
+
     preferred = [
         "Versión app",
         "Recomendación",
@@ -8369,6 +8492,10 @@ def prepare_batch_display_table(ok_df):
         "🎯 Confianza acierto",
         "🎯 Aviso acierto",
         "🎯 Motivo acierto",
+        "📥 Necesita Winamax",
+        "📥 Prioridad Winamax",
+        "📥 Qué mirar Winamax",
+        "📥 Motivo Winamax",
         "Favorito modelo",
         "ML favorito",
         "Mejor señal",
