@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.22-ta-name-match-session-fix"
+APP_VERSION = "v23.37.23-telegram-oficiales-nuevos"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -7671,8 +7671,12 @@ def _telegram_is_watch_recomendado(row):
 def _telegram_row_line(row, idx=None, oficial=True):
     partido = _telegram_str(row, "Partido", "Partido sin nombre")
     hora = _telegram_str(row, "Hora", "")
-    pick = _telegram_str(row, "Pick oficial", "") if oficial else _telegram_str(row, "Mercado recomendado", "")
-    prob = _telegram_pct_text(row, "Prob mercado recomendado")
+    if oficial:
+        pick = _telegram_str(row, "Pick oficial", "")
+        prob = _telegram_pct_text(row, "Prob mercado recomendado")
+    else:
+        pick = _telegram_str(row, "Mercado recomendado", "")
+        prob = _telegram_pct_text(row, "Prob mercado recomendado")
     conf = _telegram_pct_text(row, "Confianza mínima")
     sup = _telegram_str(row, "Mín. partidos superficie", "")
     motivo = _telegram_str(row, "Motivo Market Selector", "")
@@ -7708,31 +7712,123 @@ def _telegram_row_line(row, idx=None, oficial=True):
     return "\n".join(lineas)
 
 
-def construir_mensaje_telegram_picks(ok_df, incluir_watch=False, max_watch=12):
-    if ok_df is None or ok_df.empty:
-        return "🎾 <b>Tennis IA</b>\nNo hay análisis disponible."
+def _telegram_text_norm(x):
+    try:
+        if x is None or pd.isna(x):
+            return ""
+    except Exception:
+        pass
+    return re.sub(r"[^A-Z0-9]+", "", str(x).upper())
 
-    df = ok_df.copy()
+
+def _telegram_prob_max_text(row):
+    for col in ["🎯 Prob máxima", "Prob.", "Prob"]:
+        txt = _telegram_pct_text(row, col)
+        if txt:
+            return txt
+    return ""
+
+
+def _telegram_is_nuevo_jugar(row):
+    """Nuevo selector de máximo acierto: filas marcadas como ✅ JUGAR."""
+    accion = _telegram_str(row, "🎯 Acción final", "") or _telegram_str(row, "Acción", "")
+    mercado = _telegram_str(row, "🎯 Mercado más probable", "") or _telegram_str(row, "Mercado", "")
+    if "JUGAR" not in accion.upper():
+        return False
+    if not mercado:
+        return False
+    if "EVITAR" in mercado.upper() or mercado.startswith("⛔"):
+        return False
+    return True
+
+
+def _telegram_es_duplicado_oficial(row):
+    """Evita repetir un nuevo pick si ya coincide con el Pick oficial del mismo partido."""
+    oficial = _telegram_str(row, "Pick oficial", "")
+    nuevo = _telegram_str(row, "🎯 Mercado más probable", "") or _telegram_str(row, "Mercado", "")
+    if not oficial or not nuevo:
+        return False
+    no = _telegram_text_norm(oficial)
+    nn = _telegram_text_norm(nuevo)
+    if not no or not nn:
+        return False
+    return (no in nn) or (nn in no) or ("OVER185" in no and "OVER185" in nn)
+
+
+def _telegram_nuevo_row_line(row, idx=None):
+    partido = _telegram_str(row, "Partido", "Partido sin nombre")
+    hora = _telegram_str(row, "Hora", "")
+    mercado = _telegram_str(row, "🎯 Mercado más probable", "") or _telegram_str(row, "Mercado", "")
+    prob = _telegram_prob_max_text(row)
+    decision = _telegram_str(row, "🎯 Decisión acierto", "") or _telegram_str(row, "Confianza", "")
+    estado_extra = _telegram_str(row, "📥 Estado Datos extra", "") or _telegram_str(row, "Estado Datos extra", "")
+    ajuste_extra = _telegram_str(row, "📥 Ajuste Datos extra", "") or _telegram_str(row, "Ajuste Datos extra", "")
+    motivo = _telegram_str(row, "🎯 Motivo acierto", "") or _telegram_str(row, "Motivo", "")
+    motivo_extra = _telegram_str(row, "📥 Motivo Datos extra", "") or _telegram_str(row, "Motivo Datos extra", "")
+
+    prefix = f"{idx}. " if idx is not None else ""
+    lineas = []
+    title = f"{prefix}<b>{_telegram_html_escape(partido)}</b>"
+    if hora:
+        title += f" · {_telegram_html_escape(hora)}"
+    lineas.append(title)
+    if mercado:
+        lineas.append(f"Pick nuevo: {_telegram_html_escape(mercado)}")
+    if prob:
+        lineas.append(f"Prob: {_telegram_html_escape(prob)}")
+    extras = [x for x in [decision, estado_extra, ajuste_extra] if x]
+    if extras:
+        lineas.append(_telegram_html_escape(" · ".join(extras))[:260])
+    visible_motivos = " · ".join([x for x in [motivo_extra, motivo] if x])
+    if visible_motivos:
+        lineas.append(f"Motivo: {_telegram_html_escape(visible_motivos[:240])}")
+    return "\n".join(lineas)
+
+
+def _telegram_get_oficiales_y_nuevos(ok_df):
+    df = ok_df.copy() if ok_df is not None else pd.DataFrame()
+    if df.empty:
+        return df, df
     if "Pick oficial" not in df.columns:
         try:
             df["Pick oficial"] = df.apply(pick_oficial_v23301, axis=1)
         except Exception:
             df["Pick oficial"] = ""
-
     oficiales = df[df["Pick oficial"].astype(str).str.strip() != ""].copy()
+    nuevos = df[df.apply(_telegram_is_nuevo_jugar, axis=1)].copy()
+    if not nuevos.empty:
+        nuevos = nuevos[~nuevos.apply(_telegram_es_duplicado_oficial, axis=1)].copy()
+    return oficiales, nuevos
+
+
+def construir_mensaje_telegram_picks(ok_df, incluir_watch=False, max_watch=12, incluir_nuevos=False, solo_nuevos=False):
+    if ok_df is None or ok_df.empty:
+        return "🎾 <b>Tennis IA</b>\nNo hay análisis disponible."
+
+    df = ok_df.copy()
+    oficiales, nuevos = _telegram_get_oficiales_y_nuevos(df)
     watch = df[df.apply(_telegram_is_watch_recomendado, axis=1)].copy() if incluir_watch else pd.DataFrame()
 
     partes = []
     partes.append("🎾 <b>Tennis IA — Picks</b>")
 
-    partes.append("\n🎯 <b>PICKS OFICIALES</b>")
-    if oficiales.empty:
-        partes.append("No hay picks oficiales. No forzar combinada.")
-    else:
-        for i, (_, row) in enumerate(oficiales.iterrows(), start=1):
-            partes.append(_telegram_row_line(row, i, oficial=True))
+    if not solo_nuevos:
+        partes.append("\n🎯 <b>PICKS OFICIALES</b>")
+        if oficiales.empty:
+            partes.append("No hay picks oficiales. No forzar combinada.")
+        else:
+            for i, (_, row) in enumerate(oficiales.iterrows(), start=1):
+                partes.append(_telegram_row_line(row, i, oficial=True))
 
-    if incluir_watch:
+    if incluir_nuevos or solo_nuevos:
+        partes.append("\n🧠 <b>NUEVOS — MÁXIMO ACIERTO / TA</b>")
+        if nuevos.empty:
+            partes.append("No hay picks nuevos marcados como ✅ JUGAR.")
+        else:
+            for i, (_, row) in enumerate(nuevos.iterrows(), start=1):
+                partes.append(_telegram_nuevo_row_line(row, i))
+
+    if incluir_watch and not solo_nuevos:
         partes.append("\n👀 <b>RECOMENDADOS / WATCH</b>")
         if watch.empty:
             partes.append("No hay watch/recomendados relevantes.")
@@ -7784,28 +7880,50 @@ def render_telegram_sender_panel(ok_df):
         st.info('Añade TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID en `.streamlit/secrets.toml`.')
         return
 
-    incluir_watch_preview = st.toggle("Incluir watch/recomendados en vista previa", value=False, key="tg_preview_watch")
-    mensaje_preview = construir_mensaje_telegram_picks(ok_df, incluir_watch=incluir_watch_preview, max_watch=12)
-    with st.expander("👀 Vista previa del mensaje", expanded=True):
-        st.text_area("Mensaje que se enviará", value=mensaje_preview, height=260, key="tg_preview_text", disabled=True)
+    oficiales_df, nuevos_df = _telegram_get_oficiales_y_nuevos(ok_df)
+    c4, c5 = st.columns(2)
+    c4.metric("Oficiales", len(oficiales_df))
+    c5.metric("Nuevos ✅ JUGAR", len(nuevos_df))
 
-    b1, b2, b3 = st.columns(3)
+    incluir_nuevos_preview = st.toggle("Incluir nuevos ✅ JUGAR en vista previa", value=True, key="tg_preview_nuevos")
+    incluir_watch_preview = st.toggle("Incluir watch/recomendados en vista previa", value=False, key="tg_preview_watch")
+    mensaje_preview = construir_mensaje_telegram_picks(
+        ok_df,
+        incluir_watch=incluir_watch_preview,
+        max_watch=12,
+        incluir_nuevos=incluir_nuevos_preview,
+    )
+    with st.expander("👀 Vista previa del mensaje", expanded=True):
+        st.text_area("Mensaje que se enviará", value=mensaje_preview, height=320, key="tg_preview_text", disabled=True)
+
+    b1, b2, b3, b4 = st.columns(4)
     with b1:
-        if st.button("📲 Enviar prueba Telegram", key="tg_test_btn"):
+        if st.button("📲 Enviar prueba", key="tg_test_btn"):
             ok, msg = enviar_telegram_mensaje("✅ <b>Prueba Tennis IA</b>\nTelegram está conectado correctamente.")
             st.success(msg) if ok else st.error(msg)
 
     with b2:
-        if st.button("🎯 Enviar picks oficiales", key="tg_official_btn"):
-            mensaje = construir_mensaje_telegram_picks(ok_df, incluir_watch=False)
+        if st.button("🎯 Enviar oficiales", key="tg_official_btn"):
+            mensaje = construir_mensaje_telegram_picks(ok_df, incluir_watch=False, incluir_nuevos=False)
             ok, msg = enviar_telegram_mensaje(mensaje)
             st.success(msg) if ok else st.error(msg)
 
     with b3:
-        if st.button("🎯👀 Enviar oficiales + watch", key="tg_all_btn"):
-            mensaje = construir_mensaje_telegram_picks(ok_df, incluir_watch=True, max_watch=12)
+        if st.button("🧠 Enviar nuevos", key="tg_new_btn"):
+            mensaje = construir_mensaje_telegram_picks(ok_df, solo_nuevos=True, incluir_nuevos=True)
             ok, msg = enviar_telegram_mensaje(mensaje)
             st.success(msg) if ok else st.error(msg)
+
+    with b4:
+        if st.button("🎯🧠 Oficiales + nuevos", key="tg_official_new_btn"):
+            mensaje = construir_mensaje_telegram_picks(ok_df, incluir_watch=False, incluir_nuevos=True)
+            ok, msg = enviar_telegram_mensaje(mensaje)
+            st.success(msg) if ok else st.error(msg)
+
+    if st.button("🎯🧠👀 Oficiales + nuevos + watch", key="tg_all_btn"):
+        mensaje = construir_mensaje_telegram_picks(ok_df, incluir_watch=True, max_watch=12, incluir_nuevos=True)
+        ok, msg = enviar_telegram_mensaje(mensaje)
+        st.success(msg) if ok else st.error(msg)
 
 
 # =========================================================
