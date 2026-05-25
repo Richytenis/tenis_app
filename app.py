@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.12-winamax-reanalisis"
+APP_VERSION = "v23.37.13-winamax-campos-reales"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8583,10 +8583,91 @@ def _winamax_match_key(row):
     return str(row.get("Partido", "")).strip()
 
 
+def _inferir_jugador_mercado(row):
+    """Intenta saber qué jugador es el elegido en mercados tipo 'X gana al menos 1 set'."""
+    mercado = str(row.get("🎯 Mercado más probable", ""))
+    partido = str(row.get("Partido", ""))
+    if " vs " in partido:
+        p1, p2 = [x.strip() for x in partido.split(" vs ", 1)]
+    else:
+        p1, p2 = "", ""
+    m_clean = limpiar(mercado)
+    p1_clean = limpiar(p1)
+    p2_clean = limpiar(p2)
+    if p1_clean and p1_clean in m_clean:
+        return "J1", p1
+    if p2_clean and p2_clean in m_clean:
+        return "J2", p2
+    return "", ""
+
+
+def _evaluar_winamax_real(row, data):
+    """Convierte campos reales visibles de Winamax en confirmar/neutral/descartar.
+    No usa cuotas. Solo refuerza o frena la acción final.
+    """
+    mercado = str(row.get("🎯 Mercado más probable", "")).upper()
+    accion_old = str(row.get("🎯 Acción final", ""))
+    try:
+        prob = leer_porcentaje(row.get("🎯 Prob máxima", 0), 0)
+    except Exception:
+        prob = 0
+
+    j1_v = data.get("j1_v", None)
+    j2_v = data.get("j2_v", None)
+    largos = str(data.get("largos", ""))
+    palizas = str(data.get("palizas", ""))
+    h2h = str(data.get("h2h", ""))
+    manual = str(data.get("manual", "Auto"))
+
+    if manual.startswith("✅"):
+        return "confirmar", "Confirmado manualmente por revisión Winamax"
+    if manual.startswith("❌"):
+        return "descartar", "Descartado manualmente por revisión Winamax"
+    if manual.startswith("⚠️"):
+        return "neutral", "Winamax neutral manual"
+
+    # Si no hay datos suficientes, no tocar.
+    if j1_v is None and j2_v is None and not largos and not palizas and not h2h:
+        return "sin_revisar", "Sin datos Winamax"
+
+    # Mercado Over: lo que más nos interesa es que haya partidos largos y pocas palizas.
+    if "OVER 18.5" in mercado or "OVER18" in mercado:
+        if largos.startswith("Muchos") and not palizas.startswith("Muchas"):
+            return "confirmar", "Winamax confirma patrón de partidos largos"
+        if largos.startswith("Algunos") and prob >= 0.78 and not palizas.startswith("Muchas"):
+            return "confirmar", "Winamax apoya Over: algunos largos + probabilidad alta"
+        if palizas.startswith("Muchas") or largos.startswith("Pocos"):
+            return "descartar", "Winamax no apoya Over: palizas o pocos marcadores largos"
+        return "neutral", "Winamax no confirma ni descarta claramente el Over"
+
+    # Mercado gana set: mirar forma del jugador elegido y si pierde fácil.
+    lado, nombre = _inferir_jugador_mercado(row)
+    chosen_wins = None
+    if lado == "J1":
+        chosen_wins = j1_v
+    elif lado == "J2":
+        chosen_wins = j2_v
+
+    if "GANA AL MENOS 1 SET" in mercado or "GANA SET" in mercado:
+        if palizas.startswith("Jugador elegido pierde fácil"):
+            return "descartar", "Winamax muestra riesgo: el jugador elegido pierde fácil 2-0"
+        if chosen_wins is not None:
+            if chosen_wins >= 6 and prob >= 0.88:
+                return "confirmar", f"Winamax confirma forma del elegido: {chosen_wins}/10"
+            if chosen_wins <= 2:
+                return "descartar", f"Winamax no confirma: elegido solo {chosen_wins}/10"
+        if largos.startswith("Muchos") and prob >= 0.90:
+            return "confirmar", "Winamax apoya que compita set: marcadores largos + probabilidad alta"
+        return "neutral", "Winamax no confirma suficiente el gana-set"
+
+    # Resto mercados: solo manual o neutral.
+    return "neutral", "Winamax revisado, sin señal automática fuerte"
+
+
 def aplicar_reanalisis_winamax_manual(df, ajustes):
-    """Aplica confirmaciones manuales de Winamax a la tabla ya analizada.
+    """Aplica datos reales visibles de Winamax a la tabla ya analizada.
     No recalcula motores. Solo sube/baja la acción final y deja trazabilidad.
-    ajustes: dict index -> dict(decision, forma, largos, nota)
+    ajustes: dict index -> dict(j1_v, j2_v, largos, palizas, h2h, manual, nota)
     """
     if df is None or df.empty:
         return df
@@ -8598,28 +8679,23 @@ def aplicar_reanalisis_winamax_manual(df, ajustes):
     for idx, data in (ajustes or {}).items():
         if idx not in out.index:
             continue
-        decision = str(data.get("decision", "Sin revisar"))
-        forma = str(data.get("forma", ""))
-        largos = str(data.get("largos", ""))
-        nota = str(data.get("nota", "")).strip()
-        if decision == "Sin revisar":
+
+        estado, motivo_estado = _evaluar_winamax_real(out.loc[idx], data)
+        if estado == "sin_revisar":
             continue
 
-        mercado = str(out.at[idx, "🎯 Mercado más probable"] if "🎯 Mercado más probable" in out.columns else "").upper()
         accion_old = str(out.at[idx, "🎯 Acción final"] if "🎯 Acción final" in out.columns else "")
-        ajuste = []
+        ajuste = [motivo_estado]
 
-        if decision.startswith("✅"):
+        if estado == "confirmar":
             out.at[idx, "📥 Estado Winamax"] = "✅ Confirmado"
-            # Si Winamax confirma y el mercado es Over 18.5 fuerte en observar, se puede subir a JUGAR.
-            # También permitimos subir set-market solo si el usuario lo marca explícitamente como confirmado.
             out.at[idx, "🎯 Acción final"] = "✅ JUGAR"
             if "🎯 Decisión acierto" in out.columns:
                 out.at[idx, "🎯 Decisión acierto"] = "🔥 Alto acierto + Winamax"
             if "🎯 Aviso acierto" in out.columns:
-                out.at[idx, "🎯 Aviso acierto"] = "Winamax confirma forma/marcadores: subido o mantenido como JUGAR."
+                out.at[idx, "🎯 Aviso acierto"] = "Winamax confirma datos recientes: subido o mantenido como JUGAR."
             ajuste.append(f"Sube/mantiene JUGAR desde {accion_old}")
-        elif decision.startswith("❌"):
+        elif estado == "descartar":
             out.at[idx, "📥 Estado Winamax"] = "❌ Descartado"
             out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
             if "🎯 Aviso acierto" in out.columns:
@@ -8629,19 +8705,20 @@ def aplicar_reanalisis_winamax_manual(df, ajustes):
             out.at[idx, "📥 Estado Winamax"] = "⚠️ Neutral"
             ajuste.append("Sin cambio: Winamax no confirma ni descarta")
 
-        if forma:
-            ajuste.append(f"Forma: {forma}")
-        if largos:
-            ajuste.append(f"Marcadores largos: {largos}")
-        if nota:
-            ajuste.append(f"Nota: {nota}")
-        out.at[idx, "📥 Ajuste Winamax"] = " | ".join(ajuste)
+        for label, key in [
+            ("J1 últimos 10", "j1_v"), ("J2 últimos 10", "j2_v"),
+            ("Marcadores largos", "largos"), ("Palizas 2-0", "palizas"),
+            ("H2H", "h2h"), ("Nota", "nota")
+        ]:
+            val = data.get(key, "")
+            if val not in [None, ""]:
+                ajuste.append(f"{label}: {val}")
+        out.at[idx, "📥 Ajuste Winamax"] = " | ".join(map(str, ajuste))
 
     return out
 
-
 def render_winamax_reanalysis_panel(ok_saved):
-    """Panel paso 2: la app pide solo los partidos prioritarios y permite reanalizar la acción final."""
+    """Panel paso 2 adaptado a lo que realmente se ve en Winamax Stats Center."""
     if ok_saved is None or ok_saved.empty:
         return
     if "📥 Necesita Winamax" not in ok_saved.columns:
@@ -8653,13 +8730,12 @@ def render_winamax_reanalysis_panel(ok_saved):
         return
 
     st.subheader("📥 Paso 2 · Reanálisis con datos Winamax")
-    st.caption("Rellena solo los partidos que la app marca como Winamax ALTA. Si quieres, activa también MEDIA. No cambia motores; solo confirma/sube/baja la acción final.")
+    st.caption("Ahora solo pide datos que aparecen en Winamax: balance últimos 10, marcadores recientes largos/cortos, palizas 2-0 y H2H si aparece.")
 
     include_media = st.checkbox("Incluir también prioridad MEDIA", value=False, key="wm_include_media")
     if not include_media and "📥 Prioridad Winamax" in cand.columns:
         cand = cand[cand["📥 Prioridad Winamax"].astype(str).str.upper().eq("ALTA")].copy()
 
-    # No hacer el formulario infinito.
     cand = cand.head(12)
     if cand.empty:
         st.info("No hay prioridad ALTA. Activa MEDIA si quieres revisar más partidos.")
@@ -8668,34 +8744,54 @@ def render_winamax_reanalysis_panel(ok_saved):
     show_cols = [c for c in ["Hora", "Partido", "🎯 Acción final", "🎯 Mercado más probable", "🎯 Prob máxima", "📥 Prioridad Winamax", "📥 Qué mirar Winamax"] if c in cand.columns]
     st.dataframe(cand[show_cols], width='stretch', hide_index=True)
 
+    st.info("Cómo rellenarlo: en Winamax mira la pestaña Forma. Si pone 'últimos 10 partidos: 6 victorias / 4 derrotas', pon 6 en victorias. En marcadores recientes, marca si ves varios 7-6, 7-5, 6-4 6-4 o partidos a 3 sets.")
+
     with st.form("wm_reanalysis_form"):
         ajustes = {}
         for idx, row in cand.iterrows():
             partido = str(row.get("Partido", ""))
             mercado = str(row.get("🎯 Mercado más probable", ""))
             prob = row.get("🎯 Prob máxima", "")
+            if " vs " in partido:
+                p1, p2 = [x.strip() for x in partido.split(" vs ", 1)]
+            else:
+                p1, p2 = "Jugador 1", "Jugador 2"
+
             st.markdown(f"**{partido}** · {mercado} · {prob}")
-            c1, c2, c3 = st.columns([1.1, 1, 1])
+            c1, c2, c3 = st.columns([1, 1, 1.25])
             with c1:
-                decision = st.selectbox(
-                    "Resultado Winamax",
-                    ["Sin revisar", "✅ Confirma / subir a JUGAR", "⚠️ Neutral / mantener", "❌ No confirma / bajar"],
-                    key=f"wm_decision_{idx}"
-                )
+                j1_v = st.number_input(f"Victorias últimos 10 · {p1}", min_value=0, max_value=10, value=5, step=1, key=f"wm_j1v_{idx}")
             with c2:
-                forma = st.selectbox(
-                    "Forma últimos 10",
-                    ["", "Buena", "Normal", "Mala"],
-                    key=f"wm_forma_{idx}"
-                )
+                j2_v = st.number_input(f"Victorias últimos 10 · {p2}", min_value=0, max_value=10, value=5, step=1, key=f"wm_j2v_{idx}")
             with c3:
                 largos = st.selectbox(
-                    "Marcadores largos",
-                    ["", "Sí", "Mixto", "No"],
+                    "Marcadores recientes largos",
+                    ["", "Muchos: varios 7-6/7-5/3 sets", "Algunos", "Pocos: muchos 6-2/6-3", "No se ve claro"],
                     key=f"wm_largos_{idx}"
                 )
-            nota = st.text_input("Nota rápida", key=f"wm_nota_{idx}", placeholder="Ej: ambos con 7-6/3 sets, o rival pierde mucho 2-0")
-            ajustes[idx] = {"decision": decision, "forma": forma, "largos": largos, "nota": nota}
+
+            c4, c5, c6 = st.columns([1.25, 1, 1])
+            with c4:
+                palizas = st.selectbox(
+                    "Palizas / derrotas fáciles 2-0",
+                    ["", "No se ven muchas", "Muchas palizas en general", "Jugador elegido pierde fácil 2-0", "Rival pierde fácil 2-0", "No se ve claro"],
+                    key=f"wm_palizas_{idx}"
+                )
+            with c5:
+                h2h = st.selectbox(
+                    "Cara a cara",
+                    ["", "No aparece", "Igualado/largo", "Dominio claro", "No se ve claro"],
+                    key=f"wm_h2h_{idx}"
+                )
+            with c6:
+                manual = st.selectbox(
+                    "Forzar valoración",
+                    ["Auto", "✅ Confirmar", "⚠️ Neutral", "❌ Descartar"],
+                    key=f"wm_manual_{idx}"
+                )
+
+            nota = st.text_input("Nota opcional", key=f"wm_nota_{idx}", placeholder="Ej: J1 6-4, J2 5-5, varios 7-6 y un 3 sets")
+            ajustes[idx] = {"j1_v": int(j1_v), "j2_v": int(j2_v), "largos": largos, "palizas": palizas, "h2h": h2h, "manual": manual, "nota": nota}
             st.divider()
 
         submitted = st.form_submit_button("🔁 Reanalizar con Winamax")
