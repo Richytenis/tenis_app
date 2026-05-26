@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.28-recent-form-strict-confirmation"
+APP_VERSION = "v23.37.29-analyzer-threshold-selector"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8357,34 +8357,42 @@ def decision_acierto_v23371(row):
         dec = '👀 Observar / under restrictivo'
         aviso_ok = 'Under/2-0 capado: revisar solo si el favorito 2-0 y el ML son muy claros.'
     elif is_set_market:
-        # v23.37.8 Alto Only Set Guard:
-        # Un "gana al menos 1 set" solo es JUGAR si además del % alto hay soporte del contexto.
-        # Esto baja a OBSERVAR casos tipo ML muy justo, spot dudoso + NO BET, o Over18 flojo.
-        set_context_ok = (ml_fav >= 0.62 and (over18 >= 0.72 or ml_fav >= 0.70 or not spot_dudoso) and not oficial_no_bet)
-        set_elite_ok = (prob >= 0.90 and ml_fav >= 0.68 and not oficial_no_bet)
+        # v23.37.29 Analyzer Threshold Selector:
+        # El backtest masivo confirmó que gana-set es útil solo en zona élite
+        # o con confirmación externa. La decisión base NO lo juega salvo >=94%.
+        set_elite_ok = (prob >= 0.94 and ml_fav >= 0.68 and not oficial_no_bet)
 
-        if prob >= 0.90 and set_elite_ok:
+        if set_elite_ok:
             dec = '🔥 Alto acierto'
-            aviso_ok = 'OK: set market muy alto y contexto suficientemente limpio.'
-        elif prob >= 0.82 and set_context_ok:
-            dec = '👀 Observar / buen set no jugable'
-            aviso_ok = 'Set market alto, pero en backtest ✅ Buen acierto fue irregular: solo observar.'
+            aviso_ok = 'OK: gana-set en zona élite según backtest masivo; revisar si histórico/TA no contradice.'
+        elif prob >= 0.84:
+            dec = '👀 Observar / gana-set alto no jugable'
+            aviso_ok = 'Gana-set alto, pero el analyzer exige >=94% o confirmación histórica/TA para JUGAR.'
         elif prob >= 0.78:
             dec = '👀 Observar / set con contexto débil'
-            aviso_ok = 'Probabilidad alta, pero el contexto no es lo bastante limpio para JUGAR.'
+            aviso_ok = 'Probabilidad útil, pero gana-set queda bloqueado por backtest irregular.'
         else:
             dec = '👀 Observar'
             aviso_ok = 'Set market por debajo de zona jugable estricta.'
-    elif prob >= 0.84 and not oficial_no_bet:
+    elif 'OVER 18.5' in mercado_u and over18 >= 0.80 and not oficial_no_bet:
         dec = '🔥 Alto acierto'
-        aviso_ok = 'OK para revisar como mercado principal de máximo acierto.'
+        aviso_ok = 'OK: Over 18.5 >=80%, umbral validado por analyzer masivo.'
+    elif ('OVER 19.5' in mercado_u or 'OVER 20.5' in mercado_u) and prob >= 0.74 and not oficial_no_bet:
+        dec = '👀 Observar / over alto secundario'
+        aviso_ok = 'Over superior requiere confirmación histórica/TA; no es JUGAR base.'
+    elif (' GANA' in (' ' + mercado_u) and 'SET' not in mercado_u and 'OVER' not in mercado_u and ml_fav >= 0.70 and not oficial_no_bet):
+        dec = '🔥 Alto acierto'
+        aviso_ok = 'OK: ML favorito >=70%, zona fuerte validada por analyzer masivo.'
+    elif prob >= 0.84 and not oficial_no_bet:
+        dec = '👀 Observar / alto no validado'
+        aviso_ok = 'Probabilidad alta, pero no encaja en mercados validados por analyzer para JUGAR.'
     elif prob >= 0.78 and not oficial_no_bet:
-        if 'OVER 18.5' in mercado_u and (over18 >= 0.74 or 'fuerte' in trust or 'apto' in trust):
-            dec = '✅ Buen acierto'
-            aviso_ok = 'OK: Over 18.5 con soporte fuerte/apto para máximo acierto.'
+        if 'OVER 18.5' in mercado_u and (over18 >= 0.76 or 'fuerte' in trust or 'apto' in trust):
+            dec = '👀 Observar / over watch'
+            aviso_ok = 'Over 18.5 interesante, pero analyzer recomienda JUGAR desde 80%.'
         else:
             dec = '👀 Observar / buen acierto no jugable'
-            aviso_ok = 'Buen acierto, pero no es 🔥 Alto ni Over 18.5 fuerte: observar.'
+            aviso_ok = 'Buen acierto, pero no pasa umbral analyzer de JUGAR.'
     elif prob >= 0.70:
         dec = '⚖️ Apto prudente'
         aviso_ok = 'OK, pero no tratar como pick fuerte.'
@@ -9480,13 +9488,14 @@ def _tennisabstract_all_markets_signal(row, ta1, ta2):
     p, label, typ, why = candidates[0]
     # Umbrales jugables por tipo.
     jugar = False
-    if typ == "OVER18" and p >= 0.76:
+    if typ == "OVER18" and p >= 0.80:
         jugar = True
-    elif typ.startswith("SET") and p >= 0.88:
+    elif typ.startswith("SET") and p >= 0.94:
         jugar = True
-    elif typ == "ML" and p >= 0.76:
+    elif typ == "ML" and p >= 0.72:
         jugar = True
     elif typ == "OVER19" and p >= 0.78:
+        # Over 19.5 solo entra si TA lo confirma muy alto.
         jugar = True
     # 3SETS no lo subimos automáticamente salvo prob imposible; lo dejamos observación.
     estado = "confirmar" if jugar else "neutral"
@@ -10275,7 +10284,7 @@ def _ch_form_signal_for_row(row):
 
     if usable:
         # Confirmar Over 18.5 si la app ya lo ve fuerte o el mercado candidato es over.
-        if ("OVER 18.5" in mercado.upper() or app_over >= 0.76) and over18_comb >= 0.68 and avg_games >= 21.8 and blowout <= 0.30 and short <= 0.35:
+        if ("OVER 18.5" in mercado.upper() or app_over >= 0.80) and over18_comb >= 0.70 and avg_games >= 22.0 and blowout <= 0.28 and short <= 0.33:
             estado = "confirmar"
             nuevo_mercado = "Over 18.5"
             # prob conservadora: no inventa 95%; la limita a 88%.
@@ -10291,13 +10300,14 @@ def _ch_form_signal_for_row(row):
             if st_chosen and st_chosen.get("n", 0) >= 8:
                 set_rate = st_chosen.get("set_won_rate", 0)
                 lost02 = st_chosen.get("lost02_rate", 0)
-                if set_rate >= 0.86 and lost02 <= 0.16 and prob >= 0.88:
+                set_elite = (set_rate >= 0.90 and lost02 <= 0.10 and prob >= 0.94) or (set_rate >= 0.999 and lost02 <= 0.001 and st_chosen.get("n", 0) >= 10)
+                if set_elite:
                     estado = "confirmar"
                     nuevo_mercado = mercado
-                    nueva_prob = min(0.88, max(prob, 0.84 + (set_rate - 0.86) * 0.12))
-                    decision = "🔥 Alto acierto + CH set confirmado"
-                    motivo.append(f"CH confirma gana-set {chosen}: set {set_rate:.0%}, 0-2 {lost02:.0%}, n={st_chosen.get('n')}")
-                elif set_rate < 0.76 or lost02 >= 0.28:
+                    nueva_prob = min(0.94, max(prob, 0.90 + (set_rate - 0.90) * 0.18))
+                    decision = "🔥 Alto acierto + CH set élite"
+                    motivo.append(f"CH confirma gana-set ÉLITE {chosen}: set {set_rate:.0%}, 0-2 {lost02:.0%}, n={st_chosen.get('n')}")
+                elif set_rate < 0.82 or lost02 >= 0.18:
                     estado = "descartar"
                     motivo.append(f"CH NO confirma gana-set {chosen}: set {set_rate:.0%}, 0-2 {lost02:.0%}")
         # Si estaba JUGAR pero el histórico contradice, bajar.
