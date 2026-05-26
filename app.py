@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.25-ta-elo-parser-fix"
+APP_VERSION = "v23.37.26-challenger-recent-form-engine"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -9992,6 +9992,389 @@ def render_datos_extra_reanalysis_panel(ok_saved):
         except Exception:
             pass
 
+
+
+# =========================================================
+# v23.37.26 CHALLENGER RECENT FORM ENGINE
+# Lee automáticamente datos/challenger/historicos/atp_matches_qual_chall_2026*.csv
+# para confirmar mercados sin pegar fichas cada día.
+# No toca el motor Over: solo añade señales y ajusta la acción final.
+# =========================================================
+
+_CH_FORM_CACHE_VERSION = "v23.37.26-challenger-form-2026"
+
+
+def _ch_hist_paths():
+    paths = []
+    try:
+        base = os.path.join("datos", "challenger", "historicos")
+        patterns = [
+            os.path.join(base, "atp_matches_qual_chall_2026*.csv"),
+            os.path.join(base, "*.csv"),
+        ]
+        for pat in patterns:
+            for p in glob.glob(pat):
+                if p not in paths:
+                    paths.append(p)
+    except Exception:
+        pass
+    return paths
+
+
+def _ch_parse_match_score(score):
+    """Devuelve pares de juegos, sets winner/loser y flags básicos desde scores tipo '7-6(4) 3-6 6-4'."""
+    pairs = _score_pairs_from_ta_score(score)
+    if not pairs:
+        return None
+    sw = sl = 0
+    total_games = 0
+    tb_sets = 0
+    long_sets = 0
+    easy_sets = 0
+    for a, b in pairs:
+        total_games += a + b
+        if a > b:
+            sw += 1
+        elif b > a:
+            sl += 1
+        if (a, b) in [(7, 6), (6, 7)]:
+            tb_sets += 1
+        if a + b >= 10 or sorted([a, b]) in ([6, 7], [5, 7]):
+            long_sets += 1
+        if sorted([a, b]) in ([0, 6], [1, 6], [2, 6]):
+            easy_sets += 1
+    return {
+        "pairs": pairs,
+        "sets_w": sw,
+        "sets_l": sl,
+        "total_games": total_games,
+        "over18": total_games >= 19,
+        "over19": total_games >= 20,
+        "three_sets": len(pairs) >= 3 or (sw >= 2 and sl >= 1),
+        "tb_sets": tb_sets,
+        "long_sets": long_sets,
+        "easy_sets": easy_sets,
+        "short_straight": (len(pairs) == 2 and total_games <= 17),
+    }
+
+
+@st.cache_data(show_spinner=False)
+def _load_challenger_recent_form_db(cache_version=_CH_FORM_CACHE_VERSION):
+    rows = []
+    for path in _ch_hist_paths():
+        try:
+            df = pd.read_csv(path)
+        except Exception:
+            try:
+                df = pd.read_csv(path, encoding="latin-1")
+            except Exception:
+                continue
+        if df is None or df.empty:
+            continue
+        cw = buscar_columna(df, ["winner_name", "Winner", "Ganador"])
+        cl = buscar_columna(df, ["loser_name", "Loser", "Perdedor"])
+        cs = buscar_columna(df, ["score", "Score", "Marcador"])
+        cdate = buscar_columna(df, ["tourney_date", "Date", "fecha"])
+        csurf = buscar_columna(df, ["surface", "Surface", "Superficie"])
+        clevel = buscar_columna(df, ["tourney_level", "Level", "Series"])
+        ctourney = buscar_columna(df, ["tourney_name", "Tournament", "Torneo"])
+        if not cw or not cl or not cs:
+            continue
+        for _, r in df.iterrows():
+            score = normalizar_texto(r.get(cs, ""))
+            if not score or any(x in score.upper() for x in ["RET", "W/O", "DEF", "ABD", "WALKOVER"]):
+                continue
+            parsed = _ch_parse_match_score(score)
+            if not parsed:
+                continue
+            winner = normalizar_texto(r.get(cw, ""))
+            loser = normalizar_texto(r.get(cl, ""))
+            if not winner or not loser:
+                continue
+            surface = normalizar_superficie_hist(r.get(csurf, "Hard") if csurf else "Hard", default="Hard")
+            try:
+                date_raw = str(r.get(cdate, "")) if cdate else ""
+                # Jeff Sackmann: YYYYMMDD
+                if re.match(r"^\d{8}$", date_raw):
+                    dt = pd.to_datetime(date_raw, format="%Y%m%d", errors="coerce")
+                else:
+                    dt = pd.to_datetime(date_raw, errors="coerce")
+            except Exception:
+                dt = pd.NaT
+            level = normalizar_texto(r.get(clevel, "")) if clevel else ""
+            tourney = normalizar_texto(r.get(ctourney, "")) if ctourney else ""
+            base = {
+                "date": dt,
+                "surface": surface,
+                "score": score,
+                "level": level,
+                "tourney": tourney,
+                **parsed,
+            }
+            rows.append({**base, "player": winner, "opponent": loser, "won": True, "set_won": True, "lost_02": False})
+            rows.append({**base, "player": loser, "opponent": winner, "won": False, "set_won": parsed.get("sets_l", 0) >= 1, "lost_02": parsed.get("sets_l", 0) == 0 and parsed.get("sets_w", 0) >= 2})
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    try:
+        out["player_clean"] = out["player"].apply(limpiar)
+        out["surname"] = out["player"].apply(surname_key)
+    except Exception:
+        pass
+    return out
+
+
+def _ch_find_player_rows(player_name, surface=None, limit=12):
+    db = _load_challenger_recent_form_db()
+    if db is None or db.empty:
+        return pd.DataFrame()
+    name = normalizar_texto(player_name)
+    ck = limpiar(name)
+    sk = surname_key(name)
+    candidates = db[db.get("player_clean", "").astype(str).eq(ck)].copy() if ck else pd.DataFrame()
+    if candidates.empty and sk:
+        # apellido exacto + mejor fuzzy por nombre completo
+        tmp = db[db.get("surname", "").astype(str).eq(sk)].copy()
+        if not tmp.empty:
+            names = tmp["player"].dropna().astype(str).unique().tolist()
+            best_name, best_score = None, 0.0
+            for nm in names:
+                sc = similitud_nombre(name, nm)
+                if sc > best_score:
+                    best_name, best_score = nm, sc
+            if best_name and best_score >= 0.72:
+                candidates = tmp[tmp["player"].astype(str).eq(best_name)].copy()
+    if candidates.empty:
+        # último intento fuzzy controlado
+        unique = db["player"].dropna().astype(str).unique().tolist()
+        best_name, best_score = None, 0.0
+        for nm in unique:
+            sc = similitud_nombre(name, nm)
+            if sc > best_score:
+                best_name, best_score = nm, sc
+        if best_name and best_score >= 0.88:
+            candidates = db[db["player"].astype(str).eq(best_name)].copy()
+    if candidates.empty:
+        return candidates
+    if surface in ["Hard", "Clay", "Grass"]:
+        surf_rows = candidates[candidates["surface"].astype(str).eq(surface)].copy()
+        if len(surf_rows) >= 5:
+            candidates = surf_rows
+    if "date" in candidates.columns:
+        candidates = candidates.sort_values("date", ascending=False, na_position="last")
+    return candidates.head(limit).copy()
+
+
+def _ch_recent_stats(player_name, surface=None, limit=12):
+    rows = _ch_find_player_rows(player_name, surface=surface, limit=limit)
+    if rows is None or rows.empty:
+        return {
+            "player": player_name, "n": 0, "found": False, "summary": "sin histórico Challenger reciente"
+        }
+    n = int(len(rows))
+    def mean_bool(col):
+        try:
+            return float(rows[col].astype(bool).mean()) if col in rows.columns and n else 0.0
+        except Exception:
+            return 0.0
+    wins = int(rows.get("won", pd.Series(dtype=bool)).astype(bool).sum()) if "won" in rows.columns else 0
+    over18 = int(rows.get("over18", pd.Series(dtype=bool)).astype(bool).sum()) if "over18" in rows.columns else 0
+    over19 = int(rows.get("over19", pd.Series(dtype=bool)).astype(bool).sum()) if "over19" in rows.columns else 0
+    threes = int(rows.get("three_sets", pd.Series(dtype=bool)).astype(bool).sum()) if "three_sets" in rows.columns else 0
+    setwon = int(rows.get("set_won", pd.Series(dtype=bool)).astype(bool).sum()) if "set_won" in rows.columns else 0
+    lost02 = int(rows.get("lost_02", pd.Series(dtype=bool)).astype(bool).sum()) if "lost_02" in rows.columns else 0
+    short = int(rows.get("short_straight", pd.Series(dtype=bool)).astype(bool).sum()) if "short_straight" in rows.columns else 0
+    easy_sets = int(rows.get("easy_sets", pd.Series(dtype=int)).fillna(0).sum()) if "easy_sets" in rows.columns else 0
+    avg_games = float(rows.get("total_games", pd.Series(dtype=float)).dropna().mean()) if "total_games" in rows.columns else 0.0
+    matched = rows["player"].dropna().astype(str).iloc[0] if "player" in rows.columns and len(rows) else player_name
+    return {
+        "player": matched,
+        "n": n,
+        "found": True,
+        "wins": wins,
+        "win_rate": wins / n if n else 0,
+        "over18": over18,
+        "over18_rate": over18 / n if n else 0,
+        "over19": over19,
+        "over19_rate": over19 / n if n else 0,
+        "three_sets": threes,
+        "three_rate": threes / n if n else 0,
+        "set_won": setwon,
+        "set_won_rate": setwon / n if n else 0,
+        "lost_02": lost02,
+        "lost02_rate": lost02 / n if n else 0,
+        "short": short,
+        "short_rate": short / n if n else 0,
+        "easy_sets": easy_sets,
+        "avg_games": avg_games,
+        "surface": surface or "All",
+        "summary": f"CH {matched}: n={n}, Over18 {over18}/{n}, Set {setwon}/{n}, 3 sets {threes}/{n}, 0-2 {lost02}/{n}, media {avg_games:.1f}",
+    }
+
+
+def _parse_pct_cell(v, default=0.0):
+    try:
+        return float(leer_porcentaje(v, default))
+    except Exception:
+        return default
+
+
+def _format_pct(v):
+    try:
+        return f"{float(v):.1%}"
+    except Exception:
+        return ""
+
+
+def _ch_form_signal_for_row(row):
+    partido = str(row.get("Partido", ""))
+    if " vs " not in partido:
+        return None
+    p1, p2 = [x.strip() for x in partido.split(" vs ", 1)]
+    surface = normalizar_superficie_hist(row.get("Superficie", "Hard"), default="Hard")
+    s1 = _ch_recent_stats(p1, surface=surface, limit=12)
+    s2 = _ch_recent_stats(p2, surface=surface, limit=12)
+    n1, n2 = int(s1.get("n", 0)), int(s2.get("n", 0))
+    combined_n = n1 + n2
+    if combined_n <= 0:
+        return {"usable": False, "s1": s1, "s2": s2, "motivo": "sin histórico Challenger útil"}
+
+    def wavg(key):
+        return ((s1.get(key, 0) * n1) + (s2.get(key, 0) * n2)) / max(combined_n, 1)
+
+    over18_comb = wavg("over18_rate")
+    over19_comb = wavg("over19_rate")
+    three_comb = wavg("three_rate")
+    avg_games = ((s1.get("avg_games", 0) * n1) + (s2.get("avg_games", 0) * n2)) / max(combined_n, 1)
+    blowout = wavg("lost02_rate")
+    short = wavg("short_rate")
+    usable = n1 >= 5 and n2 >= 5
+
+    mercado = str(row.get("🎯 Mercado más probable", ""))
+    prob = _parse_pct_cell(row.get("🎯 Prob máxima", 0), 0)
+    app_over = _parse_pct_cell(row.get("Over 18.5", 0), 0)
+    accion = str(row.get("🎯 Acción final", ""))
+
+    # Señales por mercado.
+    estado = "neutral"
+    nuevo_mercado = ""
+    nueva_prob = None
+    decision = ""
+    motivo = []
+
+    if usable:
+        # Confirmar Over 18.5 si la app ya lo ve fuerte o el mercado candidato es over.
+        if ("OVER 18.5" in mercado.upper() or app_over >= 0.76) and over18_comb >= 0.68 and avg_games >= 21.8 and blowout <= 0.30 and short <= 0.35:
+            estado = "confirmar"
+            nuevo_mercado = "Over 18.5"
+            # prob conservadora: no inventa 95%; la limita a 88%.
+            base = max(prob, app_over, 0.80)
+            bonus = min(0.08, max(0.0, over18_comb - 0.68) * 0.25 + max(0.0, avg_games - 22.0) * 0.01)
+            nueva_prob = min(0.88, base + bonus)
+            decision = "🔥 Alto acierto + CH histórico"
+            motivo.append(f"CH confirma Over18: combinado {over18_comb:.0%}, 3 sets {three_comb:.0%}, media {avg_games:.1f}, paliza {blowout:.0%}")
+        # Gana set: muy estricto.
+        if "GANA AL MENOS 1 SET" in mercado.upper() or "GANA SET" in mercado.upper():
+            lado, chosen = _inferir_jugador_mercado(row)
+            st_chosen = s1 if lado == "J1" else s2 if lado == "J2" else None
+            if st_chosen and st_chosen.get("n", 0) >= 8:
+                set_rate = st_chosen.get("set_won_rate", 0)
+                lost02 = st_chosen.get("lost02_rate", 0)
+                if set_rate >= 0.86 and lost02 <= 0.16 and prob >= 0.88:
+                    estado = "confirmar"
+                    nuevo_mercado = mercado
+                    nueva_prob = min(0.88, max(prob, 0.84 + (set_rate - 0.86) * 0.12))
+                    decision = "🔥 Alto acierto + CH set confirmado"
+                    motivo.append(f"CH confirma gana-set {chosen}: set {set_rate:.0%}, 0-2 {lost02:.0%}, n={st_chosen.get('n')}")
+                elif set_rate < 0.76 or lost02 >= 0.28:
+                    estado = "descartar"
+                    motivo.append(f"CH NO confirma gana-set {chosen}: set {set_rate:.0%}, 0-2 {lost02:.0%}")
+        # Si estaba JUGAR pero el histórico contradice, bajar.
+        if "JUGAR" in accion.upper():
+            if "OVER 18.5" in mercado.upper() and (over18_comb < 0.60 or blowout >= 0.38 or avg_games < 20.5):
+                estado = "descartar"
+                motivo.append(f"CH contradice Over: Over18 {over18_comb:.0%}, media {avg_games:.1f}, paliza {blowout:.0%}")
+    else:
+        motivo.append(f"CH parcial: J1 n={n1}, J2 n={n2}; no sube a JUGAR sin 5+ por jugador")
+
+    if not motivo:
+        motivo.append(f"CH neutral: Over18 {over18_comb:.0%}, 3 sets {three_comb:.0%}, media {avg_games:.1f}, paliza {blowout:.0%}")
+    return {
+        "usable": usable,
+        "estado": estado,
+        "nuevo_mercado": nuevo_mercado,
+        "nueva_prob": nueva_prob,
+        "decision": decision,
+        "motivo": " | ".join(motivo),
+        "s1": s1,
+        "s2": s2,
+        "over18_comb": over18_comb,
+        "over19_comb": over19_comb,
+        "three_comb": three_comb,
+        "avg_games": avg_games,
+        "blowout": blowout,
+        "short": short,
+    }
+
+
+def aplicar_challenger_recent_form_engine(df):
+    """Añade señales CH Recent Form y ajusta Acción final de forma conservadora.
+    Se aplica automáticamente a tablas analizadas con partidos Challenger.
+    """
+    if df is None or df.empty:
+        return df
+    # Si no hay histórico, no tocar.
+    try:
+        hist = _load_challenger_recent_form_db()
+        if hist is None or hist.empty:
+            return df
+    except Exception:
+        return df
+    out = df.copy()
+    new_cols = [
+        "🧠 CH Form J1", "🧠 CH Form J2", "🧠 CH Over18 combinado", "🧠 CH Set J1", "🧠 CH Set J2",
+        "🧠 CH 3 sets", "🧠 CH Riesgo paliza", "🧠 CH Señal histórica"
+    ]
+    for c in new_cols:
+        if c not in out.columns:
+            out[c] = ""
+    for idx, row in out.iterrows():
+        try:
+            sig = _ch_form_signal_for_row(row)
+            if not sig:
+                continue
+            s1, s2 = sig.get("s1", {}), sig.get("s2", {})
+            out.at[idx, "🧠 CH Form J1"] = s1.get("summary", "")
+            out.at[idx, "🧠 CH Form J2"] = s2.get("summary", "")
+            out.at[idx, "🧠 CH Over18 combinado"] = _format_pct(sig.get("over18_comb", 0))
+            out.at[idx, "🧠 CH Set J1"] = _format_pct(s1.get("set_won_rate", 0)) if s1.get("n", 0) else ""
+            out.at[idx, "🧠 CH Set J2"] = _format_pct(s2.get("set_won_rate", 0)) if s2.get("n", 0) else ""
+            out.at[idx, "🧠 CH 3 sets"] = _format_pct(sig.get("three_comb", 0))
+            out.at[idx, "🧠 CH Riesgo paliza"] = _format_pct(sig.get("blowout", 0))
+            out.at[idx, "🧠 CH Señal histórica"] = sig.get("motivo", "")
+
+            estado = sig.get("estado")
+            if estado == "confirmar":
+                if sig.get("nuevo_mercado") and "🎯 Mercado más probable" in out.columns:
+                    out.at[idx, "🎯 Mercado más probable"] = sig.get("nuevo_mercado")
+                if sig.get("nueva_prob") is not None and "🎯 Prob máxima" in out.columns:
+                    out.at[idx, "🎯 Prob máxima"] = f"{float(sig.get('nueva_prob')):.1%}"
+                if "🎯 Acción final" in out.columns:
+                    out.at[idx, "🎯 Acción final"] = "✅ JUGAR"
+                if "🎯 Decisión acierto" in out.columns:
+                    out.at[idx, "🎯 Decisión acierto"] = sig.get("decision") or "🔥 Alto acierto + CH histórico"
+                if "🎯 Aviso acierto" in out.columns:
+                    out.at[idx, "🎯 Aviso acierto"] = "Histórico Challenger 2026 confirma el mercado; no usa cuotas."
+            elif estado == "descartar":
+                if "🎯 Acción final" in out.columns:
+                    out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
+                if "🎯 Aviso acierto" in out.columns:
+                    old = str(out.at[idx, "🎯 Aviso acierto"] or "")
+                    out.at[idx, "🎯 Aviso acierto"] = (old + " | " if old else "") + "Histórico Challenger no confirma: bajado a OBSERVAR."
+        except Exception:
+            continue
+    return out
+
 # =========================================================
 # v23.37.11 EXCEL LIMPIO 2 HOJAS
 # =========================================================
@@ -10008,6 +10391,7 @@ DETALLE_TECNICO_FIRST_COLS = [
     "🎯 Acción final", "🎯 Decisión acierto", "🎯 Mercado más probable", "🎯 Prob máxima",
     "🎯 Confianza acierto", "🎯 Aviso acierto", "🎯 Motivo acierto",
     "📥 Necesita Datos extra", "📥 Prioridad Datos extra", "📥 Estado Datos extra", "📥 Ajuste Datos extra", "📥 Qué mirar Datos extra", "📥 Motivo Datos extra",
+    "🧠 CH Form J1", "🧠 CH Form J2", "🧠 CH Over18 combinado", "🧠 CH Set J1", "🧠 CH Set J2", "🧠 CH 3 sets", "🧠 CH Riesgo paliza", "🧠 CH Señal histórica",
     "Recomendación", "Pick oficial", "Mercado recomendado", "Prob mercado recomendado",
     "Favorito modelo", "ML favorito", "Over 18.5", "Over 19.5", "Under 22.5",
     "Jugador gana set", "Prob gana set", "Favorito gana al menos 1 set",
@@ -11703,6 +12087,12 @@ Sebastián Baez - Roberto Carballés Baena"""
                 ]
                 ok = ok[[c for c in simple_cols if c in ok.columns]]
 
+            # v23.37.26: aplicar Challenger Recent Form Engine antes de guardar.
+            try:
+                ok = aplicar_challenger_recent_form_engine(ok)
+            except Exception:
+                pass
+
             # v23.5: guardar resultado para que descargar Excel/CSV no limpie pantalla tras rerun.
             st.session_state["batch_ok_df"] = ok
             st.session_state["batch_ko_df"] = ko
@@ -11718,6 +12108,11 @@ Sebastián Baez - Roberto Carballés Baena"""
     if st.session_state.get("batch_last_ready", False):
         ok_saved = st.session_state.get("batch_ok_df", pd.DataFrame())
         ko_saved = st.session_state.get("batch_ko_df", pd.DataFrame())
+        try:
+            ok_saved = aplicar_challenger_recent_form_engine(ok_saved)
+            st.session_state["batch_ok_df"] = ok_saved
+        except Exception:
+            pass
 
         if ok_saved is not None and not ok_saved.empty:
             st.divider()
