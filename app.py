@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.24-ta-profile-cache"
+APP_VERSION = "v23.37.25-ta-elo-parser-fix"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -9122,6 +9122,65 @@ def _score_pairs_from_ta_score(score):
             pairs.append((a, b))
     return pairs
 
+def _ta_valid_elo_rating(x):
+    """Valida ratings Elo de Tennis Abstract.
+    Importante: no debe confundir años 2019/2024/2025 con Elo.
+    Solo se usa como rating si viene de un campo claramente identificado.
+    """
+    try:
+        x = int(float(x))
+    except Exception:
+        return None
+    return x if 800 <= x <= 2400 else None
+
+
+def _ta_parse_current_elo_line(line):
+    """Lee la fila Current de Year-End Rankings de Tennis Abstract.
+
+    Formato esperado tras 'Current (fecha)':
+    ATP Rank, Points, Elo Rank, Elo, hElo Rank, hElo, cElo Rank, cElo, gElo Rank, gElo.
+
+    El bug anterior filtraba todos los números 1200-2300 y podía tomar años
+    como 2024/2025/2019 como si fueran Elo. Aquí usamos posiciones, no rango bruto.
+    """
+    ln = normalizar_texto(line or "").strip()
+    if not ln.startswith("Current"):
+        return None, None, None, None
+
+    # Elimina la fecha Current (2026-05-25) para que 2026/05/25 no entren en la secuencia.
+    ln2 = re.sub(r"^Current\s*\([^)]*\)", "", ln).strip()
+    if not ln2:
+        return None, None, None, None
+
+    # Con pegado por tabs, Tennis Abstract conserva cada celda. Si no, también vale con espacios.
+    toks = [t.strip() for t in re.split(r"\t+|\s{2,}", ln2) if str(t).strip()]
+    nums = []
+    for t in toks:
+        # Celdas tipo '-' o vacías se saltan. Solo número entero puro.
+        if re.fullmatch(r"\d{1,4}", t):
+            nums.append(int(t))
+
+    # Fallback si el navegador pegó todo con espacios simples.
+    if len(nums) < 4:
+        nums = [int(x) for x in re.findall(r"\b\d{1,4}\b", ln2)]
+
+    # Posiciones: 0 ATP Rank, 1 Points, 2 Elo Rank, 3 Elo, 4 hElo Rank, 5 hElo, ...
+    elo = _ta_valid_elo_rating(nums[3]) if len(nums) > 3 else None
+    helo = _ta_valid_elo_rating(nums[5]) if len(nums) > 5 else None
+    celo = _ta_valid_elo_rating(nums[7]) if len(nums) > 7 else None
+    gelo = _ta_valid_elo_rating(nums[9]) if len(nums) > 9 else None
+
+    return elo, helo, celo, gelo
+
+
+def _ta_elo_is_suspicious_year(x):
+    try:
+        x = int(float(x))
+    except Exception:
+        return False
+    return 1900 <= x <= 2035
+
+
 
 def _parse_tennisabstract_player_profile(raw_text):
     """Extrae señales desde una ficha copiada de Tennis Abstract.
@@ -9142,27 +9201,30 @@ def _parse_tennisabstract_player_profile(raw_text):
     player_surname = surname_key(player_name)
 
     # Elo general de cabecera.
+    # FIX v23.37.25: solo aceptamos el rating si viene de la etiqueta explícita
+    # "Elo rank: ... (rating: XXXX)". Así evitamos confundir años con Elo.
     elo = None
     m = re.search(r"Elo rank:\s*\d+\s*\(rating:\s*(\d+)\)", text)
     if m:
-        try: elo = int(m.group(1))
-        except Exception: elo = None
+        elo = _ta_valid_elo_rating(m.group(1))
 
     # Línea Current de Year-End Rankings: ATP Rank Points Elo Rank Elo hElo Rank hElo cElo Rank cElo gElo Rank gElo...
+    # FIX v23.37.25: usar posiciones reales de columnas, no "todos los números 1200-2300".
     helo = celo = gelo = None
     for ln in lines:
-        if ln.startswith("Current") and re.search(r"\b\d{3,4}\b", ln):
-            nums = [int(x) for x in re.findall(r"\b\d{2,4}\b", ln)]
-            # En TA suele ser: year/date nums includes 2026,05,25, ATP rank, points, EloRank, Elo, hEloRank, hElo, cEloRank, cElo, gEloRank, gElo
-            # Tomamos los ratings cercanos a 1200-2300. El primero suele ser año; filtramos.
-            ratings = [x for x in nums if 1200 <= x <= 2300]
-            # Para Nardi: [2026, 163, 366, 171, 1608, 150, 1583, 159, 1557, 199, 1440] -> ratings incluye 2026,1608,1583,1557,1440.
-            ratings = [x for x in ratings if x != 2026]
-            if len(ratings) >= 1: elo = elo or ratings[0]
-            if len(ratings) >= 2: helo = ratings[1]
-            if len(ratings) >= 3: celo = ratings[2]
-            if len(ratings) >= 4: gelo = ratings[3]
+        if ln.startswith("Current") and re.search(r"\b\d{2,4}\b", ln):
+            cur_elo, cur_helo, cur_celo, cur_gelo = _ta_parse_current_elo_line(ln)
+            if elo is None and cur_elo is not None:
+                elo = cur_elo
+            helo = cur_helo
+            celo = cur_celo
+            gelo = cur_gelo
             break
+
+    # Si por cualquier formato raro se detecta un año como Elo y no venía de cabecera, lo anulamos.
+    # En Challenger esos valores 2019-2026 eran el síntoma principal del bug.
+    if elo is not None and _ta_elo_is_suspicious_year(elo) and not re.search(r"Elo rank:\s*\d+\s*\(rating:\s*" + str(int(elo)) + r"\)", text):
+        elo = None
 
     # Challenger 2026 resumen si aparece.
     ch_2026 = {}
