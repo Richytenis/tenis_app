@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.26-challenger-recent-form-engine"
+APP_VERSION = "v23.37.27-recent-form-session-reset-FIX"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -11874,6 +11874,23 @@ Sebastián Baez - Roberto Carballés Baena"""
         key="sofa_raw_batch"
     )
 
+    # v23.37.27 FIX: si cambia la lista/formato/circuito, no mostrar ni reutilizar
+    # resultados guardados de un análisis anterior. Esto evita que aparezca un día
+    # viejo, por ejemplo 20/05, cuando ya se pegó otra lista.
+    try:
+        _batch_input_key = f"{formato_pegado}|{circuito}|{str(raw_batch).strip()}"
+        _prev_input_key = st.session_state.get("batch_input_key_v233727")
+        if _prev_input_key is not None and _prev_input_key != _batch_input_key:
+            for _k in [
+                "batch_ok_df", "batch_ko_df", "batch_last_ready",
+                "datos_extra_ajustes", "ta_extra_ajustes",
+            ]:
+                if _k in st.session_state:
+                    del st.session_state[_k]
+        st.session_state["batch_input_key_v233727"] = _batch_input_key
+    except Exception:
+        pass
+
     cprev, crun = st.columns([1,1])
     with cprev:
         if raw_batch.strip():
@@ -11933,10 +11950,14 @@ Sebastián Baez - Roberto Carballés Baena"""
                 st.caption(f"Juegos reales detectados en {con_games}/{len(prev_df)} partidos. Sin juegos reales: {sin_games}.")
 
     if st.button("🚀 ANALIZAR LISTA", width='stretch'):
-        # v23.10: liberar resultado anterior antes de un lote nuevo.
-        for _k in ["batch_ok_df", "batch_ko_df", "batch_last_ready"]:
+        # v23.10/v23.37.27: liberar resultado anterior antes de un lote nuevo.
+        for _k in ["batch_ok_df", "batch_ko_df", "batch_last_ready", "datos_extra_ajustes", "ta_extra_ajustes"]:
             if _k in st.session_state:
                 del st.session_state[_k]
+        try:
+            st.session_state["batch_input_key_v233727"] = f"{formato_pegado}|{circuito}|{str(raw_batch).strip()}"
+        except Exception:
+            pass
         gc.collect()
 
         if formato_pegado == "Sofascore día":
