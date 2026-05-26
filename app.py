@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.23-telegram-oficiales-nuevos"
+APP_VERSION = "v23.37.24-ta-profile-cache"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8766,6 +8766,154 @@ def _invalidar_lectura_si_no_coincide(d, jugador_esperado):
     return d
 
 
+
+# =========================================================
+# v23.37.24 TENNIS ABSTRACT PROFILE CACHE
+# Guarda fichas TA/Flashscore por jugador con fecha de subida para no pegarlas cada día.
+# =========================================================
+
+def _ta_profile_cache_path():
+    try:
+        os.makedirs("datos", exist_ok=True)
+        return os.path.join("datos", "ta_profile_cache.json")
+    except Exception:
+        return "ta_profile_cache.json"
+
+
+def _ta_profile_cache_load():
+    import json
+    path = _ta_profile_cache_path()
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _ta_profile_cache_save(cache):
+    import json
+    path = _ta_profile_cache_path()
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cache or {}, f, ensure_ascii=False, indent=2)
+        return True, path
+    except Exception as e:
+        return False, str(e)
+
+
+def _ta_profile_cache_key(name):
+    return limpiar(name or "")
+
+
+def _ta_profile_cache_today():
+    from datetime import date
+    return date.today().isoformat()
+
+
+def _ta_profile_cache_age_days(uploaded_at):
+    from datetime import date, datetime
+    try:
+        d = datetime.fromisoformat(str(uploaded_at)[:10]).date()
+        return max(0, (date.today() - d).days)
+    except Exception:
+        return None
+
+
+def _ta_profile_cache_age_label(uploaded_at):
+    age = _ta_profile_cache_age_days(uploaded_at)
+    if age is None:
+        return "fecha desconocida"
+    if age == 0:
+        return "subido hoy"
+    if age == 1:
+        return "subido ayer"
+    return f"subido hace {age} días"
+
+
+def _ta_profile_cache_find(player_name):
+    """Busca ficha guardada por nombre, usando exacto y fuzzy apellido+inicial."""
+    cache = _ta_profile_cache_load()
+    if not player_name:
+        return None
+    key = _ta_profile_cache_key(player_name)
+    if key and key in cache:
+        item = cache[key]
+        item["cache_key"] = key
+        item["match_score"] = 1.0
+        return item
+
+    best_key, best_item, best_score = "", None, 0.0
+    for k, item in cache.items():
+        pname = item.get("player", k) if isinstance(item, dict) else k
+        sc, _reason = nombre_score_quality_direct(player_name, pname)
+        if sc > best_score:
+            best_key, best_item, best_score = k, item, sc
+    if isinstance(best_item, dict) and best_score >= 0.94:
+        out = best_item.copy()
+        out["cache_key"] = best_key
+        out["match_score"] = float(best_score)
+        return out
+    return None
+
+
+def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
+    """Guarda ficha válida con fecha. No guarda si no coincide con el jugador esperado."""
+    raw_text = str(raw_text or "").strip()
+    if len(raw_text) < 80:
+        return False, "sin texto suficiente"
+    d = _extraer_datos_extra_desde_texto(raw_text, None)
+    if not isinstance(d, dict):
+        return False, "no interpretado"
+    # Si el texto no es TA ni Flashscore, no lo guardamos como perfil persistente.
+    if not isinstance(d.get("tennisabstract"), dict) and not isinstance(d.get("flashscore"), dict):
+        return False, "no es ficha TA/Flashscore reconocida"
+    ok, msg = _ficha_corresponde_jugador(d, expected_player)
+    if not ok:
+        return False, msg
+    parsed_obj = d.get("tennisabstract") or d.get("flashscore") or {}
+    player = str(parsed_obj.get("player") or expected_player or "").strip()
+    key = _ta_profile_cache_key(player or expected_player)
+    if not key:
+        return False, "sin nombre"
+    cache = _ta_profile_cache_load()
+    cache[key] = {
+        "player": player,
+        "expected_player": expected_player,
+        "source": parsed_obj.get("source", "Tennis Abstract/Flashscore"),
+        "uploaded_at": _ta_profile_cache_today(),
+        "raw_text": raw_text,
+        "summary": parsed_obj.get("summary", ""),
+        "matches": parsed_obj.get("matches", ""),
+        "over_rate": parsed_obj.get("over_rate", ""),
+        "set_rate": parsed_obj.get("set_rate", ""),
+        "three_rate": parsed_obj.get("three_rate", ""),
+        "elo": parsed_obj.get("elo", ""),
+    }
+    ok_save, info = _ta_profile_cache_save(cache)
+    if not ok_save:
+        return False, f"no guardado: {info}"
+    return True, f"perfil guardado para {player} ({cache[key]['uploaded_at']})"
+
+
+def _ta_profile_cache_status_text(player_name):
+    item = _ta_profile_cache_find(player_name)
+    if not item:
+        return "", None
+    uploaded = item.get("uploaded_at", "")
+    src = item.get("source", "perfil")
+    player = item.get("player", player_name)
+    age = _ta_profile_cache_age_label(uploaded)
+    summary = str(item.get("summary", ""))[:180]
+    txt = f"💾 Perfil guardado · {player} · {src} · {uploaded or 'sin fecha'} ({age})"
+    if summary:
+        txt += f" · {summary}"
+    return txt, item
+
+
 def _inferir_jugador_mercado(row):
     """Intenta saber qué jugador es el elegido en mercados tipo 'X gana al menos 1 set'."""
     mercado = str(row.get("🎯 Mercado más probable", ""))
@@ -9675,19 +9823,28 @@ def render_datos_extra_reanalysis_panel(ok_saved):
             if err2:
                 st.warning(f"OCR {p2}: {err2}")
 
+            cache_msg1, cache_item1 = _ta_profile_cache_status_text(p1)
+            cache_msg2, cache_item2 = _ta_profile_cache_status_text(p2)
+            default_raw1 = ocr1 or ((cache_item1 or {}).get("raw_text", "") if cache_item1 else "")
+            default_raw2 = ocr2 or ((cache_item2 or {}).get("raw_text", "") if cache_item2 else "")
+
             t1, t2 = st.columns(2)
             with t1:
+                if cache_msg1:
+                    st.info(cache_msg1)
                 raw1 = st.text_area(
                     f"Pega ficha Tennis Abstract / Flashscore o texto detectado · {p1}",
-                    value=ocr1,
+                    value=default_raw1,
                     height=120,
                     key=f"wm_raw_j1_{key_base}",
                     placeholder="Pega aquí la ficha Tennis Abstract o Flashscore del jugador 1..."
                 )
             with t2:
+                if cache_msg2:
+                    st.info(cache_msg2)
                 raw2 = st.text_area(
                     f"Pega ficha Tennis Abstract / Flashscore o texto detectado · {p2}",
-                    value=ocr2,
+                    value=default_raw2,
                     height=120,
                     key=f"wm_raw_j2_{key_base}",
                     placeholder="Pega aquí la ficha Tennis Abstract o Flashscore del jugador 2..."
@@ -9746,9 +9903,28 @@ def render_datos_extra_reanalysis_panel(ok_saved):
         submitted = st.form_submit_button("🔁 Reanalizar con Tennis Abstract / datos extra")
 
     if submitted:
+        # Guardar automáticamente fichas válidas con fecha para no pegarlas todos los días.
+        saved_msgs = []
+        for idx, data in (ajustes or {}).items():
+            try:
+                row = ok_saved.loc[idx]
+                partido = str(row.get("Partido", ""))
+                if " vs " in partido:
+                    p1_save, p2_save = [x.strip() for x in partido.split(" vs ", 1)]
+                else:
+                    p1_save, p2_save = "", ""
+                ok1, msg1 = _ta_profile_cache_upsert_from_raw(p1_save, data.get("ocr_j1", ""))
+                ok2, msg2 = _ta_profile_cache_upsert_from_raw(p2_save, data.get("ocr_j2", ""))
+                if ok1: saved_msgs.append(msg1)
+                if ok2: saved_msgs.append(msg2)
+            except Exception:
+                pass
+
         updated = aplicar_reanalisis_datos_extra_manual(ok_saved, ajustes)
         st.session_state["batch_ok_df"] = updated
         st.success("Reanálisis con Tennis Abstract/datos extra aplicado. La tabla y el Excel se actualizan con la nueva acción final.")
+        if saved_msgs:
+            st.info("💾 Perfiles guardados/actualizados: " + " | ".join(saved_msgs[:8]))
         try:
             st.rerun()
         except Exception:
