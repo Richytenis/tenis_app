@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.27-recent-form-session-reset-FIX"
+APP_VERSION = "v23.37.28-recent-form-strict-confirmation"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -9058,9 +9058,13 @@ def aplicar_reanalisis_datos_extra_manual(df, ajustes):
                     out.at[idx, "🎯 Prob máxima"] = f"{float(ta_sig.get('nueva_prob')):.1%}"
                 if "🎯 Decisión acierto" in out.columns:
                     out.at[idx, "🎯 Decisión acierto"] = ta_sig.get("decision", "👀 Observar + TA")
-                if "🎯 Acción final" in out.columns:
-                    out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
-            ajuste.append("Sin cambio: Datos extra no confirma lo suficiente para JUGAR")
+            # v23.37.28: si Datos extra/TA fue revisado pero NO confirma, nunca puede quedar como JUGAR.
+            # Evita casos donde la app mantenía ✅ JUGAR aunque TA dijera neutral/no confirma.
+            if "🎯 Acción final" in out.columns:
+                out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
+            if "🎯 Aviso acierto" in out.columns:
+                out.at[idx, "🎯 Aviso acierto"] = "Datos extra/Tennis Abstract neutral: no confirma mercado jugable; bajado a OBSERVAR."
+            ajuste.append("Baja/mantiene OBSERVAR: Datos extra no confirma lo suficiente para JUGAR")
 
         for label, key in [
             ("J1 últimos 10", "j1_v"), ("J2 últimos 10", "j2_v"),
@@ -9430,14 +9434,21 @@ def _tennisabstract_all_markets_signal(row, ta1, ta2):
             candidates.append((p, "Over 19.5", "OVER19", f"TA apoya Over19: over19 combinado {avg_over19:.0%}, 3 sets {avg_three:.0%}"))
 
     # Gana al menos 1 set por jugador.
-    if ta1 and n1 >= 5 and set1 >= 0.75 and lost1 <= 0.25:
-        p = float(np.clip(0.76 + set1*0.12 - lost1*0.12 + (0.02 if g(ta1,'wins',0)/max(n1,1)>=0.50 else 0), 0.65, 0.92))
-        if p >= 0.82:
-            candidates.append((p, f"{p1} gana al menos 1 set", "SET_J1", f"TA set ganado {set1:.0%}, derrotas 0-2 {lost1:.0%}"))
-    if ta2 and n2 >= 5 and set2 >= 0.75 and lost2 <= 0.25:
-        p = float(np.clip(0.76 + set2*0.12 - lost2*0.12 + (0.02 if g(ta2,'wins',0)/max(n2,1)>=0.50 else 0), 0.65, 0.92))
-        if p >= 0.82:
-            candidates.append((p, f"{p2} gana al menos 1 set", "SET_J2", f"TA set ganado {set2:.0%}, derrotas 0-2 {lost2:.0%}"))
+    # v23.37.28 STRICT SET GUARD:
+    # Este mercado fue el principal foco de fallos en backtest.
+    # Solo puede competir como JUGAR si hay datos de LOS DOS jugadores y el elegido
+    # muestra una frecuencia muy alta de ganar set con muy pocas derrotas 0-2.
+    set_samples_ok = (n1 >= 6 and n2 >= 6)
+    if ta1 and set_samples_ok and set1 >= 0.90 and lost1 <= 0.10:
+        rival_paliza_risk = lost2 >= 0.30 or g(ta2, "easy_rate", 0.0) >= 0.40
+        p = float(np.clip(0.78 + set1*0.10 - lost1*0.18 - (0.04 if rival_paliza_risk else 0.0), 0.65, 0.91))
+        if p >= 0.88 and not rival_paliza_risk:
+            candidates.append((p, f"{p1} gana al menos 1 set", "SET_J1", f"TA set MUY confirmado {set1:.0%}, derrotas 0-2 {lost1:.0%}; muestras {int(n1)}/{int(n2)}"))
+    if ta2 and set_samples_ok and set2 >= 0.90 and lost2 <= 0.10:
+        rival_paliza_risk = lost1 >= 0.30 or g(ta1, "easy_rate", 0.0) >= 0.40
+        p = float(np.clip(0.78 + set2*0.10 - lost2*0.18 - (0.04 if rival_paliza_risk else 0.0), 0.65, 0.91))
+        if p >= 0.88 and not rival_paliza_risk:
+            candidates.append((p, f"{p2} gana al menos 1 set", "SET_J2", f"TA set MUY confirmado {set2:.0%}, derrotas 0-2 {lost2:.0%}; muestras {int(n2)}/{int(n1)}"))
 
     # ML por Elo si ambos tienen TA y diferencia clara.
     if elo1 and elo2 and abs(elo1-elo2) >= 120:
