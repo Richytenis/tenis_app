@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.37.29-analyzer-threshold-selector"
+APP_VERSION = "v23.38.0-grand-slam-5set-engine"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -2653,7 +2653,12 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         # not by raw surface Elo. This avoids labels such as "underdog wins set" being tied to Elo
         # when the final model has flipped the favorite.
         "p1_2_0": 0, "p2_2_0": 0,
-        "p1_wins_set_any": 0, "p2_wins_set_any": 0
+        "p1_wins_set_any": 0, "p2_wins_set_any": 0,
+        # v23.38 Grand Slam BO5 Engine: contadores separados para 5 sets.
+        # No modifica el motor Over BO3; solo expone resultados simulados cuando best_of=5.
+        "set4_bo5": 0, "set5_bo5": 0,
+        "p1_3_0": 0, "p2_3_0": 0,
+        "fav_3_0_bo5": 0, "dog_wins_set_bo5": 0
     }
 
     # v22.36: progreso más suave sin saturar Streamlit
@@ -2720,6 +2725,18 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         if sets2 >= 1:
             res["p2_wins_set_any"] += 1
 
+        # v23.38 Grand Slam BO5 Engine: resultados específicos para partidos al mejor de 5.
+        if sets_to_win == 3:
+            total_sets_played = sets1 + sets2
+            if total_sets_played == 4:
+                res["set4_bo5"] += 1
+            elif total_sets_played == 5:
+                res["set5_bo5"] += 1
+            if sets1 == 3 and sets2 == 0:
+                res["p1_3_0"] += 1
+            if sets2 == 3 and sets1 == 0:
+                res["p2_3_0"] += 1
+
         p1_is_fav = e1 >= e2
         fav_wins = p1_wins if p1_is_fav else (not p1_wins)
         dog_wins = not fav_wins
@@ -2740,6 +2757,12 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
 
         if dog_sets >= 1:
             res["dog_wins_set"] += 1
+
+        if sets_to_win == 3:
+            if fav_wins and dog_sets == 0:
+                res["fav_3_0_bo5"] += 1
+            if dog_sets >= 1:
+                res["dog_wins_set_bo5"] += 1
 
         if games > 22.5 or tb_seen or ((sets1, sets2) in [(2, 1), (1, 2)]):
             res["long_match"] += 1
@@ -2900,6 +2923,13 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "p2_wins_set_any": res["p2_wins_set_any"] / n,
         "p1_2_0": res["p1_2_0"] / n,
         "p2_2_0": res["p2_2_0"] / n,
+        # v23.38 Grand Slam BO5 Engine outputs.
+        "set4_bo5": res["set4_bo5"] / n,
+        "set5_bo5": res["set5_bo5"] / n,
+        "p1_3_0": res["p1_3_0"] / n,
+        "p2_3_0": res["p2_3_0"] / n,
+        "fav_3_0_bo5": res["fav_3_0_bo5"] / n,
+        "dog_wins_set_bo5": res["dog_wins_set_bo5"] / n,
         "long_match": longm,
         "games": res["games"],
         "games_p1": res["games_p1"],
@@ -6252,6 +6282,108 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
     }
 
 
+
+# =========================================================
+# v23.38 GRAND SLAM ATP 5 SET ENGINE
+# =========================================================
+# Rama nueva para el selector Grand Slam ya existente. No toca fórmulas ni guards
+# del Over BO3 blindado; calcula mercados BO5 desde la simulación best_of=5.
+
+def calcular_grand_slam_5set_markets(sim, p1_name="Jugador 1", p2_name="Jugador 2"):
+    games = sim.get("games", []) or []
+    n = max(1, len(games))
+
+    def prob_over(line):
+        return float(sum(float(x) > line for x in games) / n) if games else 0.0
+
+    p1c = float(sim.get("p1_cal", 0.50))
+    p2c = float(sim.get("p2_cal", 0.50))
+    fav_is_p1 = p1c >= p2c
+    fav_name = p1_name if fav_is_p1 else p2_name
+    dog_name = p2_name if fav_is_p1 else p1_name
+
+    fav_3_0 = float(sim.get("p1_3_0", 0.0) if fav_is_p1 else sim.get("p2_3_0", 0.0))
+    dog_set = float(sim.get("p2_wins_set_any", 0.0) if fav_is_p1 else sim.get("p1_wins_set_any", 0.0))
+    set4 = float(sim.get("set4_bo5", 0.0))
+    set5 = float(sim.get("set5_bo5", 0.0))
+    four_plus = float(np.clip(set4 + set5, 0.0, 1.0))
+    fav_no_3_0 = float(np.clip(1.0 - fav_3_0, 0.0, 1.0))
+
+    markets = {
+        "Over 30.5 GS": prob_over(30.5),
+        "Over 32.5 GS": prob_over(32.5),
+        "Over 35.5 GS": prob_over(35.5),
+        "Over 37.5 GS": prob_over(37.5),
+        "Over 39.5 GS": prob_over(39.5),
+        f"{dog_name} gana al menos 1 set": dog_set,
+        f"{fav_name} NO gana 3-0": fav_no_3_0,
+        "Partido a 4+ sets": four_plus,
+        "Partido a 5 sets": set5,
+        f"{fav_name} gana 3-0": fav_3_0,
+    }
+
+    # Selector prudente: prioriza mercados BO5 útiles, no líneas demasiado obvias.
+    candidates = []
+    rules = [
+        ("Over 39.5 GS", 0.57, 5),
+        ("Over 37.5 GS", 0.60, 4),
+        ("Over 35.5 GS", 0.64, 3),
+        ("Over 32.5 GS", 0.70, 2),
+        (f"{dog_name} gana al menos 1 set", 0.62, 4),
+        (f"{fav_name} NO gana 3-0", 0.63, 4),
+        ("Partido a 4+ sets", 0.58, 3),
+        ("Partido a 5 sets", 0.30, 2),
+        (f"{fav_name} gana 3-0", 0.62, 2),
+    ]
+    for label, threshold, weight in rules:
+        pr = float(markets.get(label, 0.0))
+        if pr >= threshold:
+            candidates.append((pr + weight * 0.012, pr, label, threshold))
+
+    if candidates:
+        candidates.sort(reverse=True)
+        _, best_prob, best_label, best_threshold = candidates[0]
+        if best_prob >= max(0.70, best_threshold + 0.06):
+            action = "✅ JUGAR"
+            confidence = "🔥 Alta GS"
+        elif best_prob >= best_threshold:
+            action = "👀 OBSERVAR"
+            confidence = "✅ Apta GS"
+        else:
+            action = "⚠️ EVITAR"
+            confidence = "⚠️ Baja GS"
+    else:
+        best_label = "Sin mercado GS claro"
+        best_prob = 0.0
+        action = "⚠️ EVITAR"
+        confidence = "⚠️ Sin señal GS"
+
+    return {
+        "markets": markets,
+        "best_label": best_label,
+        "best_prob": float(best_prob),
+        "action": action,
+        "confidence": confidence,
+        "fav_name": fav_name,
+        "dog_name": dog_name,
+        "avg_games": float(np.mean(games)) if games else 0.0,
+        "median_games": float(np.median(games)) if games else 0.0,
+        "set4": set4,
+        "set5": set5,
+        "four_plus": four_plus,
+        "fav_3_0": fav_3_0,
+        "fav_no_3_0": fav_no_3_0,
+        "dog_set": dog_set,
+        "note": "Motor Grand Slam BO5 activo: usa líneas 30.5-39.5, 4+ sets, 5 sets y 3-0/no 3-0. Over BO3 queda intacto."
+    }
+
+
+def _fmt_pct_gs(markets, label):
+    try:
+        return f"{float(markets.get(label, 0.0)):.1%}"
+    except Exception:
+        return ""
+
 def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, progress_callback=None):
     rows = []
     total = len(parsed_matches)
@@ -6317,6 +6449,17 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             sim, over17, over18, over19, over20, over22, under22,
             p1_key, p2_key, circuito_calc, match_surface
         )
+
+        gs5 = calcular_grand_slam_5set_markets(sim, p1_key, p2_key) if (best_of == 5 and circuito_calc == "ATP") else None
+        if gs5:
+            # En BO5 no dejamos que el selector oficial muestre Over 18.5/19.5 como mercado principal.
+            max_acierto = {
+                "mercado": gs5.get("best_label", ""),
+                "prob": gs5.get("best_prob", 0.0),
+                "confianza": gs5.get("confidence", ""),
+                "motivo": gs5.get("note", ""),
+            }
+            best_label, best_prob = gs5.get("best_label", best_label), gs5.get("best_prob", best_prob)
 
         wta_watchlist = wta_over_watchlist_reason(circuito_calc, match_surface, fav_prob, over18, over17)
 
@@ -6395,6 +6538,20 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Over 18.5": f"{over18:.1%}",
             "Over 19.5": f"{over19:.1%}",
             "Under 22.5": f"{under22:.1%}",
+            "🏆 GS 5 sets activo": "Sí" if gs5 else "",
+            "🏆 Mercado GS 5 sets": gs5.get("best_label", "") if gs5 else "",
+            "🏆 Prob GS 5 sets": f"{gs5.get('best_prob', 0.0):.1%}" if gs5 else "",
+            "🏆 Acción GS": gs5.get("action", "") if gs5 else "",
+            "GS Over 30.5": _fmt_pct_gs(gs5.get("markets", {}), "Over 30.5 GS") if gs5 else "",
+            "GS Over 32.5": _fmt_pct_gs(gs5.get("markets", {}), "Over 32.5 GS") if gs5 else "",
+            "GS Over 35.5": _fmt_pct_gs(gs5.get("markets", {}), "Over 35.5 GS") if gs5 else "",
+            "GS Over 37.5": _fmt_pct_gs(gs5.get("markets", {}), "Over 37.5 GS") if gs5 else "",
+            "GS Over 39.5": _fmt_pct_gs(gs5.get("markets", {}), "Over 39.5 GS") if gs5 else "",
+            "GS Partido 4+ sets": f"{gs5.get('four_plus', 0.0):.1%}" if gs5 else "",
+            "GS Partido 5 sets": f"{gs5.get('set5', 0.0):.1%}" if gs5 else "",
+            "GS Favorito 3-0": f"{gs5.get('fav_3_0', 0.0):.1%}" if gs5 else "",
+            "GS Favorito NO 3-0": f"{gs5.get('fav_no_3_0', 0.0):.1%}" if gs5 else "",
+            "GS Underdog gana set": f"{gs5.get('dog_set', 0.0):.1%}" if gs5 else "",
             "Jugador gana set": dog_name,
             "Prob gana set": f"{sim.get('dog_wins_set', 0):.1%}",
             f"{p1_key} gana al menos 1 set": f"{sim.get('p1_wins_set_any', 0):.1%}",
@@ -6456,8 +6613,10 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
                 else "N/D"
             ),
             "Resultado válido": (
-                "Sí" if m.get("p1_sets_real") in [0,1,2] and m.get("p2_sets_real") in [0,1,2] and m.get("p1_sets_real") != m.get("p2_sets_real")
-                else "Revisar"
+                "Sí" if (
+                    (best_of == 5 and m.get("p1_sets_real") in [0,1,2,3] and m.get("p2_sets_real") in [0,1,2,3] and m.get("p1_sets_real") != m.get("p2_sets_real") and max(m.get("p1_sets_real"), m.get("p2_sets_real")) == 3) or
+                    (best_of != 5 and m.get("p1_sets_real") in [0,1,2] and m.get("p2_sets_real") in [0,1,2] and m.get("p1_sets_real") != m.get("p2_sets_real"))
+                ) else "Revisar"
             ),
             "Riesgos": rationale,
             "Match J1": f"{p1_score:.0%}",
@@ -11466,6 +11625,27 @@ elif modo == "Predictor":
         with m4: st.metric("Over 22.5", f"{over22:.1%}", nivel(over22))
         with m5: st.metric("Under 22.5", f"{under22:.1%}", nivel(under22))
 
+        if best_of == 5 and circuito == "ATP":
+            gs5 = calcular_grand_slam_5set_markets(sim, d1["Player"], d2["Player"])
+            st.warning("🏆 Grand Slam 5 sets activo: ignora Over 18.5/19.5 como mercado oficial. Usa las líneas GS de abajo.")
+            st.subheader("🏆 Mercados Grand Slam 5 sets")
+            gm = gs5.get("markets", {})
+            cgs1, cgs2, cgs3, cgs4, cgs5 = st.columns(5)
+            with cgs1: st.metric("Over 30.5 GS", _fmt_pct_gs(gm, "Over 30.5 GS"), nivel(gm.get("Over 30.5 GS", 0)))
+            with cgs2: st.metric("Over 32.5 GS", _fmt_pct_gs(gm, "Over 32.5 GS"), nivel(gm.get("Over 32.5 GS", 0)))
+            with cgs3: st.metric("Over 35.5 GS", _fmt_pct_gs(gm, "Over 35.5 GS"), nivel(gm.get("Over 35.5 GS", 0)))
+            with cgs4: st.metric("Over 37.5 GS", _fmt_pct_gs(gm, "Over 37.5 GS"), nivel(gm.get("Over 37.5 GS", 0)))
+            with cgs5: st.metric("Over 39.5 GS", _fmt_pct_gs(gm, "Over 39.5 GS"), nivel(gm.get("Over 39.5 GS", 0)))
+            sg1, sg2, sg3, sg4 = st.columns(4)
+            with sg1: st.metric("Partido 4+ sets", f"{gs5.get('four_plus',0):.1%}", nivel(gs5.get("four_plus",0)))
+            with sg2: st.metric("Partido 5 sets", f"{gs5.get('set5',0):.1%}", nivel(gs5.get("set5",0)))
+            with sg3: st.metric("Favorito NO 3-0", f"{gs5.get('fav_no_3_0',0):.1%}", nivel(gs5.get("fav_no_3_0",0)))
+            with sg4: st.metric("Underdog gana set", f"{gs5.get('dog_set',0):.1%}", nivel(gs5.get("dog_set",0)))
+            if gs5.get("best_label") and gs5.get("best_label") != "Sin mercado GS claro":
+                st.success(f"{gs5.get('action')} · {gs5.get('best_label')} → {gs5.get('best_prob',0):.1%}")
+            else:
+                st.info("Sin mercado Grand Slam 5 sets claro con los umbrales actuales.")
+
         model_dog_name = sim.get("model_dog_name", "Underdog")
         e1,e2,e3 = st.columns(3)
         with e1: st.metric("3 sets", f"{sim['set3']:.1%}", nivel(sim["set3"]))
@@ -12011,7 +12191,7 @@ Sebastián Baez - Roberto Carballés Baena"""
 
         best_of = 5 if "5" in formato else 3
         if best_of == 5:
-            st.warning("Modo Grand Slam 5 sets detectado: el motor puede simular BO5, pero los Over 18.5/19.5 del selector están calibrados para partidos BO3. No uses Over 18.5/19.5 como oficial en BO5 hasta que añadamos líneas BO5 específicas.")
+            st.success("🏆 Modo Grand Slam 5 sets activo: se usarán mercados GS 30.5/32.5/35.5/37.5/39.5, 4+ sets, 5 sets y 3-0/no 3-0. El Over BO3 sigue blindado.")
 
         status = st.status(f"📋 Analizando {len(parsed)} partidos...", expanded=True)
         with status:
