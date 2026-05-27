@@ -6542,6 +6542,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "🏆 Mercado GS 5 sets": gs5.get("best_label", "") if gs5 else "",
             "🏆 Prob GS 5 sets": f"{gs5.get('best_prob', 0.0):.1%}" if gs5 else "",
             "🏆 Acción GS": gs5.get("action", "") if gs5 else "",
+            "🏆 Confianza GS": gs5.get("confidence", "") if gs5 else "",
             "GS Over 30.5": _fmt_pct_gs(gs5.get("markets", {}), "Over 30.5 GS") if gs5 else "",
             "GS Over 32.5": _fmt_pct_gs(gs5.get("markets", {}), "Over 32.5 GS") if gs5 else "",
             "GS Over 35.5": _fmt_pct_gs(gs5.get("markets", {}), "Over 35.5 GS") if gs5 else "",
@@ -8459,6 +8460,119 @@ def _pct_text_to_float_v23371(x, default=0.0):
         return default
 
 
+
+# =========================================================
+# v23.38.1 GRAND SLAM BO5 FINAL SELECTOR LOCK
+# =========================================================
+# Capa final visual/export: si Grand Slam 5 sets está activo, el mercado oficial
+# de máxima probabilidad NO puede volver a Over BO3 (18.5/19.5/20.5/22.5).
+# No cambia el motor Over blindado; solo corrige la elección final mostrada.
+
+GS_BO3_BLOCKED_MARKETS = ["OVER 18.5", "OVER 19.5", "OVER 20.5", "OVER 22.5", "OVER 17.5"]
+
+
+def _gs_bo5_activo_row(row):
+    return str(row.get("🏆 GS 5 sets activo", "")).strip().lower() in {"sí", "si", "yes", "true", "1"}
+
+
+def _gs_bo5_prob_float(row):
+    try:
+        return _pct_text_to_float_v23371(row.get("🏆 Prob GS 5 sets", 0), 0.0)
+    except Exception:
+        return 0.0
+
+
+def _gs_bo5_datos_pobres(row):
+    txt = " ".join(str(row.get(c, "")) for c in [
+        "Estado", "Aviso datos", "Signal Trust", "Lectura J1", "Lectura J2", "🎯 Motivo acierto"
+    ]).lower()
+    try:
+        ms_raw = str(row.get('Mín. partidos superficie', '')).replace(',', '.').strip()
+        ms = float(ms_raw) if ms_raw not in {'', 'nan', 'None'} else 99.0
+    except Exception:
+        ms = 99.0
+    try:
+        min_conf = _pct_text_to_float_v23371(row.get('Confianza mínima', ''), 1.0)
+    except Exception:
+        min_conf = 1.0
+    return ('fallback' in txt or 'estimado' in txt or 'datos parciales' in txt or ms <= 3 or min_conf < 0.45)
+
+
+def aplicar_grand_slam_bo5_selector_final(df):
+    """Aplica el candado final BO5 sobre tabla ya calculada.
+
+    Reglas:
+    - Con GS activo, 🎯 Mercado más probable debe salir de 🏆 Mercado GS 5 sets.
+    - Over 18.5/19.5/20.5/22.5/17.5 quedan bloqueados como mercado final.
+    - Si no hay señal GS clara, acción final = 👀 OBSERVAR, nunca ✅ JUGAR.
+    - Si hay fallback/datos pobres, acción final = 👀 OBSERVAR aunque GS diga JUGAR.
+    """
+    if df is None or getattr(df, "empty", True) or "🏆 GS 5 sets activo" not in df.columns:
+        return df
+
+    out = df.copy()
+    needed = [
+        "🎯 Mercado más probable", "🎯 Prob máxima", "🎯 Confianza acierto", "🎯 Motivo acierto",
+        "🎯 Acción final", "🎯 Decisión acierto", "🎯 Aviso acierto", "Mejor señal", "Prob señal"
+    ]
+    for c in needed:
+        if c not in out.columns:
+            out[c] = ""
+
+    for idx, row in out.iterrows():
+        if not _gs_bo5_activo_row(row):
+            continue
+
+        current_market = str(row.get("🎯 Mercado más probable", "")).upper()
+        gs_market = str(row.get("🏆 Mercado GS 5 sets", "")).strip()
+        gs_prob = _gs_bo5_prob_float(row)
+        gs_action = str(row.get("🏆 Acción GS", "")).strip()
+        gs_conf = str(row.get("🏆 Confianza GS", row.get("🎯 Confianza acierto", ""))).strip()
+
+        blocked_current = any(x in current_market for x in GS_BO3_BLOCKED_MARKETS)
+        no_gs_signal = (not gs_market or "SIN MERCADO GS" in gs_market.upper() or gs_prob <= 0.0)
+
+        if no_gs_signal:
+            out.at[idx, "🎯 Mercado más probable"] = "Sin mercado GS claro"
+            out.at[idx, "🎯 Prob máxima"] = "0.0%"
+            out.at[idx, "🎯 Confianza acierto"] = "⚠️ Sin señal GS"
+            out.at[idx, "🎯 Motivo acierto"] = "Grand Slam BO5 activo: sin mercado 5 sets suficientemente claro. Over BO3 bloqueado como mercado final."
+            out.at[idx, "Mejor señal"] = "Sin mercado GS claro"
+            out.at[idx, "Prob señal"] = "0.0%"
+            out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
+            out.at[idx, "🎯 Decisión acierto"] = "👀 Observar / sin señal GS"
+            out.at[idx, "🎯 Aviso acierto"] = "Grand Slam 5 sets: no hay señal BO5 clara; no convertir Over 18.5/19.5 en pick."
+            continue
+
+        # En GS, siempre mandan las columnas GS aunque alguna capa posterior haya recuperado Over 18.5.
+        if blocked_current or True:
+            out.at[idx, "🎯 Mercado más probable"] = gs_market
+            out.at[idx, "🎯 Prob máxima"] = f"{gs_prob:.1%}"
+            out.at[idx, "🎯 Confianza acierto"] = gs_conf if gs_conf else str(row.get("🏆 Acción GS", ""))
+            out.at[idx, "🎯 Motivo acierto"] = "Grand Slam BO5 activo: selector final bloquea Over BO3 y usa solo mercados 30.5-39.5, 4+ sets, 5 sets o 3-0/no 3-0."
+            out.at[idx, "Mejor señal"] = gs_market
+            out.at[idx, "Prob señal"] = f"{gs_prob:.1%}"
+
+        datos_pobres = _gs_bo5_datos_pobres(row)
+        if datos_pobres:
+            out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
+            out.at[idx, "🎯 Decisión acierto"] = "👀 Observar / GS datos parciales"
+            out.at[idx, "🎯 Aviso acierto"] = "Grand Slam BO5: señal útil, pero con fallback/muestra baja; no tratar como pick fuerte."
+        elif "JUGAR" in gs_action.upper() and gs_prob >= 0.70:
+            out.at[idx, "🎯 Acción final"] = "✅ JUGAR"
+            out.at[idx, "🎯 Decisión acierto"] = "🔥 Alto acierto GS"
+            out.at[idx, "🎯 Aviso acierto"] = "OK: mercado Grand Slam BO5 válido; Over BO3 bloqueado."
+        elif "OBSERVAR" in gs_action.upper() or gs_prob >= 0.58:
+            out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
+            out.at[idx, "🎯 Decisión acierto"] = "👀 Observar / GS apto"
+            out.at[idx, "🎯 Aviso acierto"] = "Mercado GS interesante, pero no llega a zona JUGAR."
+        else:
+            out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
+            out.at[idx, "🎯 Decisión acierto"] = "👀 Observar / sin señal GS"
+            out.at[idx, "🎯 Aviso acierto"] = "Grand Slam BO5: señal insuficiente; no jugar."
+
+    return out
+
 def decision_acierto_v23371(row):
     """
     Etiqueta final para el objetivo actual del proyecto:
@@ -8759,6 +8873,9 @@ def prepare_batch_display_table(ok_df):
         # v23.37.10: Radar Datos extra. Solo dice qué partidos merece revisar manualmente.
         radar_cols = df.apply(radar_datos_extra_v233710, axis=1)
         df = pd.concat([df, radar_cols], axis=1)
+
+        # v23.38.1: último candado del selector Grand Slam BO5.
+        df = aplicar_grand_slam_bo5_selector_final(df)
 
     preferred = [
         "Versión app",
@@ -9243,6 +9360,8 @@ def aplicar_reanalisis_datos_extra_manual(df, ajustes):
                 ajuste.append(f"{label}: {val}")
         out.at[idx, "📥 Ajuste Datos extra"] = " | ".join(map(str, ajuste))
 
+    # Reaplicar candado Grand Slam BO5 después de Datos extra/TA por si intentó recuperar Over 18.5.
+    out = aplicar_grand_slam_bo5_selector_final(out)
     return out
 
 
