@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.38.6-gs-bo5-refinement-lock"
+APP_VERSION = "v23.38.7-gs-sync-validation"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -8755,6 +8755,106 @@ def _gs_refinar_mercado_por_ch(row, gs_market, gs_prob):
 
     return market, float(gs_prob or 0.0), action_override, " | ".join(notes)
 
+
+
+def _gs_parse_resultado_sets_row(row):
+    """Devuelve (p1_sets, p2_sets) desde la columna Resultado sets, si existe."""
+    try:
+        raw = str(row.get("Resultado sets", "")).strip()
+        m = re.search(r"(\d+)\s*-\s*(\d+)", raw)
+        if not m:
+            return None, None
+        return int(m.group(1)), int(m.group(2))
+    except Exception:
+        return None, None
+
+
+def _gs_player_side_from_label(row, label):
+    """Detecta si el jugador mencionado al inicio del mercado es J1 o J2."""
+    p1, p2 = _gs_partes_partido(row)
+    lab = str(label or "").strip()
+    if not lab:
+        return None
+    lab_clean = limpiar(lab)
+    if p1 and limpiar(p1) and limpiar(p1) in lab_clean:
+        return 1
+    if p2 and limpiar(p2) and limpiar(p2) in lab_clean:
+        return 2
+    # Fallback: comparar por tokens/apellidos para etiquetas abreviadas.
+    try:
+        if p1 and similitud_nombre(lab, p1) >= 0.72:
+            return 1
+        if p2 and similitud_nombre(lab, p2) >= 0.72:
+            return 2
+    except Exception:
+        pass
+    return None
+
+
+def _gs_real_col_to_result(row, col):
+    v = str(row.get(col, "")).strip()
+    if v in {"Sí", "Si", "SI", "SÍ", "sí", "si"}:
+        return "Sí"
+    if v.lower() in {"no"}:
+        return "No"
+    if v.upper() in {"N/D", "ND"}:
+        return "N/D"
+    return ""
+
+
+def _gs_acierto_final_desde_row(label, row):
+    """v23.38.7: valida EXACTAMENTE el mercado final visible.
+
+    Antes se validaba el mercado GS original, pero el refinamiento visual podía
+    cambiarlo a Over 30.5/32.5 o bajar/cambiar NO 3-0. Esta función sincroniza:
+    PICK LIMPIO = DETALLE TÉCNICO = Acierta mercado GS.
+    """
+    lab = str(label or "").strip()
+    upper = lab.upper()
+    if not lab or "SIN MERCADO GS" in upper:
+        return ""
+
+    # Totales GS.
+    if "OVER 30.5" in upper:
+        return _gs_real_col_to_result(row, "GS Over 30.5 real")
+    if "OVER 32.5" in upper:
+        return _gs_real_col_to_result(row, "GS Over 32.5 real")
+    if "OVER 35.5" in upper:
+        return _gs_real_col_to_result(row, "GS Over 35.5 real")
+    if "OVER 37.5" in upper:
+        return _gs_real_col_to_result(row, "GS Over 37.5 real")
+    if "OVER 39.5" in upper:
+        return _gs_real_col_to_result(row, "GS Over 39.5 real")
+
+    if "4+" in upper or "4 +" in upper:
+        return _gs_real_col_to_result(row, "GS Partido 4+ sets real")
+    if "5 SET" in upper:
+        return _gs_real_col_to_result(row, "GS Partido 5 sets real")
+
+    p1_sets, p2_sets = _gs_parse_resultado_sets_row(row)
+    side = _gs_player_side_from_label(row, lab)
+
+    # Mercados de jugador: validamos por el jugador visible en el texto, no por el mercado GS original.
+    if "NO GANA 3-0" in upper:
+        if p1_sets is not None and p2_sets is not None and side in {1, 2}:
+            s, other = (p1_sets, p2_sets) if side == 1 else (p2_sets, p1_sets)
+            return "No" if (s == 3 and other == 0) else "Sí"
+        return _gs_real_col_to_result(row, "GS Favorito NO 3-0 real")
+
+    if "GANA 3-0" in upper:
+        if p1_sets is not None and p2_sets is not None and side in {1, 2}:
+            s, other = (p1_sets, p2_sets) if side == 1 else (p2_sets, p1_sets)
+            return "Sí" if (s == 3 and other == 0) else "No"
+        return _gs_real_col_to_result(row, "GS Favorito 3-0 real")
+
+    if "GANA AL MENOS 1 SET" in upper:
+        if p1_sets is not None and p2_sets is not None and side in {1, 2}:
+            s = p1_sets if side == 1 else p2_sets
+            return "Sí" if s >= 1 else "No"
+        return _gs_real_col_to_result(row, "GS Underdog gana set real")
+
+    return ""
+
 def aplicar_grand_slam_bo5_selector_final(df):
     """Aplica el candado final BO5 sobre tabla ya calculada.
 
@@ -8797,6 +8897,9 @@ def aplicar_grand_slam_bo5_selector_final(df):
             out.at[idx, "🎯 Motivo acierto"] = "Grand Slam BO5 activo: sin mercado 5 sets suficientemente claro. Over BO3 bloqueado como mercado final."
             out.at[idx, "Mejor señal"] = "Sin mercado GS claro"
             out.at[idx, "Prob señal"] = "0.0%"
+            out.at[idx, "🏆 Mercado GS 5 sets"] = "Sin mercado GS claro"
+            out.at[idx, "🏆 Prob GS 5 sets"] = "0.0%"
+            out.at[idx, "Acierta mercado GS"] = ""
             out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
             out.at[idx, "🎯 Decisión acierto"] = "👀 Observar / sin señal GS"
             out.at[idx, "🎯 Aviso acierto"] = "Grand Slam 5 sets: no hay señal BO5 clara; no convertir Over 18.5/19.5 en pick."
@@ -8811,6 +8914,10 @@ def aplicar_grand_slam_bo5_selector_final(df):
             out.at[idx, "🎯 Motivo acierto"] = base_motivo_gs + ((" | " + gs_refine_note) if gs_refine_note else "")
             out.at[idx, "Mejor señal"] = gs_market
             out.at[idx, "Prob señal"] = f"{gs_prob:.1%}"
+            # v23.38.7: sincronizar detalle técnico y validación con el mercado visible.
+            out.at[idx, "🏆 Mercado GS 5 sets"] = gs_market
+            out.at[idx, "🏆 Prob GS 5 sets"] = f"{gs_prob:.1%}"
+            out.at[idx, "Acierta mercado GS"] = _gs_acierto_final_desde_row(gs_market, out.loc[idx])
 
         datos_pobres = _gs_bo5_datos_pobres(row)
         if gs_action_override:
