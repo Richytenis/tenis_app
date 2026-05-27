@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.38.4-grand-slam-bo5-final-lock"
+APP_VERSION = "v23.38.5-sofascore-bo5-score-parser"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -5468,12 +5468,18 @@ def is_match_start_sofa_result(lines, idx):
 
 def decodificar_games_sofascore(numbers):
     """
-    v23.25.5: decodifica números copiados desde SofaScore en formato de tabla.
+    v23.38.5: decodifica marcadores copiados desde SofaScore.
 
-    SofaScore suele copiar primero la fila de puntos/juegos del jugador 1,
-    después la fila del jugador 2, y al final los sets duplicados:
-      6 6 2 4 2 2 0 0  -> 6-2 6-4, sets 2-0
-      7 9 5 6 6 7 7 4 2 2 1 1 -> 7-6(9-7) 5-7 6-4, sets 2-1
+    Caso importante para Grand Slam / BO5:
+    SofaScore, al copiar resultados, suele dejar los números así:
+      jugador 1: juegos de cada set + posibles puntos de tie-break
+      jugador 2: juegos de cada set + posibles puntos de tie-break
+      final: sets_j1, sets_j2
+
+    Ejemplos reales:
+      6 6 6 1 3 4 3 0 -> 6-1 6-3 6-4, sets 3-0
+      7 11 3 6 6 3 6 9 6 7 8 6 1 3
+        -> 7-6(11-9) 3-6 6-7(6-8) 3-6, sets 1-3
 
     Devuelve: p1_sets, p2_sets, actual_total_games, score_games, games_ok
     """
@@ -5485,67 +5491,113 @@ def decodificar_games_sofascore(numbers):
     if not numbers:
         return p1_sets, p2_sets, actual_total_games, score_games, games_ok
 
-    # Últimos 4 números = sets duplicados del marcador final: p1,p1,p2,p2.
-    if len(numbers) >= 4:
-        p1_sets = numbers[-4]
-        p2_sets = numbers[-2]
-        body = numbers[:-4]
-    elif len(numbers) >= 2:
-        p1_sets = numbers[0]
-        p2_sets = numbers[1]
-        body = []
-    else:
-        body = []
+    nums = []
+    for x in numbers:
+        try:
+            nums.append(int(x))
+        except Exception:
+            pass
 
-    # Sin juegos, solo sets.
-    if not body or len(body) < 4:
+    if len(nums) < 2:
         return p1_sets, p2_sets, actual_total_games, score_games, games_ok
 
-    # El número de sets reales orienta cuántas columnas de juegos esperamos.
-    try:
-        sets_played = int((p1_sets or 0) + (p2_sets or 0))
-    except Exception:
-        sets_played = 0
+    def _decode_rows(row1, row2, expected_sets=0):
+        """Convierte dos filas SofaScore en pares de sets, saltando columnas de tie-break."""
+        set_pairs = []
+        annotated = []
+        last_set_index = None
 
-    # En SofaScore, body viene por filas: todos los valores visibles de J1 y luego todos los de J2.
-    # Puede incluir columnas extra de tie-break. Por eso el split correcto es por la mitad.
-    if len(body) % 2 != 0:
-        return p1_sets, p2_sets, actual_total_games, score_games, games_ok
-
-    mid = len(body) // 2
-    row1 = body[:mid]
-    row2 = body[mid:]
-
-    raw_pairs = list(zip(row1, row2))
-    set_pairs = []
-    annotated = []
-    last_set_index = None
-
-    for a, b in raw_pairs:
-        # Columna de puntos de tie-break: normalmente ambos > 6 y va justo después de un 7-6 / 6-7.
-        if a > 6 and b > 6 and last_set_index is not None:
-            pa, pb = set_pairs[last_set_index]
-            if sorted([pa, pb]) == [6, 7]:
-                annotated[last_set_index] = f"{pa}-{pb}({a}-{b})"
+        for a, b in zip(row1, row2):
+            try:
+                a, b = int(a), int(b)
+            except Exception:
                 continue
 
-        # Columna normal de juegos de set.
-        set_pairs.append((a, b))
-        annotated.append(f"{a}-{b}")
-        last_set_index = len(set_pairs) - 1
+            # Columna de tie-break copiada por SofaScore: suele aparecer justo después
+            # de un set 7-6 / 6-7 y ambos valores pueden ser 7, 8, 9, 10, 11...
+            if last_set_index is not None and (a >= 6 and b >= 6):
+                pa, pb = set_pairs[last_set_index]
+                if sorted([pa, pb]) == [6, 7]:
+                    annotated[last_set_index] = f"{pa}-{pb}({a}-{b})"
+                    continue
 
-    # Seguridad: si detectamos más columnas que sets jugados, recortamos a los sets reales.
-    if sets_played > 0 and len(set_pairs) > sets_played:
-        set_pairs = set_pairs[:sets_played]
-        annotated = annotated[:sets_played]
+            # Columna normal de juegos de set.
+            # Aceptamos sets normales: 6-x, 7-5, 7-6, 0-6, etc.
+            looks_like_set = (
+                (max(a, b) >= 6 and abs(a - b) >= 2) or
+                (sorted([a, b]) in ([5, 7], [6, 7])) or
+                (a == 0 and b >= 6) or (b == 0 and a >= 6)
+            )
 
-    if set_pairs:
-        actual_total_games = int(sum(a + b for a, b in set_pairs))
-        score_games = " ".join(annotated)
+            if not looks_like_set:
+                # Si parece columna rara de SofaScore y ya tenemos suficientes sets, se ignora.
+                if expected_sets and len(set_pairs) >= expected_sets:
+                    continue
+                # Si no, la dejamos pasar para no perder información en copiados raros.
+
+            set_pairs.append((a, b))
+            annotated.append(f"{a}-{b}")
+            last_set_index = len(set_pairs) - 1
+
+            if expected_sets and len(set_pairs) >= expected_sets:
+                # No cortamos aquí: puede venir justo después la columna de tie-break del último set.
+                pass
+
+        if expected_sets and len(set_pairs) > expected_sets:
+            set_pairs = set_pairs[:expected_sets]
+            annotated = annotated[:expected_sets]
+
+        return set_pairs, annotated
+
+    # Formato actual observado en SofaScore resultados manual:
+    # [fila_j1..., fila_j2..., sets_j1, sets_j2]
+    best_pairs = []
+    best_annotated = []
+    if len(nums) >= 4:
+        cand_p1_sets, cand_p2_sets = nums[-2], nums[-1]
+        cand_sets_played = cand_p1_sets + cand_p2_sets
+        body = nums[:-2]
+
+        if 0 <= cand_p1_sets <= 5 and 0 <= cand_p2_sets <= 5 and 1 <= cand_sets_played <= 5 and len(body) >= 2 and len(body) % 2 == 0:
+            mid = len(body) // 2
+            row1 = body[:mid]
+            row2 = body[mid:]
+            pairs, annotated = _decode_rows(row1, row2, expected_sets=cand_sets_played)
+
+            if len(pairs) >= cand_sets_played:
+                p1_sets, p2_sets = cand_p1_sets, cand_p2_sets
+                best_pairs, best_annotated = pairs[:cand_sets_played], annotated[:cand_sets_played]
+
+    # Fallback antiguo: algunos copiados dejaban últimos 4 números duplicados.
+    if not best_pairs and len(nums) >= 6:
+        cand_p1_sets, cand_p2_sets = nums[-4], nums[-2]
+        cand_sets_played = cand_p1_sets + cand_p2_sets
+        body = nums[:-4]
+        if 0 <= cand_p1_sets <= 5 and 0 <= cand_p2_sets <= 5 and 1 <= cand_sets_played <= 5 and len(body) >= 2 and len(body) % 2 == 0:
+            mid = len(body) // 2
+            pairs, annotated = _decode_rows(body[:mid], body[mid:], expected_sets=cand_sets_played)
+            if len(pairs) >= cand_sets_played:
+                p1_sets, p2_sets = cand_p1_sets, cand_p2_sets
+                best_pairs, best_annotated = pairs[:cand_sets_played], annotated[:cand_sets_played]
+
+    # Fallback mínimo: números intercalados por parejas + sets al final.
+    if not best_pairs and len(nums) >= 4:
+        cand_p1_sets, cand_p2_sets = nums[-2], nums[-1]
+        cand_sets_played = cand_p1_sets + cand_p2_sets
+        body = nums[:-2]
+        if 0 <= cand_p1_sets <= 5 and 0 <= cand_p2_sets <= 5 and 1 <= cand_sets_played <= 5 and len(body) >= cand_sets_played * 2:
+            raw_pairs = list(zip(body[::2], body[1::2]))
+            pairs, annotated = _decode_rows([a for a, _ in raw_pairs], [b for _, b in raw_pairs], expected_sets=cand_sets_played)
+            if len(pairs) >= cand_sets_played:
+                p1_sets, p2_sets = cand_p1_sets, cand_p2_sets
+                best_pairs, best_annotated = pairs[:cand_sets_played], annotated[:cand_sets_played]
+
+    if best_pairs:
+        actual_total_games = int(sum(a + b for a, b in best_pairs))
+        score_games = " ".join(best_annotated)
         games_ok = True
 
     return p1_sets, p2_sets, actual_total_games, score_games, games_ok
-
 
 def _parse_finished_result_from_position(lines, i, current_tournament="", current_surface="Clay", current_circuit="DESCONOCIDO", current_ignore_doubles=False):
     """
