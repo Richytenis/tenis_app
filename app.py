@@ -6496,6 +6496,12 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             fair_odd = 1 / max(0.01, quoted_prob_model)
             edge = quoted_odd * quoted_prob_model - 1
 
+        # v23.38.2: métricas reales Grand Slam BO5 para validación/export.
+        fav_side_model = 1 if fav_name == p1_key else 2 if fav_name == p2_key else None
+        gs_reales = calcular_gs_bo5_reales(m, fav_side_model) if gs5 else {}
+        gs_market_label = gs5.get("best_label", "") if gs5 else ""
+        gs_acierto = acierta_mercado_gs_bo5(gs_market_label, gs_reales) if gs5 else ""
+
         rows.append({
             "Versión app": APP_VERSION,
             "Fecha": m.get("date", ""),
@@ -6577,6 +6583,19 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             ),
             "Marcador games": m.get("score_games", ""),
             "Total games real": m.get("actual_total_games", ""),
+            "GS Juegos reales": gs_reales.get("gs_total_games_real", "") if gs5 else "",
+            "GS Sets reales totales": gs_reales.get("gs_sets_total_real", "") if gs5 else "",
+            "GS Over 30.5 real": _gs_bool_to_si_no(gs_reales.get("gs_over_30_5_real_bool"), gs_reales.get("available_games", False)) if gs5 else "",
+            "GS Over 32.5 real": _gs_bool_to_si_no(gs_reales.get("gs_over_32_5_real_bool"), gs_reales.get("available_games", False)) if gs5 else "",
+            "GS Over 35.5 real": _gs_bool_to_si_no(gs_reales.get("gs_over_35_5_real_bool"), gs_reales.get("available_games", False)) if gs5 else "",
+            "GS Over 37.5 real": _gs_bool_to_si_no(gs_reales.get("gs_over_37_5_real_bool"), gs_reales.get("available_games", False)) if gs5 else "",
+            "GS Over 39.5 real": _gs_bool_to_si_no(gs_reales.get("gs_over_39_5_real_bool"), gs_reales.get("available_games", False)) if gs5 else "",
+            "GS Partido 4+ sets real": _gs_bool_to_si_no(gs_reales.get("gs_partido_4_plus_real_bool"), gs_reales.get("available_sets", False)) if gs5 else "",
+            "GS Partido 5 sets real": _gs_bool_to_si_no(gs_reales.get("gs_partido_5_sets_real_bool"), gs_reales.get("available_sets", False)) if gs5 else "",
+            "GS Favorito 3-0 real": _gs_bool_to_si_no(gs_reales.get("gs_fav_3_0_real_bool"), gs_reales.get("available_sets", False)) if gs5 else "",
+            "GS Favorito NO 3-0 real": _gs_bool_to_si_no(gs_reales.get("gs_fav_no_3_0_real_bool"), gs_reales.get("available_sets", False)) if gs5 else "",
+            "GS Underdog gana set real": _gs_bool_to_si_no(gs_reales.get("gs_dog_set_real_bool"), gs_reales.get("available_sets", False)) if gs5 else "",
+            "Acierta mercado GS": gs_acierto if gs5 else "",
             "Acierta ML modelo": (
                 "Sí" if (
                     (m.get("actual_winner_side") == 1 and fav_name == p1_key) or
@@ -8459,6 +8478,111 @@ def _pct_text_to_float_v23371(x, default=0.0):
     except Exception:
         return default
 
+
+
+
+
+# =========================================================
+# v23.38.2 GRAND SLAM BO5 REAL RESULT VALIDATOR / EXPORT
+# =========================================================
+# Solo se usa en modo Grand Slam (5 sets). No modifica el motor Over BO3.
+# Añade lectura real de juegos/sets BO5 y validación del mercado GS seleccionado.
+
+def _gs_bool_to_si_no(value, available=True):
+    if not available:
+        return "N/D"
+    return "Sí" if bool(value) else "No"
+
+
+def _gs_float_or_none(x):
+    try:
+        if x is None or pd.isna(x):
+            return None
+        s = str(x).replace(',', '.').strip()
+        if s == '' or s.lower() in {'nan', 'none', 'n/d'}:
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+def calcular_gs_bo5_reales(m, fav_side=None):
+    """Devuelve métricas reales BO5 desde el resultado SofaScore ya parseado.
+
+    fav_side: 1 si el favorito modelo es jugador 1, 2 si es jugador 2.
+    """
+    total_games = _gs_float_or_none((m or {}).get('actual_total_games'))
+    p1_sets = (m or {}).get('p1_sets_real')
+    p2_sets = (m or {}).get('p2_sets_real')
+    try:
+        p1_sets = int(p1_sets) if p1_sets is not None and not pd.isna(p1_sets) else None
+        p2_sets = int(p2_sets) if p2_sets is not None and not pd.isna(p2_sets) else None
+    except Exception:
+        p1_sets, p2_sets = None, None
+
+    sets_available = p1_sets is not None and p2_sets is not None
+    games_available = total_games is not None
+    total_sets = (p1_sets + p2_sets) if sets_available else None
+
+    if fav_side == 1:
+        fav_sets, dog_sets = p1_sets, p2_sets
+    elif fav_side == 2:
+        fav_sets, dog_sets = p2_sets, p1_sets
+    else:
+        fav_sets, dog_sets = None, None
+
+    fav_known = sets_available and fav_side in [1, 2]
+    fav_3_0 = bool(fav_known and fav_sets == 3 and dog_sets == 0)
+
+    return {
+        'available_games': games_available,
+        'available_sets': sets_available,
+        'gs_total_games_real': total_games if games_available else '',
+        'gs_sets_total_real': total_sets if sets_available else '',
+        'gs_over_30_5_real_bool': bool(games_available and total_games > 30.5),
+        'gs_over_32_5_real_bool': bool(games_available and total_games > 32.5),
+        'gs_over_35_5_real_bool': bool(games_available and total_games > 35.5),
+        'gs_over_37_5_real_bool': bool(games_available and total_games > 37.5),
+        'gs_over_39_5_real_bool': bool(games_available and total_games > 39.5),
+        'gs_partido_4_plus_real_bool': bool(sets_available and total_sets >= 4),
+        'gs_partido_5_sets_real_bool': bool(sets_available and total_sets == 5),
+        'gs_fav_3_0_real_bool': fav_3_0,
+        'gs_fav_no_3_0_real_bool': bool(fav_known and not fav_3_0),
+        'gs_dog_set_real_bool': bool(fav_known and dog_sets is not None and dog_sets >= 1),
+    }
+
+
+def acierta_mercado_gs_bo5(label, reales):
+    """Valida si el mercado GS seleccionado se cumplió. Devuelve Sí/No/N/D."""
+    if not label or reales is None:
+        return "N/D"
+    lab = str(label).upper()
+
+    # Over de juegos: requiere total games real.
+    if 'OVER 30.5' in lab:
+        return _gs_bool_to_si_no(reales.get('gs_over_30_5_real_bool'), reales.get('available_games', False))
+    if 'OVER 32.5' in lab:
+        return _gs_bool_to_si_no(reales.get('gs_over_32_5_real_bool'), reales.get('available_games', False))
+    if 'OVER 35.5' in lab:
+        return _gs_bool_to_si_no(reales.get('gs_over_35_5_real_bool'), reales.get('available_games', False))
+    if 'OVER 37.5' in lab:
+        return _gs_bool_to_si_no(reales.get('gs_over_37_5_real_bool'), reales.get('available_games', False))
+    if 'OVER 39.5' in lab:
+        return _gs_bool_to_si_no(reales.get('gs_over_39_5_real_bool'), reales.get('available_games', False))
+
+    # Mercados de sets: requieren sets reales.
+    if '4+ SET' in lab or '4+ SETS' in lab or 'PARTIDO A 4' in lab:
+        return _gs_bool_to_si_no(reales.get('gs_partido_4_plus_real_bool'), reales.get('available_sets', False))
+    if '5 SET' in lab or '5 SETS' in lab or 'PARTIDO A 5' in lab:
+        return _gs_bool_to_si_no(reales.get('gs_partido_5_sets_real_bool'), reales.get('available_sets', False))
+    if 'NO GANA 3-0' in lab or 'NO 3-0' in lab:
+        return _gs_bool_to_si_no(reales.get('gs_fav_no_3_0_real_bool'), reales.get('available_sets', False))
+    if 'GANA 3-0' in lab:
+        return _gs_bool_to_si_no(reales.get('gs_fav_3_0_real_bool'), reales.get('available_sets', False))
+    if 'GANA AL MENOS 1 SET' in lab or 'UNDERDOG GANA SET' in lab:
+        return _gs_bool_to_si_no(reales.get('gs_dog_set_real_bool'), reales.get('available_sets', False))
+
+    return "N/D"
 
 
 # =========================================================
