@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.38.3-grand-slam-bo5-validator-export-final"
+APP_VERSION = "v23.38.4-grand-slam-bo5-final-lock"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -12551,6 +12551,34 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "🎯 Confianza acierto",
                     "🎯 Aviso acierto",
                     "🎯 Motivo acierto",
+                    "🏆 GS 5 sets activo",
+                    "🏆 Mercado GS 5 sets",
+                    "🏆 Prob GS 5 sets",
+                    "🏆 Acción GS",
+                    "🏆 Confianza GS",
+                    "GS Over 30.5",
+                    "GS Over 32.5",
+                    "GS Over 35.5",
+                    "GS Over 37.5",
+                    "GS Over 39.5",
+                    "GS Partido 4+ sets",
+                    "GS Partido 5 sets",
+                    "GS Favorito 3-0",
+                    "GS Favorito NO 3-0",
+                    "GS Underdog gana set",
+                    "GS Juegos reales",
+                    "GS Sets reales totales",
+                    "GS Over 30.5 real",
+                    "GS Over 32.5 real",
+                    "GS Over 35.5 real",
+                    "GS Over 37.5 real",
+                    "GS Over 39.5 real",
+                    "GS Partido 4+ sets real",
+                    "GS Partido 5 sets real",
+                    "GS Favorito 3-0 real",
+                    "GS Favorito NO 3-0 real",
+                    "GS Underdog gana set real",
+                    "Acierta mercado GS",
                     "📥 Necesita Datos extra",
                     "📥 Prioridad Datos extra",
                     "📥 Qué mirar Datos extra",
@@ -12583,8 +12611,13 @@ Sebastián Baez - Roberto Carballés Baena"""
             # v23.37.26: aplicar Challenger Recent Form Engine antes de guardar.
             try:
                 ok = aplicar_challenger_recent_form_engine(ok)
+                # v23.38.4: candado FINAL después del CH engine, porque CH podía recuperar Over 18.5.
+                ok = aplicar_grand_slam_bo5_selector_final(ok)
             except Exception:
-                pass
+                try:
+                    ok = aplicar_grand_slam_bo5_selector_final(ok)
+                except Exception:
+                    pass
 
             # v23.5: guardar resultado para que descargar Excel/CSV no limpie pantalla tras rerun.
             st.session_state["batch_ok_df"] = ok
@@ -12603,9 +12636,15 @@ Sebastián Baez - Roberto Carballés Baena"""
         ko_saved = st.session_state.get("batch_ko_df", pd.DataFrame())
         try:
             ok_saved = aplicar_challenger_recent_form_engine(ok_saved)
+            # v23.38.4: candado FINAL persistente después del CH engine.
+            ok_saved = aplicar_grand_slam_bo5_selector_final(ok_saved)
             st.session_state["batch_ok_df"] = ok_saved
         except Exception:
-            pass
+            try:
+                ok_saved = aplicar_grand_slam_bo5_selector_final(ok_saved)
+                st.session_state["batch_ok_df"] = ok_saved
+            except Exception:
+                pass
 
         if ok_saved is not None and not ok_saved.empty:
             st.divider()
