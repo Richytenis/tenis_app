@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.38.5-sofascore-bo5-score-parser"
+APP_VERSION = "v23.38.6-gs-bo5-refinement-lock"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -4512,7 +4512,7 @@ def is_country_line_sofa(x):
     countries = {
         "andorra","argentina","australia","austria","belgium","bolivia","brazil","canada","chile","china","colombia",
         "croatia","czechia","denmark","finland","france","georgia","germany","hungary","italy","kazakhstan",
-        "latvia","lebanon","lithuania","luxembourg","netherlands","paraguay","peru","portugal","russia","serbia",
+        "latvia","lebanon","lithuania","luxembourg","monaco","netherlands","paraguay","peru","portugal","russia","serbia",
         "spain","switzerland","tunisia","united kingdom","uruguay","usa","ukraine","poland","slovakia",
         "slovenia","romania","bulgaria","turkey","turkiye","türkiye","greece","norway","sweden","japan","india","south korea",
         "latvia","belarus","cyprus","malta","albania","armenia","azerbaijan","montenegro","north macedonia",
@@ -8674,6 +8674,87 @@ def _gs_bo5_datos_pobres(row):
     return ('fallback' in txt or 'estimado' in txt or 'datos parciales' in txt or ms <= 3 or min_conf < 0.45)
 
 
+
+
+def _gs_pct_row(row, col, default=0.0):
+    try:
+        return _pct_text_to_float_v23371(row.get(col, ''), default)
+    except Exception:
+        return default
+
+
+def _gs_partes_partido(row):
+    txt = str(row.get("Partido", ""))
+    if " vs " in txt:
+        a, b = txt.split(" vs ", 1)
+        return a.strip(), b.strip()
+    return "", ""
+
+
+def _gs_fav_lado(row):
+    p1, p2 = _gs_partes_partido(row)
+    fav = str(row.get("Favorito modelo", "")).strip()
+    if fav and p1 and limpiar(fav) == limpiar(p1):
+        return "J1"
+    if fav and p2 and limpiar(fav) == limpiar(p2):
+        return "J2"
+    return ""
+
+
+def _gs_refinar_mercado_por_ch(row, gs_market, gs_prob):
+    """v23.38.6: refinamiento SOLO visual/export Grand Slam BO5.
+
+    No toca el motor Over. Usa las columnas CH ya calculadas para evitar tres
+    patrones que fallaron en el primer backtest:
+    - 3-0 favorito cuando el rival tiene alta señal de ganar set.
+    - gana-set con riesgo de paliza >= 25%.
+    - NO gana 3-0 cuando el total GS Over 30.5 es más estable.
+    """
+    market = str(gs_market or "").strip()
+    upper = market.upper()
+    notes = []
+    action_override = None
+
+    blowout = _gs_pct_row(row, "🧠 CH Riesgo paliza", 0.0)
+    ch_set_j1 = _gs_pct_row(row, "🧠 CH Set J1", 0.0)
+    ch_set_j2 = _gs_pct_row(row, "🧠 CH Set J2", 0.0)
+    over30 = _gs_pct_row(row, "GS Over 30.5", 0.0)
+    over32 = _gs_pct_row(row, "GS Over 32.5", 0.0)
+
+    fav_lado = _gs_fav_lado(row)
+    rival_set = ch_set_j2 if fav_lado == "J1" else ch_set_j1 if fav_lado == "J2" else max(ch_set_j1, ch_set_j2)
+
+    # 1) Bloquear 3-0 si el rival tiene señal fuerte de ganar set.
+    if "GANA 3-0" in upper and "NO GANA 3-0" not in upper:
+        if rival_set >= 0.80:
+            notes.append(f"GS v6 bloquea 3-0: rival con CH gana-set {rival_set:.0%}.")
+            # Si el propio mercado NO 3-0/Over tiene soporte, reconducimos a una línea más segura.
+            if over30 >= 0.72:
+                market = "Over 30.5 GS"
+                gs_prob = over30
+                notes.append("Se reconduce a Over 30.5 GS por soporte de juegos.")
+            else:
+                action_override = "👀 OBSERVAR"
+
+    # 2) Gana-set + riesgo de paliza alto: no tratar como JUGAR.
+    if "GANA AL MENOS 1 SET" in upper and blowout >= 0.25:
+        notes.append(f"GS v6 baja gana-set: riesgo paliza CH {blowout:.0%}.")
+        action_override = "👀 OBSERVAR"
+
+    # 3) Cuando NO gana 3-0 compite con Over 30.5 alto, preferimos la línea de juegos.
+    # Evita casos tipo 7-6 7-6 6-4 donde hay juegos, pero sí hay 3-0.
+    if "NO GANA 3-0" in upper:
+        if over30 >= 0.72 and over30 >= gs_prob - 0.08:
+            market = "Over 30.5 GS"
+            gs_prob = over30
+            notes.append("GS v6 prioriza Over 30.5 frente a NO 3-0 cuando el total de juegos es más robusto.")
+        elif over32 >= 0.70 and over32 >= gs_prob - 0.05:
+            market = "Over 32.5 GS"
+            gs_prob = over32
+            notes.append("GS v6 prioriza Over 32.5 frente a NO 3-0 por proyección de juegos.")
+
+    return market, float(gs_prob or 0.0), action_override, " | ".join(notes)
+
 def aplicar_grand_slam_bo5_selector_final(df):
     """Aplica el candado final BO5 sobre tabla ya calculada.
 
@@ -8704,6 +8785,7 @@ def aplicar_grand_slam_bo5_selector_final(df):
         gs_prob = _gs_bo5_prob_float(row)
         gs_action = str(row.get("🏆 Acción GS", "")).strip()
         gs_conf = str(row.get("🏆 Confianza GS", row.get("🎯 Confianza acierto", ""))).strip()
+        gs_market, gs_prob, gs_action_override, gs_refine_note = _gs_refinar_mercado_por_ch(row, gs_market, gs_prob)
 
         blocked_current = any(x in current_market for x in GS_BO3_BLOCKED_MARKETS)
         no_gs_signal = (not gs_market or "SIN MERCADO GS" in gs_market.upper() or gs_prob <= 0.0)
@@ -8725,12 +8807,17 @@ def aplicar_grand_slam_bo5_selector_final(df):
             out.at[idx, "🎯 Mercado más probable"] = gs_market
             out.at[idx, "🎯 Prob máxima"] = f"{gs_prob:.1%}"
             out.at[idx, "🎯 Confianza acierto"] = gs_conf if gs_conf else str(row.get("🏆 Acción GS", ""))
-            out.at[idx, "🎯 Motivo acierto"] = "Grand Slam BO5 activo: selector final bloquea Over BO3 y usa solo mercados 30.5-39.5, 4+ sets, 5 sets o 3-0/no 3-0."
+            base_motivo_gs = "Grand Slam BO5 activo: selector final bloquea Over BO3 y usa solo mercados 30.5-39.5, 4+ sets, 5 sets o 3-0/no 3-0."
+            out.at[idx, "🎯 Motivo acierto"] = base_motivo_gs + ((" | " + gs_refine_note) if gs_refine_note else "")
             out.at[idx, "Mejor señal"] = gs_market
             out.at[idx, "Prob señal"] = f"{gs_prob:.1%}"
 
         datos_pobres = _gs_bo5_datos_pobres(row)
-        if datos_pobres:
+        if gs_action_override:
+            out.at[idx, "🎯 Acción final"] = gs_action_override
+            out.at[idx, "🎯 Decisión acierto"] = "👀 Observar / GS v6 filtro histórico"
+            out.at[idx, "🎯 Aviso acierto"] = gs_refine_note or "Grand Slam BO5: bajado por filtro histórico v6."
+        elif datos_pobres:
             out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
             out.at[idx, "🎯 Decisión acierto"] = "👀 Observar / GS datos parciales"
             out.at[idx, "🎯 Aviso acierto"] = "Grand Slam BO5: señal útil, pero con fallback/muestra baja; no tratar como pick fuerte."
