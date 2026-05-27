@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.38.0-grand-slam-5set-engine"
+APP_VERSION = "v23.38.3-grand-slam-bo5-validator-export-final"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -6450,7 +6450,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             p1_key, p2_key, circuito_calc, match_surface
         )
 
-        gs5 = calcular_grand_slam_5set_markets(sim, p1_key, p2_key) if (best_of == 5 and circuito_calc == "ATP") else None
+        gs5 = calcular_grand_slam_5set_markets(sim, p1_key, p2_key) if (best_of == 5 and str(circuito_calc).upper() in {"ATP", "CHALLENGER"}) else None
         if gs5:
             # En BO5 no dejamos que el selector oficial muestre Over 18.5/19.5 como mercado principal.
             max_acierto = {
@@ -9050,6 +9050,34 @@ def prepare_batch_display_table(ok_df):
         "Resultado sets",
         "Marcador games",
         "Total games real",
+        "🏆 GS 5 sets activo",
+        "🏆 Mercado GS 5 sets",
+        "🏆 Prob GS 5 sets",
+        "🏆 Acción GS",
+        "🏆 Confianza GS",
+        "GS Over 30.5",
+        "GS Over 32.5",
+        "GS Over 35.5",
+        "GS Over 37.5",
+        "GS Over 39.5",
+        "GS Partido 4+ sets",
+        "GS Partido 5 sets",
+        "GS Favorito 3-0",
+        "GS Favorito NO 3-0",
+        "GS Underdog gana set",
+        "GS Juegos reales",
+        "GS Sets reales totales",
+        "GS Over 30.5 real",
+        "GS Over 32.5 real",
+        "GS Over 35.5 real",
+        "GS Over 37.5 real",
+        "GS Over 39.5 real",
+        "GS Partido 4+ sets real",
+        "GS Partido 5 sets real",
+        "GS Favorito 3-0 real",
+        "GS Favorito NO 3-0 real",
+        "GS Underdog gana set real",
+        "Acierta mercado GS",
         "Acierta ML modelo",
         "Over 17.5",
         "Over 17.5 real",
