@@ -24,6 +24,7 @@ OVER_ENGINE_LOCK_NOTE = "Over blindado: no tocar matemáticas ni lógica de Over
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 # v23.39.1: WTA Reason Fix - corrige motivos ML vs gana al menos 1 set sin tocar cálculos.
+# v23.39.4: WTA Analyzer Rules Upgrade - aplica reglas históricas WTA al selector sin tocar motor Over.
 
 # =========================================================
 # TENNIS IA v15
@@ -3309,6 +3310,10 @@ def sim_match(d1, d2, surface, circuito, best_of=3, n=5000, context_row=None, pr
         "ret2": ret2,
         "p1_profile": p1_profile,
         "p2_profile": p2_profile,
+        # v23.39.4: exponer ranking al selector WTA. No cambia simulación ni Over.
+        "rank1": d1.get("Rank", 999),
+        "rank2": d2.get("Rank", 999),
+        "rank_gap": abs(d1.get("Rank", 999) - d2.get("Rank", 999)),
         "vol": vol,
         "fav_raw_est": fav_est,
         "model_fav_is_p1": model_fav_is_p1,
@@ -4350,6 +4355,20 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
     fav_prob = max(p1c, p2c)
     fav_name = p1_name if p1c >= p2c else p2_name
 
+    # v23.39.4: reglas WTA derivadas del Analyzer histórico.
+    # Solo afectan al selector/etiqueta; no modifican el motor Over ni las simulaciones.
+    rank_gap = sim.get("rank_gap", None)
+    try:
+        rank_gap = abs(float(rank_gap))
+    except Exception:
+        r1 = sim.get("rank1", None)
+        r2 = sim.get("rank2", None)
+        try:
+            rank_gap = abs(float(r1) - float(r2))
+        except Exception:
+            rank_gap = None
+    wta_rankgap_ideal_over17 = (str(circuito).upper().strip() == "WTA" and rank_gap is not None and 21 <= rank_gap <= 50)
+
     games = sim.get("games", [])
     if sim.get("market_over18") is not None:
         over17 = sim.get("market_over17", 0.0)
@@ -4639,8 +4658,21 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
             grade = "⚠️ C"
             action = "Evitar / observar"
 
-        # WTA Clay Over Recovery debe producir DUDOSAS/Watchlist útiles, no APTA agresiva.
-        if circuito == "WTA" and surface == "Clay" and name in ["Over 17.5", "Over 18.5"] and action in ["APTO fuerte", "APTO"]:
+        # v23.39.4 WTA Analyzer Rules Upgrade:
+        # El Analyzer mostró que Over 17.5 funciona especialmente bien con RankGap 21-50
+        # y modelo >=82%. Permitimos que ese perfil suba a APTO; el resto sigue prudente.
+        if circuito == "WTA" and name == "Over 17.5" and prob >= 0.82 and wta_rankgap_ideal_over17:
+            grade = "✅ A"
+            action = "APTO"
+            reason = reason + " · v23.39.4 Analyzer: RankGap 21-50 + Over17 >=82%"
+
+        # WTA Clay Over Recovery debe producir DUDOSAS/Watchlist útiles, no APTA agresiva,
+        # salvo la regla histórica nueva del Analyzer para Over 17.5.
+        if (
+            circuito == "WTA" and surface == "Clay" and name in ["Over 17.5", "Over 18.5"]
+            and action in ["APTO fuerte", "APTO"]
+            and not (name == "Over 17.5" and prob >= 0.82 and wta_rankgap_ideal_over17)
+        ):
             grade = "⚖️ B"
             action = "Solo si acompaña lectura"
             reason = reason + " · v23.20 WTA Over: señal válida pero no APTA automática"
@@ -4713,6 +4745,10 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
         add_signal("Over 20.5", over20, 0.63, "over", "v23.25 ATP Clay: línea larga con cautela", 0)
 
     elif circuito == "WTA":
+        # v23.39.4: el Analyzer validó favorito gana al menos 1 set >=90% como mercado WTA estable.
+        fav_set_prob = sim.get("p1_wins_set_any", 0.0) if p1c >= p2c else sim.get("p2_wins_set_any", 0.0)
+        add_signal(f"{fav_name} gana al menos 1 set", fav_set_prob, 0.90, "set_fav", "v23.39.4 WTA Analyzer: favorito gana set >=90%", 4)
+
         if surface == "Clay":
             # WTA mantiene la ventaja observada del Over 17.5.
             if fav_prob >= 0.78:
@@ -6714,6 +6750,17 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
     fav_set = p1_set if fav_is_p1 else p2_set
     dog_set = p2_set if fav_is_p1 else p1_set
 
+    # v23.39.4: RankGap para reglas WTA del Analyzer.
+    rank_gap = sim.get("rank_gap", None)
+    try:
+        rank_gap = abs(float(rank_gap))
+    except Exception:
+        try:
+            rank_gap = abs(float(sim.get("rank1")) - float(sim.get("rank2")))
+        except Exception:
+            rank_gap = None
+    wta_rankgap_ideal_over17 = (str(circuito).upper().strip() == "WTA" and rank_gap is not None and 21 <= rank_gap <= 50)
+
     set3 = _safe_float_v23370(sim.get("set3", sim.get("market_3sets", sim.get("prob_3sets", 0.0))), 0.0)
 
     # v23.37.2: selector orientado SOLO a máxima tasa de acierto.
@@ -6782,7 +6829,7 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
         candidatos.append({
             "mercado": "Over 17.5",
             "prob": _safe_float_v23370(over17, 0.0),
-            "tipo": "OVER",
+            "tipo": "OVER17_WTA",
             "motivo": "Línea WTA más conservadora"
         })
 
@@ -6826,6 +6873,28 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
             "tipo": "EVITAR",
         }
 
+    # v23.39.4 WTA Analyzer Rules Upgrade:
+    # 1) Favorita gana al menos 1 set >=90% es mercado WTA estable.
+    # 2) Over 17.5 sube cuando el Analyzer encontró la zona fuerte: RankGap 21-50 + Over17 >=82%.
+    if str(circuito).upper().strip() == "WTA":
+        over17_p = _safe_float_v23370(over17, 0.0)
+        if fav_set >= 0.90:
+            return {
+                "mercado": f"{fav_name} gana al menos 1 set",
+                "prob": float(np.clip(fav_set, 0.0, 0.995)),
+                "confianza": _confianza_acierto_v23370(fav_set),
+                "motivo": "WTA Analyzer: favorito gana al menos 1 set >=90%, mercado más estable",
+                "tipo": "SET_FAV",
+            }
+        if over17_p >= 0.82 and wta_rankgap_ideal_over17:
+            return {
+                "mercado": "Over 17.5",
+                "prob": float(np.clip(over17_p, 0.0, 0.995)),
+                "confianza": _confianza_acierto_v23370(over17_p),
+                "motivo": "WTA Analyzer: Over 17.5 >=82% con RankGap 21-50",
+                "tipo": "OVER17_WTA",
+            }
+
     # v23.37.9 híbrida:
     # Recuperamos Over 18.5 como mercado principal cuando está realmente fuerte.
     # Motivo: en los backtests manuales Over 18.5 >= 76% fue mucho más estable
@@ -6853,7 +6922,7 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
             }
 
     # Orden por máxima probabilidad. En empate, priorizamos el mercado más prudente.
-    prioridad_tipo = {"SET_FAV": 5, "ML": 4, "OVER": 3, "UNDER": 3, "SET_DOG": 2, "SETS3": 1}
+    prioridad_tipo = {"SET_FAV": 5, "ML": 4, "OVER17_WTA": 4, "OVER": 3, "UNDER": 3, "SET_DOG": 2, "SETS3": 1}
     limpios.sort(key=lambda c: (c["prob"], prioridad_tipo.get(c["tipo"], 0)), reverse=True)
     top = limpios[0]
 
@@ -6885,8 +6954,10 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
             top["motivo"] = "Superioridad suficiente para recomendar ganador sin bajar a mercado de set"
         else:
             top["motivo"] = "ML permitido por filtro de seguridad del selector"
-    elif top["tipo"] == "OVER":
-        if str(top.get("mercado", "")).upper() == "OVER 18.5":
+    elif top["tipo"] in ["OVER", "OVER17_WTA"]:
+        if str(top.get("mercado", "")).upper() == "OVER 17.5":
+            top["motivo"] = "WTA Over 17.5: mercado conservador validado como OBSERVAR/JUGAR según RankGap"
+        elif str(top.get("mercado", "")).upper() == "OVER 18.5":
             top["motivo"] = "Over 18.5 priorizado: línea baja validada mejor en el backtest"
         else:
             top["motivo"] = "Total de juegos fuerte; pasa filtro restrictivo de máximo acierto"
