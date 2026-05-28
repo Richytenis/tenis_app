@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.39.0-wta-real-data-upgrade"
+APP_VERSION = "v23.39.1-wta-reason-fix"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -23,6 +23,7 @@ OVER_ENGINE_LOCKED = True
 OVER_ENGINE_LOCK_NOTE = "Over blindado: no tocar matemáticas ni lógica de Over sin orden explícita."
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
+# v23.39.1: WTA Reason Fix - corrige motivos ML vs gana al menos 1 set sin tocar cálculos.
 
 # =========================================================
 # TENNIS IA v15
@@ -6681,8 +6682,16 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
             top["motivo"] = "Favorito con riesgo ML: se baja a gana al menos un set para maximizar acierto"
         else:
             top["motivo"] = "Partido igualado: gana al menos un set es más prudente que elegir ganador"
-    elif top["tipo"] == "ML" and fav_prob >= 0.78:
-        top["motivo"] = "Superioridad suficiente para recomendar ganador sin bajar a mercado de set"
+    elif top["tipo"] == "ML":
+        if str(circuito).upper().strip() == "WTA":
+            if fav_prob >= 0.80:
+                top["motivo"] = "WTA ML confirmado: favorita supera filtro fuerte de confianza y datos extra"
+            else:
+                top["motivo"] = "WTA ML permitido: favorita supera el mínimo de seguridad sin bajar a mercado de set"
+        elif fav_prob >= 0.78:
+            top["motivo"] = "Superioridad suficiente para recomendar ganador sin bajar a mercado de set"
+        else:
+            top["motivo"] = "ML permitido por filtro de seguridad del selector"
     elif top["tipo"] == "OVER":
         if str(top.get("mercado", "")).upper() == "OVER 18.5":
             top["motivo"] = "Over 18.5 priorizado: línea baja validada mejor en el backtest"
