@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.38.7-gs-sync-validation"
+APP_VERSION = "v23.39.0-wta-real-data-upgrade"
 QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
 
 # =========================================================
@@ -287,6 +287,367 @@ def buscar_stats(nombre, stats_map):
         out["match_type"] = "aproximado"
         return out
     return None
+
+
+# =========================================================
+# v23.39 WTA REAL DATA UPGRADE
+# Usa datos/wta/wta_players.csv + datos/wta/historicos/wta_matches_2026.csv
+# como capa de datos WTA. No cambia fórmulas ni motor Over: solo mejora
+# perfiles, ranking, muestra por superficie y estadísticas base WTA.
+# =========================================================
+
+def _wta_real_match_paths():
+    base = os.path.join("datos", "wta")
+    patterns = [
+        os.path.join(base, "historicos", "wta_matches_2026.csv"),
+        os.path.join(base, "wta_matches_2026.csv"),
+        os.path.join(base, "matches_2026.csv"),
+        os.path.join(base, "historicos", "*wta*matches*.csv"),
+        os.path.join(base, "historicos", "*matches*2026*.csv"),
+    ]
+    found = []
+    for pat in patterns:
+        if any(ch in pat for ch in "*?["):
+            found.extend(glob.glob(pat))
+        elif os.path.exists(pat):
+            found.append(pat)
+    out = []
+    seen = set()
+    for x in found:
+        nx = os.path.normpath(x)
+        if nx not in seen and os.path.exists(nx):
+            seen.add(nx)
+            out.append(nx)
+    return out
+
+
+def _parse_score_games(score):
+    txt = normalizar_texto(score).upper()
+    if not txt or any(x in txt for x in ["W/O", "WALKOVER", "RET", "DEF", "ABD", "DEFAULT"]):
+        return {"valid": False, "games": None, "sets": None, "set3": False}
+    pairs = re.findall(r"(\d+)\s*-\s*(\d+)", txt)
+    if not pairs:
+        return {"valid": False, "games": None, "sets": None, "set3": False}
+    games = 0
+    sets = 0
+    for a, b in pairs:
+        try:
+            ga, gb = int(a), int(b)
+        except Exception:
+            continue
+        if ga > 20 or gb > 20:
+            continue
+        games += ga + gb
+        sets += 1
+    if sets <= 0:
+        return {"valid": False, "games": None, "sets": None, "set3": False}
+    return {"valid": True, "games": games, "sets": sets, "set3": sets >= 3}
+
+
+def _safe_div(num, den, default=None):
+    try:
+        num = float(num)
+        den = float(den)
+        if den <= 0 or pd.isna(num) or pd.isna(den):
+            return default
+        return num / den
+    except Exception:
+        return default
+
+
+def _wta_empty_bucket(name):
+    return {
+        "name": normalizar_texto(name),
+        "matches_total": 0,
+        "wins": 0,
+        "losses": 0,
+        "rank_values": [],
+        "matches_surface": {"Hard": 0, "Clay": 0, "Grass": 0},
+        "wins_surface": {"Hard": 0, "Clay": 0, "Grass": 0},
+        "games": [],
+        "games_surface": {"Hard": [], "Clay": [], "Grass": []},
+        "set3": [],
+        "set3_surface": {"Hard": [], "Clay": [], "Grass": []},
+        "serve_pts": 0.0, "aces": 0.0, "dfs": 0.0, "first_in": 0.0,
+        "first_won": 0.0, "second_won": 0.0, "second_pts": 0.0,
+        "sv_gms": 0.0, "bp_saved": 0.0, "bp_faced": 0.0,
+        "ret_pts": 0.0, "ret_won": 0.0, "return_games": 0.0, "breaks_won": 0.0,
+        "serve_surface": {sf: {"serve_pts":0.0,"aces":0.0,"dfs":0.0,"first_in":0.0,"first_won":0.0,"second_won":0.0,"second_pts":0.0,"sv_gms":0.0,"bp_saved":0.0,"bp_faced":0.0,"ret_pts":0.0,"ret_won":0.0,"return_games":0.0,"breaks_won":0.0} for sf in ["Hard","Clay","Grass"]},
+    }
+
+
+def _wta_add_stats(bucket, surface, prefix, opp_prefix, row):
+    def v(col):
+        try:
+            return leer_float(row.get(col), 0.0)
+        except Exception:
+            return 0.0
+
+    svpt = v(f"{prefix}_svpt")
+    first_in = v(f"{prefix}_1stIn")
+    second_pts = max(0.0, svpt - first_in)
+    serve_updates = {
+        "serve_pts": svpt,
+        "aces": v(f"{prefix}_ace"),
+        "dfs": v(f"{prefix}_df"),
+        "first_in": first_in,
+        "first_won": v(f"{prefix}_1stWon"),
+        "second_won": v(f"{prefix}_2ndWon"),
+        "second_pts": second_pts,
+        "sv_gms": v(f"{prefix}_SvGms"),
+        "bp_saved": v(f"{prefix}_bpSaved"),
+        "bp_faced": v(f"{prefix}_bpFaced"),
+    }
+
+    opp_svpt = v(f"{opp_prefix}_svpt")
+    opp_first_won = v(f"{opp_prefix}_1stWon")
+    opp_second_won = v(f"{opp_prefix}_2ndWon")
+    opp_svgms = v(f"{opp_prefix}_SvGms")
+    opp_bpsaved = v(f"{opp_prefix}_bpSaved")
+    opp_bpfaced = v(f"{opp_prefix}_bpFaced")
+    return_updates = {
+        "ret_pts": opp_svpt,
+        "ret_won": max(0.0, opp_svpt - opp_first_won - opp_second_won),
+        "return_games": opp_svgms,
+        "breaks_won": max(0.0, opp_bpfaced - opp_bpsaved),
+    }
+
+    for k, val in {**serve_updates, **return_updates}.items():
+        if val and not pd.isna(val):
+            bucket[k] += float(val)
+            if surface in bucket["serve_surface"]:
+                bucket["serve_surface"][surface][k] += float(val)
+
+
+def _wta_bucket_to_profile(bucket):
+    def build_stats(src, fallback_surface="Hard"):
+        serve_pts = src.get("serve_pts", 0.0)
+        sv_gms = src.get("sv_gms", 0.0)
+        bp_faced = src.get("bp_faced", 0.0)
+        bp_saved = src.get("bp_saved", 0.0)
+        return_games = src.get("return_games", 0.0)
+        breaks_won = src.get("breaks_won", 0.0)
+        hold = 1.0 - _safe_div(max(0.0, bp_faced - bp_saved), sv_gms, 0.22)
+        break_pct = _safe_div(breaks_won, return_games, None)
+        stats = {
+            "found_stats": bool(serve_pts >= 80 or sv_gms >= 8),
+            "raw_name_stats": bucket["name"],
+            "hold": float(np.clip(hold if hold is not None else 0.64, 0.46, 0.82)),
+            "ace": float(np.clip(_safe_div(src.get("aces", 0.0), serve_pts, 0.035), 0.005, 0.14)),
+            "df": float(np.clip(_safe_div(src.get("dfs", 0.0), serve_pts, 0.050), 0.005, 0.16)),
+            "1in": float(np.clip(_safe_div(src.get("first_in", 0.0), serve_pts, 0.62), 0.45, 0.82)),
+            "1w": float(np.clip(_safe_div(src.get("first_won", 0.0), src.get("first_in", 0.0), 0.64), 0.45, 0.82)),
+            "2w": float(np.clip(_safe_div(src.get("second_won", 0.0), src.get("second_pts", 0.0), 0.46), 0.28, 0.66)),
+            "rpw": float(np.clip(_safe_div(src.get("ret_won", 0.0), src.get("ret_pts", 0.0), 0.38), 0.18, 0.52)),
+            "break_pct": float(np.clip(break_pct if break_pct is not None else 0.34, 0.12, 0.56)),
+            "bp_conv": float(np.clip(break_pct if break_pct is not None else 0.38, 0.15, 0.62)),
+            "bp_saved": float(np.clip(_safe_div(bp_saved, bp_faced, 0.55), 0.25, 0.82)),
+            "serve_profile": "normal",
+            "match_type": "wta_real_2026",
+        }
+        stats["serve_profile"] = perfil_saque(stats.get("ace", 0.035))
+        return stats
+
+    total = int(bucket["matches_total"])
+    if total <= 0:
+        return None
+    rank_vals = [x for x in bucket["rank_values"] if x and not pd.isna(x) and float(x) > 0]
+    rank = int(np.nanmedian(rank_vals)) if rank_vals else 999
+    win_rate = bucket["wins"] / total if total else 0.50
+    games_avg = float(np.nanmean(bucket["games"])) if bucket["games"] else 19.5
+    set3_rate = float(np.nanmean(bucket["set3"])) if bucket["set3"] else 0.30
+
+    stats_general = build_stats(bucket)
+    stats_by_surface = {}
+    for sf in ["Hard", "Clay", "Grass"]:
+        src = bucket["serve_surface"].get(sf, {})
+        if bucket["matches_surface"].get(sf, 0) >= 3:
+            stats_by_surface[sf] = build_stats(src, sf)
+        else:
+            stats_by_surface[sf] = stats_general.copy()
+            stats_by_surface[sf]["match_type"] = "wta_real_2026_general_fallback"
+
+    stability = {}
+    confidence = {}
+    for sf in ["Hard", "Clay", "Grass"]:
+        n_sf = int(bucket["matches_surface"].get(sf, 0))
+        sample_score = np.sqrt(n_sf / (n_sf + 10)) if n_sf > 0 else 0.0
+        total_score = np.sqrt(total / (total + 20))
+        stab = (sample_score * 0.75) + (total_score * 0.25)
+        conf = 0.42 + 0.58 * stab
+        if n_sf < 3:
+            conf -= 0.18
+        elif n_sf < 6:
+            conf -= 0.09
+        confidence[sf] = float(np.clip(conf, 0.30, 0.96))
+        stability[sf] = float(np.clip(stab, 0.05, 1.00))
+
+    return {
+        "Player": bucket["name"],
+        "Rank": rank,
+        "Stats": stats_general,
+        "StatsBySurface": stats_by_surface,
+        "Quality": {
+            "matches_total": total,
+            "matches_surface": {k:int(v) for k, v in bucket["matches_surface"].items()},
+            "level_counts": {"tour": total, "challenger": 0, "itf": 0, "qualy": 0, "unknown": 0},
+            "tour_quality": 0.92,
+            "stability": stability,
+            "confidence": confidence,
+            "raw_names": [bucket["name"]],
+            "aliases": sorted(list(variantes_nombre_quality(bucket["name"]))),
+            "source_files": _wta_real_match_paths(),
+            "matched_name": bucket["name"],
+            "match_score": 1.0,
+        },
+        "WTARealProfile": {
+            "active": True,
+            "matches_total": total,
+            "rank": rank,
+            "win_rate_2026": float(win_rate),
+            "games_avg": float(games_avg),
+            "set3_rate": float(set3_rate),
+            "over17_rate": float(np.mean([g > 17.5 for g in bucket["games"]])) if bucket["games"] else None,
+            "over18_rate": float(np.mean([g > 18.5 for g in bucket["games"]])) if bucket["games"] else None,
+        }
+    }
+
+
+@st.cache_data(show_spinner=False)
+def cargar_wta_real_profiles(cache_version=APP_VERSION):
+    paths = _wta_real_match_paths()
+    if not paths:
+        return {}
+
+    buckets = {}
+    for path in paths:
+        try:
+            df = pd.read_csv(path, low_memory=False)
+        except Exception:
+            continue
+        if df.empty:
+            continue
+        for _, row in df.iterrows():
+            surface = normalizar_superficie_hist(row.get("surface", "Hard"), default="Hard")
+            if surface not in ["Hard", "Clay", "Grass"]:
+                surface = "Hard"
+            score_info = _parse_score_games(row.get("score", ""))
+            winner = normalizar_texto(row.get("winner_name", ""))
+            loser = normalizar_texto(row.get("loser_name", ""))
+            if not winner or not loser:
+                continue
+            for name, won, rank_col, prefix, opp_prefix in [
+                (winner, True, "winner_rank", "w", "l"),
+                (loser, False, "loser_rank", "l", "w"),
+            ]:
+                key = limpiar(name)
+                if not key:
+                    continue
+                b = buckets.setdefault(key, _wta_empty_bucket(name))
+                b["matches_total"] += 1
+                b["wins"] += int(bool(won))
+                b["losses"] += int(not won)
+                b["matches_surface"][surface] = b["matches_surface"].get(surface, 0) + 1
+                if won:
+                    b["wins_surface"][surface] = b["wins_surface"].get(surface, 0) + 1
+                rank_v = leer_float(row.get(rank_col), None)
+                if rank_v is not None and not pd.isna(rank_v):
+                    b["rank_values"].append(rank_v)
+                if score_info.get("valid"):
+                    b["games"].append(float(score_info["games"]))
+                    b["games_surface"][surface].append(float(score_info["games"]))
+                    b["set3"].append(1.0 if score_info.get("set3") else 0.0)
+                    b["set3_surface"][surface].append(1.0 if score_info.get("set3") else 0.0)
+                _wta_add_stats(b, surface, prefix, opp_prefix, row)
+
+    profiles = {}
+    for key, bucket in buckets.items():
+        prof = _wta_bucket_to_profile(bucket)
+        if prof:
+            profiles[key] = prof
+    return profiles
+
+
+def _wta_rank_to_elo(rank, win_rate=0.50, surface_boost=0.0):
+    try:
+        r = float(rank)
+    except Exception:
+        r = 999.0
+    if r <= 0 or pd.isna(r):
+        r = 999.0
+    # Escala conservadora para WTA. Evita ratings extremos en jugadoras nuevas.
+    elo = 1890.0 - 2.15 * min(max(r - 1.0, 0.0), 260.0)
+    elo += (float(win_rate) - 0.50) * 90.0
+    elo += surface_boost
+    return float(np.clip(elo, 1320, 1915))
+
+
+def aplicar_wta_real_data_upgrade(players):
+    profiles = cargar_wta_real_profiles()
+    if not profiles:
+        return players
+
+    out = dict(players or {})
+    existing_clean = {limpiar(k): k for k in out.keys()}
+
+    # 1) Enriquecer jugadoras ya existentes en wta_elo.xlsx.
+    for clean_name, app_name in list(existing_clean.items()):
+        prof = profiles.get(clean_name)
+        if prof is None:
+            # Fuzzy controlado para diferencias de formato.
+            best_key, best_score = None, 0.0
+            for pk, pd_prof in profiles.items():
+                sc = similitud_nombre(app_name, pd_prof.get("Player", pk))
+                if sc > best_score:
+                    best_key, best_score = pk, sc
+            if best_key and best_score >= 0.92:
+                prof = profiles.get(best_key)
+        if prof is None:
+            continue
+
+        d = out[app_name].copy()
+        d["Rank"] = int(min(d.get("Rank", 999), prof.get("Rank", 999)))
+        d["Stats"] = merge_surface_stats(d.get("Stats", {}), prof.get("Stats", {}))
+        ss = dict(d.get("StatsBySurface", {}))
+        for sf in ["Hard", "Clay", "Grass"]:
+            current = ss.get(sf, d.get("Stats", {}))
+            ss[sf] = merge_surface_stats(current, prof.get("StatsBySurface", {}).get(sf, {}))
+            ss[sf]["match_type"] = prof.get("StatsBySurface", {}).get(sf, {}).get("match_type", "wta_real_2026")
+        d["StatsBySurface"] = ss
+        d["Quality"] = prof.get("Quality", d.get("Quality", {}))
+        d["WTARealProfile"] = prof.get("WTARealProfile", {})
+        d["FuenteDB"] = "WTA real 2026"
+        out[app_name] = d
+
+    # 2) Añadir jugadoras que no existen en el Excel WTA pero sí en los partidos 2026.
+    existing_clean = {limpiar(k) for k in out.keys()}
+    for key, prof in profiles.items():
+        if key in existing_clean:
+            continue
+        name = prof.get("Player", key)
+        rank = prof.get("Rank", 999)
+        wta_meta = prof.get("WTARealProfile", {}) or {}
+        wr = wta_meta.get("win_rate_2026", 0.50) or 0.50
+        surf_counts = prof.get("Quality", {}).get("matches_surface", {}) or {}
+        hard_boost = 8 if surf_counts.get("Hard", 0) >= surf_counts.get("Clay", 0) else 0
+        clay_boost = 8 if surf_counts.get("Clay", 0) > surf_counts.get("Hard", 0) else 0
+        base = _wta_rank_to_elo(rank, wr, 0)
+        out[name] = {
+            "Player": name,
+            "Rank": int(rank),
+            "Hard": _wta_rank_to_elo(rank, wr, hard_boost),
+            "Clay": _wta_rank_to_elo(rank, wr, clay_boost),
+            "Grass": base,
+            "Stats": prof.get("Stats", stats_default_por_elo(base, rank, "Hard", "WTA")),
+            "StatsBySurface": prof.get("StatsBySurface", {}),
+            "Fatigue": {"matches_14d": 0, "matches_7d": 0, "b2b": False, "fatigue_score": 0.0},
+            "Quality": prof.get("Quality", {}),
+            "WTARealProfile": wta_meta,
+            "FuenteDB": "WTA real 2026 fallback"
+        }
+        existing_clean.add(key)
+
+    return out
 
 # =========================================================
 # v22.3 MATCH COUNT FIX + TOUR QUALITY ENGINE
@@ -1082,6 +1443,8 @@ def cargar_datos(circuito, cache_version=QUALITY_ENGINE_VERSION):
     players = {}
 
     if not os.path.exists(r["elo"]):
+        if str(circuito).upper().strip() == "WTA":
+            return aplicar_wta_real_data_upgrade(players)
         return players
 
     df = pd.read_excel(r["elo"])
@@ -1131,6 +1494,9 @@ def cargar_datos(circuito, cache_version=QUALITY_ENGINE_VERSION):
             "Quality": buscar_quality(nombre, quality_map)
         }
 
+
+    if str(circuito).upper().strip() == "WTA":
+        players = aplicar_wta_real_data_upgrade(players)
 
     return players
 
