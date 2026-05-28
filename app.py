@@ -9,8 +9,8 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.39.3-wta-analyzer-rank-date-fix"
-QUALITY_ENGINE_VERSION = "v23.39.3-wta-analyzer-rank-date-fix-2026-05-28"
+APP_VERSION = "v23.39.4-wta-analyzer-rules-upgrade"
+QUALITY_ENGINE_VERSION = "v23.39.4-wta-analyzer-rules-upgrade-2026-05-28"
 
 # =========================================================
 # 🔒 OVER ENGINE LOCK
