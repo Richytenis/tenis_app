@@ -9,8 +9,8 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.39.2-wta-analyzer-fix"
-QUALITY_ENGINE_VERSION = "v23.39.2-wta-analyzer-fix-2026-05-28"
+APP_VERSION = "v23.39.3-wta-analyzer-rank-date-fix"
+QUALITY_ENGINE_VERSION = "v23.39.3-wta-analyzer-rank-date-fix-2026-05-28"
 
 # =========================================================
 # 🔒 OVER ENGINE LOCK
@@ -3385,6 +3385,20 @@ def normalizar_schema_historicos(df):
     out["MC_Round"] = _first_nonempty_from_columns(out, [
         "MC_Round", "round", "Round", "ronda"
     ])
+
+    # v23.39.3 WTA Analyzer Rank/Date Fix.
+    # Normaliza fecha y rankings para CSV WTA tipo Jeff Sackmann:
+    # tourney_date / winner_rank / loser_rank.
+    # También conserva compatibilidad con Tennis-Data: Date / WRank / LRank.
+    out["MC_Date"] = _first_nonempty_from_columns(out, [
+        "MC_Date", "Date", "Fecha", "date", "match_date", "tourney_date", "Tourney Date"
+    ])
+    out["MC_WinnerRank"] = _first_nonempty_from_columns(out, [
+        "MC_WinnerRank", "WRank", "WinnerRank", "winner_rank", "winner_rank_num", "winner_rank_points_rank"
+    ])
+    out["MC_LoserRank"] = _first_nonempty_from_columns(out, [
+        "MC_LoserRank", "LRank", "LoserRank", "loser_rank", "loser_rank_num", "loser_rank_points_rank"
+    ])
     return out
 
 def _historical_folders(circuito):
@@ -3900,6 +3914,60 @@ def hay_tiebreak_row(row):
             return True
     return False
 
+
+def _row_first_value(row, candidates, default=""):
+    """Devuelve el primer valor no vacío de una fila, tolerando nombres exactos o case-insensitive."""
+    try:
+        index_map = {str(c).lower(): c for c in row.index}
+    except Exception:
+        index_map = {}
+    for c in candidates:
+        val = row.get(c, None)
+        if val is None and str(c).lower() in index_map:
+            val = row.get(index_map[str(c).lower()], None)
+        if val is None:
+            continue
+        try:
+            if pd.isna(val):
+                continue
+        except Exception:
+            pass
+        txt = normalizar_texto(val)
+        if txt and txt.lower() not in ["nan", "none", "nat"]:
+            return val
+    return default
+
+
+def _parse_hist_date_value(v):
+    """Normaliza fechas históricas para Analyzer; soporta YYYYMMDD, Date Excel y texto."""
+    try:
+        if v is None or pd.isna(v):
+            return ""
+    except Exception:
+        pass
+    raw = str(v).strip()
+    if raw == "" or raw.lower() in ["nan", "none", "nat"]:
+        return ""
+    # Evita que 20260105.0 rompa el parser.
+    raw_clean = raw.replace(".0", "") if re.fullmatch(r"\d+\.0", raw) else raw
+    try:
+        if re.fullmatch(r"\d{8}", raw_clean):
+            dt = pd.to_datetime(raw_clean, format="%Y%m%d", errors="coerce")
+        else:
+            dt = pd.to_datetime(raw_clean, dayfirst=True, errors="coerce")
+        if pd.notna(dt):
+            return str(dt.date())
+    except Exception:
+        pass
+    return raw
+
+
+def _row_float_value(row, candidates, default=np.nan):
+    v = _row_first_value(row, candidates, default=None)
+    if v is None:
+        return default
+    return leer_float(v, default)
+
 def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_bt):
     rows = []
     df = hist_df.copy()
@@ -3965,13 +4033,19 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
         fav_under22_real = (p_raw >= 0.50 and games_real < 22.5)
         dog_over20_real = (p_raw < 0.50 and games_real > 20.5)
 
+        hist_date = _parse_hist_date_value(_row_first_value(row, ["MC_Date", "Date", "Fecha", "date", "match_date", "tourney_date", "Tourney Date"], ""))
+        winner_rank = _row_float_value(row, ["MC_WinnerRank", "WRank", "WinnerRank", "winner_rank"], np.nan)
+        loser_rank = _row_float_value(row, ["MC_LoserRank", "LRank", "LoserRank", "loser_rank"], np.nan)
+        rank_gap = abs(winner_rank - loser_rank) if not pd.isna(winner_rank) and not pd.isna(loser_rank) else np.nan
+
         rows.append({
-            "Date": row.get("Date", row.get("tourney_date", "")), "Tournament": row.get("MC_Tournament", row.get("Tournament", row.get("tourney_name", ""))),
+            "Date": hist_date, "Tournament": row.get("MC_Tournament", row.get("Tournament", row.get("tourney_name", ""))),
             "Series": row.get("Series", row.get("MC_Level", row.get("tourney_level", ""))), "Round": row.get("MC_Round", row.get("Round", row.get("round", ""))),
             "Surface": surface, "WinnerHist": winner_hist, "LoserHist": loser_hist,
             "WinnerMatched": p_win, "LoserMatched": p_los,
-            "WinnerRank": leer_float(row.get("WRank", row.get("winner_rank", np.nan)), np.nan),
-            "LoserRank": leer_float(row.get("LRank", row.get("loser_rank", np.nan)), np.nan),
+            "WinnerRank": winner_rank,
+            "LoserRank": loser_rank,
+            "RankGap": rank_gap,
             "ResultadoScore": _hist_score_text(row),
             "WinnerSets": w_sets, "LoserSets": l_sets,
             "ModelWinnerProbRaw": p_raw, "ModelWinnerProbCal": p_cal,
@@ -4060,14 +4134,47 @@ def crear_analyzer_tables(val, min_casos=20):
     ).reset_index()
     tables["Big server"] = server[server["Casos"] >= min_casos]
 
-    val["RankGap"] = abs(val["WinnerRank"] - val["LoserRank"])
-    val["RankGapBin"] = pd.cut(val["RankGap"], bins=[0,20,50,100,200,500], labels=["0-20","20-50","50-100","100-200","200+"])
-    rg = val.groupby("RankGapBin", observed=True).agg(
-        Casos=("RankGap","count"), MLAccuracy=("CalFavWasWinner","mean"),
-        ThreeSetsReal=("Real3Sets","mean"), ThreeSetsModel=("Model3Sets","mean"),
-        GamesReal=("RealGames","mean"), GamesModel=("ModelAvgGames","mean")
-    ).reset_index()
-    tables["Ranking gap"] = rg[rg["Casos"] >= min_casos]
+    # v23.39.3: ranking-gap robusto. Si el CSV ya trae RankGap lo respeta; si no, lo calcula.
+    if "RankGap" not in val.columns:
+        val["RankGap"] = abs(val["WinnerRank"] - val["LoserRank"])
+    val["RankGap"] = pd.to_numeric(val["RankGap"], errors="coerce")
+    val_rank = val.dropna(subset=["RankGap"]).copy()
+    if not val_rank.empty:
+        val_rank["RankGapBin"] = pd.cut(
+            val_rank["RankGap"],
+            bins=[-0.01,20,50,100,200,10000],
+            labels=["0-20","21-50","51-100","101-200","200+"]
+        )
+        rg = val_rank.groupby("RankGapBin", observed=True).agg(
+            Casos=("RankGap","count"), MLAccuracy=("CalFavWasWinner","mean"),
+            FavWinsSetReal=("RealFavWinsSet","mean"),
+            Over17Hit=("RealOver17","mean"), Over18Hit=("RealOver18","mean"),
+            ThreeSetsReal=("Real3Sets","mean"), ThreeSetsModel=("Model3Sets","mean"),
+            GamesReal=("RealGames","mean"), GamesModel=("ModelAvgGames","mean")
+        ).reset_index()
+        tables["Ranking gap"] = rg[rg["Casos"] >= min_casos]
+
+        rows_rg = []
+        for gap_label, sub_gap in val_rank.groupby("RankGapBin", observed=True):
+            if len(sub_gap) < min_casos:
+                continue
+            for th in [0.70,0.75,0.80,0.85,0.90]:
+                sub = sub_gap[sub_gap["ModelOver17"] >= th]
+                if len(sub) >= min_casos:
+                    rows_rg.append({
+                        "RankGapBin": str(gap_label),
+                        "Mercado": "Over 17.5",
+                        "Umbral modelo": th,
+                        "Casos": len(sub),
+                        "Prob media modelo": sub["ModelOver17"].mean(),
+                        "Acierto real": sub["RealOver17"].mean(),
+                        "3Sets real": sub["Real3Sets"].mean(),
+                        "Games real": sub["RealGames"].mean(),
+                    })
+        tables["Over17 por ranking gap"] = pd.DataFrame(rows_rg)
+    else:
+        tables["Ranking gap"] = pd.DataFrame()
+        tables["Over17 por ranking gap"] = pd.DataFrame()
     return tables
 
 
