@@ -9,8 +9,8 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.39.4-wta-analyzer-rules-upgrade"
-QUALITY_ENGINE_VERSION = "v23.39.4-wta-analyzer-rules-upgrade-2026-05-28"
+APP_VERSION = "v23.39.5-wta-over17-rankgap80"
+QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
 # 🔒 OVER ENGINE LOCK
@@ -24,7 +24,7 @@ OVER_ENGINE_LOCK_NOTE = "Over blindado: no tocar matemáticas ni lógica de Over
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 # v23.39.1: WTA Reason Fix - corrige motivos ML vs gana al menos 1 set sin tocar cálculos.
-# v23.39.4: WTA Analyzer Rules Upgrade - aplica reglas históricas WTA al selector sin tocar motor Over.
+# v23.39.5: WTA Over17 RankGap80 - baja el corte WTA Over 17.5 a >=80% con RankGap 21-50, sin tocar motor Over.
 
 # =========================================================
 # TENNIS IA v15
@@ -4660,18 +4660,18 @@ def betting_filter_engine(circuito, surface, sim, p1_name, p2_name):
 
         # v23.39.4 WTA Analyzer Rules Upgrade:
         # El Analyzer mostró que Over 17.5 funciona especialmente bien con RankGap 21-50
-        # y modelo >=82%. Permitimos que ese perfil suba a APTO; el resto sigue prudente.
-        if circuito == "WTA" and name == "Over 17.5" and prob >= 0.82 and wta_rankgap_ideal_over17:
+        # y modelo >=80%. Permitimos que ese perfil suba a APTO; el resto sigue prudente.
+        if circuito == "WTA" and name == "Over 17.5" and prob >= 0.80 and wta_rankgap_ideal_over17:
             grade = "✅ A"
             action = "APTO"
-            reason = reason + " · v23.39.4 Analyzer: RankGap 21-50 + Over17 >=82%"
+            reason = reason + " · v23.39.4 Analyzer: RankGap 21-50 + Over17 >=80%"
 
         # WTA Clay Over Recovery debe producir DUDOSAS/Watchlist útiles, no APTA agresiva,
         # salvo la regla histórica nueva del Analyzer para Over 17.5.
         if (
             circuito == "WTA" and surface == "Clay" and name in ["Over 17.5", "Over 18.5"]
             and action in ["APTO fuerte", "APTO"]
-            and not (name == "Over 17.5" and prob >= 0.82 and wta_rankgap_ideal_over17)
+            and not (name == "Over 17.5" and prob >= 0.80 and wta_rankgap_ideal_over17)
         ):
             grade = "⚖️ B"
             action = "Solo si acompaña lectura"
@@ -6875,7 +6875,7 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
 
     # v23.39.4 WTA Analyzer Rules Upgrade:
     # 1) Favorita gana al menos 1 set >=90% es mercado WTA estable.
-    # 2) Over 17.5 sube cuando el Analyzer encontró la zona fuerte: RankGap 21-50 + Over17 >=82%.
+    # 2) Over 17.5 sube cuando el Analyzer encontró la zona fuerte: RankGap 21-50 + Over17 >=80%.
     if str(circuito).upper().strip() == "WTA":
         over17_p = _safe_float_v23370(over17, 0.0)
         if fav_set >= 0.90:
@@ -6886,12 +6886,12 @@ def selector_mercado_maximo_acierto_v23370(sim, over17, over18, over19, over20, 
                 "motivo": "WTA Analyzer: favorito gana al menos 1 set >=90%, mercado más estable",
                 "tipo": "SET_FAV",
             }
-        if over17_p >= 0.82 and wta_rankgap_ideal_over17:
+        if over17_p >= 0.80 and wta_rankgap_ideal_over17:
             return {
                 "mercado": "Over 17.5",
                 "prob": float(np.clip(over17_p, 0.0, 0.995)),
                 "confianza": _confianza_acierto_v23370(over17_p),
-                "motivo": "WTA Analyzer: Over 17.5 >=82% con RankGap 21-50",
+                "motivo": "WTA Analyzer: Over 17.5 >=80% con RankGap 21-50",
                 "tipo": "OVER17_WTA",
             }
 
