@@ -9,8 +9,8 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.39.1-wta-reason-fix"
-QUALITY_ENGINE_VERSION = "v23.25.8-fallback-lectura-2026-05-18"
+APP_VERSION = "v23.39.2-wta-analyzer-fix"
+QUALITY_ENGINE_VERSION = "v23.39.2-wta-analyzer-fix-2026-05-28"
 
 # =========================================================
 # 🔒 OVER ENGINE LOCK
@@ -3834,26 +3834,99 @@ def encontrar_jugador(nombre_hist, db):
             best, mejor = score, nombre
     return mejor if mejor is not None and best >= 0.70 else None
 
-def total_games_row(row):
-    total = 0
-    for i in range(1,6):
-        w, l = row.get(f"W{i}", np.nan), row.get(f"L{i}", np.nan)
-        if not pd.isna(w) and not pd.isna(l): total += int(w) + int(l)
-    return total
+def _hist_score_text(row):
+    """Score histórico compatible con Tennis-Data/Jeff Sackmann: score, Score, Marcador."""
+    for c in ["score", "Score", "Marcador", "Resultado", "Result"]:
+        try:
+            v = row.get(c, "")
+            if normalizar_texto(v):
+                return normalizar_texto(v)
+        except Exception:
+            pass
+    return ""
 
-def hay_tiebreak_row(row):
-    for i in range(1,6):
+def _score_pairs_from_row(row):
+    """Devuelve pares de games desde columnas W1/L1... o desde score tipo '3-6 6-0 6-3'.
+    Los pares siempre están en perspectiva Winner/Loser cuando vienen de Tennis Abstract/Jeff.
+    """
+    pairs = []
+    for i in range(1, 6):
         w, l = row.get(f"W{i}", np.nan), row.get(f"L{i}", np.nan)
         if not pd.isna(w) and not pd.isna(l):
-            if (int(w), int(l)) in [(7,6), (6,7)]: return True
+            try:
+                pairs.append((int(w), int(l)))
+            except Exception:
+                pass
+    if pairs:
+        return pairs
+
+    txt = _hist_score_text(row).upper()
+    if not txt or any(x in txt for x in ["W/O", "WALKOVER", "RET", "DEF", "ABD", "DEFAULT"]):
+        return []
+    out = []
+    # Acepta 7-6(4), 6-7 [10-8], etc. Para Analyzer solo necesitamos games base.
+    for a, b in re.findall(r"(\d+)\s*-\s*(\d+)", txt):
+        try:
+            ga, gb = int(a), int(b)
+            # Evita capturar super tie-breaks como sets normales si aparecen como [10-8].
+            if ga <= 9 and gb <= 9:
+                out.append((ga, gb))
+        except Exception:
+            pass
+    return out
+
+def _sets_winner_loser_row(row):
+    try:
+        ws = row.get("Wsets", np.nan)
+        ls = row.get("Lsets", np.nan)
+        if not pd.isna(ws) and not pd.isna(ls):
+            return int(ws), int(ls)
+    except Exception:
+        pass
+    wsets = lsets = 0
+    for w, l in _score_pairs_from_row(row):
+        if w > l:
+            wsets += 1
+        elif l > w:
+            lsets += 1
+    return wsets, lsets
+
+def total_games_row(row):
+    return int(sum(w + l for w, l in _score_pairs_from_row(row)))
+
+def hay_tiebreak_row(row):
+    for w, l in _score_pairs_from_row(row):
+        if (int(w), int(l)) in [(7, 6), (6, 7)]:
+            return True
     return False
 
 def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_bt):
     rows = []
     df = hist_df.copy()
+
+    # v23.39.2 Analyzer WTA Fix:
+    # El Analyzer ahora usa columnas normalizadas MC_* y soporta CSV WTA tipo Jeff Sackmann
+    # (winner_name/loser_name/surface/score/best_of) sin exigir Comment='Completed'.
+    if "MC_Surface" not in df.columns:
+        df = normalizar_schema_historicos(df)
+
     if surface_filter != "Todas":
-        df = df[df["Surface"].astype(str) == surface_filter]
-    df = df[df["Comment"].astype(str).str.contains("Completed", na=False)]
+        surf_col = "MC_Surface" if "MC_Surface" in df.columns else "Surface"
+        df = df[df[surf_col].apply(lambda x: normalizar_superficie_hist(x, default="Hard")).astype(str) == surface_filter]
+
+    if "Comment" in df.columns:
+        comment_txt = df["Comment"].apply(normalizar_texto).replace({"nan": "", "NaN": "", "None": ""})
+        has_comment = comment_txt.str.strip().ne("")
+        completed_mask = comment_txt.str.contains("Completed", case=False, na=False)
+        # Solo filtramos Completed si existe información real de Comment.
+        # Los CSV WTA 2026 no traen Comment y antes el Analyzer los eliminaba o fallaba.
+        if has_comment.any() and completed_mask.sum() > 0:
+            df = df[(~has_comment) | completed_mask]
+
+    # Quita walkovers/retiradas si vienen en score; si no hay score, deja pasar Tennis-Data con W1/L1.
+    if "score" in df.columns or "Score" in df.columns:
+        df = df[df.apply(lambda r: bool(_score_pairs_from_row(r)), axis=1)]
+
     if max_matches:
         df = df.tail(max_matches)
 
@@ -3861,46 +3934,57 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
     total = len(df)
 
     for idx, (_, row) in enumerate(df.iterrows()):
-        winner_hist = normalizar_texto(row.get("Winner", ""))
-        loser_hist = normalizar_texto(row.get("Loser", ""))
-        surface = str(row.get("Surface", "Hard"))
-        best_of = int(leer_float(row.get("Best of", 3), 3))
+        winner_hist = normalizar_texto(row.get("MC_Winner", row.get("Winner", row.get("winner_name", ""))))
+        loser_hist = normalizar_texto(row.get("MC_Loser", row.get("Loser", row.get("loser_name", ""))))
+        surface = normalizar_superficie_hist(row.get("MC_Surface", row.get("Surface", row.get("surface", "Hard"))), default="Hard")
+        best_of = int(leer_float(row.get("Best of", row.get("best_of", 3)), 3))
+
+        if not winner_hist or not loser_hist:
+            continue
 
         p_win = encontrar_jugador(winner_hist, db)
         p_los = encontrar_jugador(loser_hist, db)
-        if p_win is None or p_los is None: continue
+        if p_win is None or p_los is None:
+            continue
 
         d_win, d_los = db[p_win], db[p_los]
         sim = sim_match(d_win, d_los, surface, circuito, best_of, sims_bt, context_row=row)
 
         p_raw, p_cal = sim["p1"], sim["p1_cal"]
         games_real = total_games_row(row)
+        if games_real <= 0:
+            continue
         games_model = sim["games"]
+        w_sets, l_sets = _sets_winner_loser_row(row)
+        set3_real = (w_sets + l_sets) >= 3 if best_of == 3 else (w_sets + l_sets) >= 4
 
-        try:
-            set3_real = int(row.get("Wsets", 0)) == 2 and int(row.get("Lsets", 0)) == 1
-        except:
-            set3_real = False
+        model_fav_is_winner = p_cal >= 0.50
+        real_fav_wins_set = True if model_fav_is_winner else (l_sets >= 1)
+        model_fav_wins_set = sim.get("p1_wins_set_any", 0.0) if model_fav_is_winner else sim.get("p2_wins_set_any", 0.0)
 
         fav_under22_real = (p_raw >= 0.50 and games_real < 22.5)
         dog_over20_real = (p_raw < 0.50 and games_real > 20.5)
 
         rows.append({
-            "Date": row.get("Date", ""), "Tournament": row.get("Tournament", ""),
-            "Series": row.get("Series", ""), "Round": row.get("Round", ""),
+            "Date": row.get("Date", row.get("tourney_date", "")), "Tournament": row.get("MC_Tournament", row.get("Tournament", row.get("tourney_name", ""))),
+            "Series": row.get("Series", row.get("MC_Level", row.get("tourney_level", ""))), "Round": row.get("MC_Round", row.get("Round", row.get("round", ""))),
             "Surface": surface, "WinnerHist": winner_hist, "LoserHist": loser_hist,
             "WinnerMatched": p_win, "LoserMatched": p_los,
-            "WinnerRank": leer_float(row.get("WRank", np.nan), np.nan),
-            "LoserRank": leer_float(row.get("LRank", np.nan), np.nan),
+            "WinnerRank": leer_float(row.get("WRank", row.get("winner_rank", np.nan)), np.nan),
+            "LoserRank": leer_float(row.get("LRank", row.get("loser_rank", np.nan)), np.nan),
+            "ResultadoScore": _hist_score_text(row),
+            "WinnerSets": w_sets, "LoserSets": l_sets,
             "ModelWinnerProbRaw": p_raw, "ModelWinnerProbCal": p_cal,
             "RawFavWasWinner": p_raw >= 0.50, "CalFavWasWinner": p_cal >= 0.50,
             "RealGames": games_real, "ModelAvgGames": np.mean(games_model),
             "Real3Sets": set3_real, "Model3Sets": sim["set3"],
             "RealTB": hay_tiebreak_row(row), "ModelTB": sim["tb"],
+            "RealOver17": games_real > 17.5, "ModelOver17": sum(x > 17.5 for x in games_model)/sims_bt,
             "RealOver18": games_real > 18.5, "ModelOver18": sum(x > 18.5 for x in games_model)/sims_bt,
             "RealOver19": games_real > 19.5, "ModelOver19": sum(x > 19.5 for x in games_model)/sims_bt,
             "RealOver20": games_real > 20.5, "ModelOver20": sum(x > 20.5 for x in games_model)/sims_bt,
             "RealOver22": games_real > 22.5, "ModelOver22": sum(x > 22.5 for x in games_model)/sims_bt,
+            "RealFavWinsSet": real_fav_wins_set, "ModelFavWinsSet": model_fav_wins_set,
             "RealFavUnder22": fav_under22_real, "ModelFavUnder22": sim["fav_under22"],
             "RealDogOver20": dog_over20_real, "ModelDogOver20": sim["dog_over20"],
             "ModelFav2_0": sim.get("fav_2_0", 0),
@@ -3938,6 +4022,7 @@ def crear_analyzer_tables(val, min_casos=20):
 
     rows = []
     for name, model, real in [
+        ("Over 17.5","ModelOver17","RealOver17"),
         ("Over 18.5","ModelOver18","RealOver18"),
         ("Over 19.5","ModelOver19","RealOver19"),
         ("Over 20.5","ModelOver20","RealOver20"),
@@ -3946,6 +4031,7 @@ def crear_analyzer_tables(val, min_casos=20):
         ("Tie-break","ModelTB","RealTB"),
         ("Favorito + Under 22.5","ModelFavUnder22","RealFavUnder22"),
         ("Dog + Over 20.5","ModelDogOver20","RealDogOver20"),
+        ("Favorito gana al menos 1 set","ModelFavWinsSet","RealFavWinsSet"),
         ("Favorito 2-0","ModelFav2_0","CalFavWasWinner"),
         ("Underdog gana set","ModelDogWinsSet","Real3Sets"),
         ("Partido largo","ModelLongMatch","RealOver22"),
@@ -3958,7 +4044,7 @@ def crear_analyzer_tables(val, min_casos=20):
 
     surface = val.groupby("Surface").agg(
         Casos=("Surface","count"), MLAccuracy=("CalFavWasWinner","mean"),
-        Over18Hit=("RealOver18","mean"), Over20Hit=("RealOver20","mean"),
+        Over17Hit=("RealOver17","mean"), Over18Hit=("RealOver18","mean"), Over20Hit=("RealOver20","mean"),
         Over22Hit=("RealOver22","mean"), ThreeSetsReal=("Real3Sets","mean"),
         TBReal=("RealTB","mean"), TBModel=("ModelTB","mean"),
         GamesReal=("RealGames","mean"), GamesModel=("ModelAvgGames","mean")
@@ -13408,6 +13494,7 @@ elif modo == "Validador histórico":
             st.error("No se pudieron emparejar partidos.")
             st.stop()
         ml_acc = val["CalFavWasWinner"].mean()
+        over17_acc = ((val["ModelOver17"] >= 0.50) == val["RealOver17"]).mean() if "ModelOver17" in val.columns else 0
         over18_acc = ((val["ModelOver18"] >= 0.50) == val["RealOver18"]).mean()
         over19_acc = ((val["ModelOver19"] >= 0.50) == val["RealOver19"]).mean() if "ModelOver19" in val.columns else 0
         over20_acc = ((val["ModelOver20"] >= 0.50) == val["RealOver20"]).mean()
@@ -13423,10 +13510,10 @@ elif modo == "Validador histórico":
         with c3: st.metric("3 sets accuracy", f"{set3_acc:.1%}")
         with c4: st.metric("Error medio games", f"{games_error:.2f}")
         d1,d2,d3 = st.columns(3)
-        with d1: st.metric("Over 18.5 accuracy", f"{over18_acc:.1%}")
-        with d2: st.metric("Over 19.5 accuracy", f"{over19_acc:.1%}")
+        with d1: st.metric("Over 17.5 accuracy", f"{over17_acc:.1%}")
+        with d2: st.metric("Over 18.5 / 19.5", f"{over18_acc:.1%} / {over19_acc:.1%}")
         with d3: st.metric("Tie-break accuracy", f"{tb_acc:.1%}")
-        st.caption(f"Over 22.5 accuracy: {over22_acc:.1%}")
+        st.caption(f"Over 20.5 accuracy: {over20_acc:.1%} · Over 22.5 accuracy: {over22_acc:.1%}")
         st.dataframe(val, width='stretch')
         st.download_button("⬇️ Descargar CSV", data=val.to_csv(index=False).encode("utf-8"), file_name="validacion_tennis_ia_v22.csv", mime="text/csv")
 
