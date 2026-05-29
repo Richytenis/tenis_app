@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.40.1-bet-plan-stake"
+APP_VERSION = "v23.39.5-wta-over17-rankgap80"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -7399,7 +7399,7 @@ def _combi_tipo_mercado(market):
         return "over20"
     if "UNDER 22.5" in m:
         return "under22"
-    if "+2.5" in m or "+3.5" in m or "MÁS DE 3.5" in m or "MAS DE 3.5" in m or "MÁS DE 3,5" in m or "MAS DE 3,5" in m or "NÚMERO DE SETS" in m or "NUMERO DE SETS" in m or "3 SET" in m or "TRES SET" in m:
+    if "+2.5" in m or "3 SET" in m or "TRES SET" in m:
         return "sets3"
     if "2-0" in m or "UNDER 2.5 SET" in m:
         return "fav20"
@@ -7411,22 +7411,20 @@ def _combi_tipo_mercado(market):
 
 
 COMBI_SAFE_PROFILES_V23268 = {
-    # v23.40: perfiles mucho más estrictos tras revisar combinadas falladas por una selección.
-    # La idea es NO convertir picks buenos en combinadas largas: primero rentabilidad, luego cuota.
     "🔒 Conservador": {
-        "ml": 0.82, "over17": 0.84, "over18": 0.83, "over19": 0.86, "over20": 0.90,
-        "under22": 0.76, "sets3": 0.66, "fav20": 0.76, "dog_set": 0.93, "otro": 0.82,
-        "max_picks": 2,
+        "ml": 0.78, "over17": 0.82, "over18": 0.81, "over19": 0.78, "over20": 0.72,
+        "under22": 0.72, "sets3": 0.47, "fav20": 0.70, "dog_set": 0.54, "otro": 0.78,
+        "max_picks": 3,
     },
     "⚖️ Normal": {
-        "ml": 0.79, "over17": 0.81, "over18": 0.81, "over19": 0.84, "over20": 0.88,
-        "under22": 0.74, "sets3": 0.62, "fav20": 0.73, "dog_set": 0.90, "otro": 0.79,
-        "max_picks": 2,
+        "ml": 0.75, "over17": 0.79, "over18": 0.79, "over19": 0.76, "over20": 0.70,
+        "under22": 0.70, "sets3": 0.45, "fav20": 0.67, "dog_set": 0.51, "otro": 0.75,
+        "max_picks": 3,
     },
     "🔥 Agresivo": {
-        "ml": 0.76, "over17": 0.79, "over18": 0.79, "over19": 0.82, "over20": 0.86,
-        "under22": 0.72, "sets3": 0.58, "fav20": 0.70, "dog_set": 0.88, "otro": 0.76,
-        "max_picks": 3,
+        "ml": 0.72, "over17": 0.76, "over18": 0.76, "over19": 0.73, "over20": 0.67,
+        "under22": 0.67, "sets3": 0.42, "fav20": 0.64, "dog_set": 0.49, "otro": 0.72,
+        "max_picks": 4,
     },
 }
 
@@ -7508,36 +7506,6 @@ def clasificar_combi_safe_row_v23268(row, profile_name="⚖️ Normal"):
             "Cuota tipo": cuota_tipo, "Tipo": tipo, "Min": min_prob,
             "Etiqueta": "❌ NO COMBI", "Combi Safe": False, "Score": 0.0,
             "Motivos": "recomendación/watch/no bet: no entra en combinada",
-        }
-
-    # v23.40 Combi Guard: reglas duras vistas en tickets reales.
-    # Cuotas muy bajas aportan poco a la combinada y siguen pudiendo romperla.
-    if cuota_tipo == "pegada" and cuota < 1.25 and tipo in ["ml", "dog_set", "fav20"]:
-        return {
-            "Partido": partido, "Mercado": market, "Prob": prob, "Cuota": cuota,
-            "Cuota tipo": cuota_tipo, "Tipo": tipo, "Min": min_prob,
-            "Etiqueta": "🔥 FUERTE SIMPLE", "Combi Safe": False, "Score": float(prob * 100.0 - 8),
-            "Motivos": "cuota <1.25: aporta poco y puede romper la combinada; mejor simple o fuera",
-        }
-
-    # El mercado gana al menos 1 set solo entra en combi si es realmente premium.
-    if tipo == "dog_set" and prob < max(min_prob, 0.90):
-        return {
-            "Partido": partido, "Mercado": market, "Prob": prob, "Cuota": cuota,
-            "Cuota tipo": cuota_tipo, "Tipo": tipo, "Min": max(min_prob, 0.90),
-            "Etiqueta": "🔥 FUERTE SIMPLE" if prob >= 0.84 else "❌ NO COMBI", "Combi Safe": False,
-            "Score": float(prob * 100.0 - 6),
-            "Motivos": "gana al menos 1 set no alcanza umbral premium para combinar",
-        }
-
-    # Over 19.5/20.5 suelen fallar por paliza: se aceptan solo como simples salvo probabilidad muy alta.
-    if tipo in ["over19", "over20"] and prob < min_prob:
-        return {
-            "Partido": partido, "Mercado": market, "Prob": prob, "Cuota": cuota,
-            "Cuota tipo": cuota_tipo, "Tipo": tipo, "Min": min_prob,
-            "Etiqueta": "🔥 FUERTE SIMPLE" if prob >= min_prob - 0.04 else "❌ NO COMBI", "Combi Safe": False,
-            "Score": float(prob * 100.0 - 5),
-            "Motivos": "Over alto: riesgo de paliza; no entra en combinada si no supera umbral premium",
         }
 
     if "CHALLENGER" in circuito or "CHALL" in circuito:
@@ -7645,15 +7613,6 @@ def construir_combinadas_v23268(ok_df, profile_name="⚖️ Normal", cuota_min=1
             if len(set(partidos)) != len(partidos):
                 continue
 
-            tipos_combo = [str(p.get("Tipo", "")) for p in combo]
-            # v23.40: evitar el fallo por uno acumulando mercados frágiles.
-            if sum(t in ["sets3", "dog_set"] for t in tipos_combo) > 1:
-                continue
-            if sum(t in ["over19", "over20"] for t in tipos_combo) > 1:
-                continue
-            if any(float(p.get("Cuota", 1.0) or 1.0) < 1.25 for p in combo):
-                continue
-
             cuota_total = 1.0
             confianza = 1.0
             score_medio = 0.0
@@ -7663,8 +7622,7 @@ def construir_combinadas_v23268(ok_df, profile_name="⚖️ Normal", cuota_min=1
                 score_medio += float(p["Score"])
             score_medio /= max(1, len(combo))
 
-            min_confianza_combo = 0.56 if n == 2 else 0.46
-            if float(cuota_min) <= cuota_total <= float(cuota_max) and confianza >= min_confianza_combo:
+            if float(cuota_min) <= cuota_total <= float(cuota_max):
                 weak = min(combo, key=lambda x: x["Prob"])
                 combos.append({
                     "Nº picks": n,
@@ -7764,207 +7722,21 @@ def construir_combinadas_plan_b_v23270(picks_df, cuota_min=1.60, cuota_max=1.80,
     return combos
 
 
-
-# =========================================================
-# v23.40.1 BET PLAN + STAKE ENGINE
-# Convierte picks en plan operativo: simples, dobles y stake.
-# No toca el predictor ni el motor Over; solo gestiona riesgo.
-# =========================================================
-
-def _stake_profile_params_v23401(mode):
-    mode = str(mode or "⚖️ Normal")
-    if "Conservador" in mode:
-        return {"simple_cap_u": 1.00, "combo_u": 0.25, "kelly_frac": 0.12, "max_singles": 4, "daily_pct": 3.0}
-    if "Agresivo" in mode:
-        return {"simple_cap_u": 1.50, "combo_u": 0.60, "kelly_frac": 0.25, "max_singles": 6, "daily_pct": 5.0}
-    return {"simple_cap_u": 1.25, "combo_u": 0.40, "kelly_frac": 0.18, "max_singles": 5, "daily_pct": 4.0}
-
-
-def _edge_kelly_v23401(prob, cuota):
-    try:
-        p = float(prob or 0.0)
-        q = float(cuota or 0.0)
-        if p <= 0 or q <= 1.0:
-            return None, None, None
-        implied = 1.0 / q
-        edge = p - implied
-        b = q - 1.0
-        kelly = ((b * p) - (1.0 - p)) / b if b > 0 else 0.0
-        return float(implied), float(edge), float(max(0.0, kelly))
-    except Exception:
-        return None, None, None
-
-
-def _stake_units_for_pick_v23401(row, stake_mode="⚖️ Normal"):
-    params = _stake_profile_params_v23401(stake_mode)
-    etiqueta = str(row.get("Etiqueta", ""))
-    tipo = str(row.get("Tipo", ""))
-    prob = float(row.get("Prob", 0.0) or 0.0)
-    cuota = float(row.get("Cuota", 1.0) or 1.0)
-    cuota_tipo = str(row.get("Cuota tipo", ""))
-
-    # Base por calidad del pick.
-    if etiqueta == "🧱 COMBI SAFE":
-        units = 1.00
-    elif etiqueta == "🔥 FUERTE SIMPLE":
-        units = 0.60
-    else:
-        return 0.0, "PASAR", "no es pick jugable para plan"
-
-    # Ajustes por probabilidad.
-    if prob >= 0.92:
-        units += 0.20
-    elif prob >= 0.86:
-        units += 0.10
-    elif prob < 0.76:
-        units -= 0.20
-
-    # Ajustes por mercado: algunos picks son buenos, pero frágiles en staking.
-    if tipo in ["sets3", "dog_set"]:
-        units *= 0.60
-    elif tipo in ["over19", "over20"]:
-        units *= 0.55
-    elif tipo in ["over17", "over18"]:
-        units *= 1.05
-    elif tipo == "ml":
-        units *= 0.90
-
-    # Cuotas muy bajas: mejor no cargarlas, aunque sean verdes.
-    if cuota_tipo == "pegada" and cuota < 1.25:
-        units *= 0.45
-
-    implied, edge, kelly = _edge_kelly_v23401(prob, cuota)
-    nota_value = ""
-    if cuota_tipo == "pegada" and implied is not None:
-        if edge <= 0:
-            return 0.0, "PASAR", f"sin value con cuota {cuota:.2f}: prob modelo {prob:.1%} vs implícita {implied:.1%}"
-        if edge < 0.025:
-            units *= 0.50
-            nota_value = f"edge pequeño +{edge:.1%}: stake reducido"
-        elif edge >= 0.08:
-            units *= 1.10
-            nota_value = f"edge bueno +{edge:.1%}"
-        else:
-            nota_value = f"edge positivo +{edge:.1%}"
-
-        # Kelly fraccionado como techo, no como orden agresiva.
-        if kelly is not None and kelly > 0:
-            # Convertimos Kelly % en unidades aproximadas asumiendo 1u≈1% bankroll.
-            kelly_units_cap = max(0.20, min(params["simple_cap_u"], kelly * params["kelly_frac"] * 100.0))
-            units = min(units, kelly_units_cap)
-
-    units = float(np.clip(units, 0.0, params["simple_cap_u"]))
-    if units <= 0:
-        return 0.0, "PASAR", nota_value or "stake cero por filtros"
-    label = "SIMPLE" if etiqueta == "🧱 COMBI SAFE" else "SIMPLE BAJO"
-    return units, label, nota_value or "stake por confianza/mercado"
-
-
-def construir_plan_apuestas_v23401(picks_df, combos, bankroll=100.0, unit_amount=1.0, max_daily_pct=4.0, stake_mode="⚖️ Normal"):
-    if picks_df is None or picks_df.empty:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), 0.0, 0.0
-
-    params = _stake_profile_params_v23401(stake_mode)
-    try:
-        bankroll = float(bankroll or 0.0)
-        unit_amount = float(unit_amount or 0.0)
-        max_daily_pct = float(max_daily_pct or params["daily_pct"])
-    except Exception:
-        bankroll, unit_amount, max_daily_pct = 100.0, 1.0, params["daily_pct"]
-
-    daily_cap = max(0.0, bankroll * max_daily_pct / 100.0)
-    rows = []
-    df = picks_df.copy()
-    df = df.sort_values(["Etiqueta", "Score", "Prob"], ascending=[True, False, False])
-
-    for _, r in df.iterrows():
-        units, play_type, note = _stake_units_for_pick_v23401(r, stake_mode=stake_mode)
-        if units <= 0:
-            continue
-        stake = units * unit_amount
-        rows.append({
-            "Juego": play_type,
-            "Partido": r.get("Partido", ""),
-            "Mercado": r.get("Mercado", ""),
-            "Prob %": round(float(r.get("Prob", 0.0) or 0.0) * 100.0, 1),
-            "Cuota": round(float(r.get("Cuota", 1.0) or 1.0), 2),
-            "Cuota tipo": r.get("Cuota tipo", ""),
-            "Stake u": round(units, 2),
-            "Stake €": round(stake, 2),
-            "Motivo stake": note,
-            "Etiqueta": r.get("Etiqueta", ""),
-            "Tipo": r.get("Tipo", ""),
-            "Score": float(r.get("Score", 0.0) or 0.0),
-        })
-
-    singles = pd.DataFrame(rows)
-    if not singles.empty:
-        max_singles = int(params.get("max_singles", 5))
-        singles = singles.sort_values(["Stake u", "Score", "Prob %"], ascending=[False, False, False]).head(max_singles).copy()
-
-    combo_rows = []
-    # Solo primeras 2 combinadas oficiales. La combinada es complemento, no base.
-    for i, combo in enumerate((combos or [])[:2], start=1):
-        combo_units = float(params.get("combo_u", 0.40))
-        if float(combo.get("Nº picks", 2)) >= 3:
-            combo_units *= 0.60
-        stake = combo_units * unit_amount
-        combo_rows.append({
-            "Juego": f"DOBLE/TRIPLE #{i}",
-            "Nº picks": combo.get("Nº picks", ""),
-            "Cuota total": round(float(combo.get("Cuota total", 1.0) or 1.0), 2),
-            "Confianza global": f"{float(combo.get('Confianza global', 0.0) or 0.0):.1%}",
-            "Stake u": round(combo_units, 2),
-            "Stake €": round(stake, 2),
-            "Pick más débil": combo.get("Pick más débil", ""),
-            "Picks": " + ".join([str(p.get("Mercado", "")) + " — " + str(p.get("Partido", "")) for p in combo.get("Picks", [])]),
-            "Motivo stake": "combinada controlada; stake pequeño para evitar fallo por una",
-        })
-    combo_plan = pd.DataFrame(combo_rows)
-
-    total_stake = 0.0
-    if not singles.empty:
-        total_stake += float(singles["Stake €"].sum())
-    if not combo_plan.empty:
-        total_stake += float(combo_plan["Stake €"].sum())
-
-    # Escalado por límite diario.
-    if daily_cap > 0 and total_stake > daily_cap:
-        factor = daily_cap / total_stake
-        if not singles.empty:
-            singles["Stake €"] = (singles["Stake €"] * factor).round(2)
-            singles["Stake u"] = (singles["Stake u"] * factor).round(2)
-            singles["Motivo stake"] = singles["Motivo stake"].astype(str) + f" · escalado por límite diario {max_daily_pct:.1f}%"
-        if not combo_plan.empty:
-            combo_plan["Stake €"] = (combo_plan["Stake €"] * factor).round(2)
-            combo_plan["Stake u"] = (combo_plan["Stake u"] * factor).round(2)
-            combo_plan["Motivo stake"] = combo_plan["Motivo stake"].astype(str) + f" · escalado por límite diario {max_daily_pct:.1f}%"
-        total_stake = daily_cap
-
-    no_play = picks_df[picks_df["Etiqueta"].astype(str).str.contains("NO COMBI", na=False)].copy() if "Etiqueta" in picks_df.columns else pd.DataFrame()
-    if not no_play.empty:
-        no_play = no_play.sort_values("Score", ascending=False).head(8).copy()
-        no_play["Prob %"] = (no_play["Prob"].astype(float) * 100).round(1)
-        no_play["Cuota"] = no_play["Cuota"].astype(float).round(2)
-
-    return singles, combo_plan, no_play, float(total_stake), float(daily_cap)
-
-
 def render_constructor_combinadas_v23268(ok_df):
     st.divider()
-    st.subheader("💰 Plan de apuestas + 🧱 Combi Guard")
-    st.caption("Objetivo: rentabilidad y evitar el fallo por una. Prioriza simples, dobles limpias y bloquea cuotas bajas/mercados frágiles.")
+    st.subheader("🧱 Constructor de combinadas seguras")
+    st.caption("Usa el Mercado recomendado real de la tabla. Diferencia 🔥 fuerte simple de 🧱 apto para combinada.")
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         profile_name = st.selectbox("Modo combi", list(COMBI_SAFE_PROFILES_V23268.keys()), index=1, key="combi_profile_v23268")
     with c2:
-        cuota_min = st.number_input("Cuota mínima", min_value=1.01, max_value=10.0, value=1.70, step=0.05, key="combi_cuota_min_v23268")
+        cuota_min = st.number_input("Cuota mínima", min_value=1.01, max_value=10.0, value=1.60, step=0.05, key="combi_cuota_min_v23268")
     with c3:
-        cuota_max = st.number_input("Cuota máxima", min_value=1.01, max_value=10.0, value=2.40, step=0.05, key="combi_cuota_max_v23268")
+        cuota_max = st.number_input("Cuota máxima", min_value=1.01, max_value=10.0, value=1.80, step=0.05, key="combi_cuota_max_v23268")
     with c4:
         max_default = COMBI_SAFE_PROFILES_V23268.get(profile_name, {}).get("max_picks", 3)
-        max_picks = st.slider("Máx picks", 2, 3, int(max_default), key="combi_max_picks_v23268")
+        max_picks = st.slider("Máx picks", 2, 5, int(max_default), key="combi_max_picks_v23268")
 
     min_picks = 2
     picks_df, combos = construir_combinadas_v23268(
@@ -7975,18 +7747,6 @@ def render_constructor_combinadas_v23268(ok_df):
         min_picks=min_picks,
         max_picks=max_picks,
     )
-
-    st.markdown("### 🎯 Cómo jugarlos + stake")
-    s1, s2, s3, s4 = st.columns(4)
-    with s1:
-        bankroll_plan = st.number_input("Bankroll €", min_value=1.0, max_value=100000.0, value=100.0, step=10.0, key="stake_bankroll_v23401")
-    with s2:
-        unit_plan = st.number_input("Unidad base €", min_value=0.10, max_value=1000.0, value=1.0, step=0.10, key="stake_unit_v23401")
-    with s3:
-        default_daily = _stake_profile_params_v23401(profile_name).get("daily_pct", 4.0)
-        daily_pct_plan = st.number_input("Riesgo máx diario %", min_value=0.1, max_value=20.0, value=float(default_daily), step=0.25, key="stake_daily_pct_v23401")
-    with s4:
-        stake_mode = st.selectbox("Modo stake", ["🔒 Conservador", "⚖️ Normal", "🔥 Agresivo"], index=1, key="stake_mode_v23401")
 
     if picks_df.empty:
         st.warning("No hay picks suficientes para construir combinadas.")
@@ -8007,37 +7767,6 @@ def render_constructor_combinadas_v23268(ok_df):
 
     with st.expander("Ver clasificación combi de todos los picks", expanded=False):
         st.dataframe(show[[c for c in cols if c in show.columns]], width='stretch', hide_index=True)
-
-    singles_plan, combo_stake_plan, no_play_plan, total_stake_plan, daily_cap_plan = construir_plan_apuestas_v23401(
-        picks_df,
-        combos,
-        bankroll=bankroll_plan,
-        unit_amount=unit_plan,
-        max_daily_pct=daily_pct_plan,
-        stake_mode=stake_mode,
-    )
-
-    st.markdown("### ✅ Plan recomendado de juego")
-    p1, p2, p3 = st.columns(3)
-    p1.metric("Stake total plan", f"{total_stake_plan:.2f} €")
-    p2.metric("Límite diario", f"{daily_cap_plan:.2f} €")
-    p3.metric("% bankroll usado", f"{(total_stake_plan / bankroll_plan * 100.0) if bankroll_plan else 0:.2f}%")
-
-    if singles_plan.empty and combo_stake_plan.empty:
-        st.warning("Hoy la app no encuentra una forma limpia de jugar estos picks con stake. Mejor no forzar.")
-    else:
-        if not singles_plan.empty:
-            st.markdown("#### 🎾 Simples recomendadas")
-            st.dataframe(singles_plan[["Juego", "Partido", "Mercado", "Prob %", "Cuota", "Cuota tipo", "Stake u", "Stake €", "Motivo stake"]], width='stretch', hide_index=True)
-        if not combo_stake_plan.empty:
-            st.markdown("#### 🔗 Combinadas pequeñas recomendadas")
-            st.dataframe(combo_stake_plan[["Juego", "Nº picks", "Cuota total", "Confianza global", "Stake u", "Stake €", "Pick más débil", "Motivo stake"]], width='stretch', hide_index=True)
-            with st.expander("Ver composición de combinadas"):
-                st.dataframe(combo_stake_plan[["Juego", "Picks"]], width='stretch', hide_index=True)
-
-    if not no_play_plan.empty:
-        with st.expander("❌ Picks que NO usaría para combinada"):
-            st.dataframe(no_play_plan[[c for c in ["Partido", "Mercado", "Prob %", "Cuota", "Motivos"] if c in no_play_plan.columns]], width='stretch', hide_index=True)
 
     if not combos:
         st.error("❌ No hay combinada segura dentro del rango de cuota objetivo.")
@@ -13872,8 +13601,8 @@ Sebastián Baez - Roberto Carballés Baena"""
             st.subheader("🔥 Resumen ordenado completo")
             st.dataframe(ok_saved, width='stretch', hide_index=True)
 
-            # v23.40.1: Plan de apuestas + stake operativo.
-            render_constructor_combinadas_v23268(ok_saved)
+            # v23.30.3: constructor de combinadas oculto de la vista por simplicidad.
+            # render_constructor_combinadas_v23268(ok_saved)
 
             dl1, dl2 = st.columns(2)
             with dl1:
