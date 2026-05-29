@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.41.0-plan-global-dia"
+APP_VERSION = "v23.41.1-cuotas-alternativas-value"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -7623,6 +7623,14 @@ def clasificar_combi_safe_row_v23268(row, profile_name="⚖️ Normal"):
         "Combi Safe": bool(safe),
         "Score": float(score),
         "Motivos": " · ".join(reasons) if reasons else "sin alerta adicional",
+        # v23.41.1: conservar probabilidades alternativas para comparar cuotas reales de otras líneas.
+        "Prob Over 17.5": _row_pct(row, "Over 17.5", 0.0),
+        "Prob Over 18.5": _row_pct(row, "Over 18.5", 0.0),
+        "Prob Over 19.5": _row_pct(row, "Over 19.5", 0.0),
+        "Prob Over 20.5": _row_pct(row, "Over 20.5", 0.0),
+        "Prob Over 22.5": _row_pct(row, "Over 22.5", 0.0),
+        "Prob +2.5 sets": _row_pct(row, "Partido a 3 sets", 0.0),
+        "Prob gana set alt": _row_pct(row, "Prob gana set", 0.0),
     }
 
 
@@ -8003,6 +8011,195 @@ def _set_global_picks_v23410(df):
     st.session_state[GLOBAL_BET_PLAN_KEY_V23410] = out
 
 
+
+# =========================================================
+# v23.41.1 CUOTAS REALES + MERCADOS ALTERNATIVOS
+# Permite comparar, por ejemplo, Over 18.5 recomendado vs Over 19.5 real.
+# No cambia el predictor; solo decide qué línea tiene mejor value/stake.
+# =========================================================
+
+ALT_ODDS_STATE_KEY_V23411 = "global_alt_odds_editor_v23411"
+
+
+def _prob_stake_cap_v23411(prob, tipo="otro"):
+    """Cap de probabilidad para staking: nunca tratamos un pick como 100% real."""
+    try:
+        p = float(prob or 0.0)
+    except Exception:
+        return 0.0
+    tipo = str(tipo or "otro")
+    if tipo in ["over17", "over18"]:
+        cap = 0.92
+    elif tipo in ["over19", "over20"]:
+        cap = 0.89
+    elif tipo in ["dog_set", "fav20"]:
+        cap = 0.96
+    elif tipo == "sets3":
+        cap = 0.78
+    elif tipo == "ml":
+        cap = 0.95
+    else:
+        cap = 0.92
+    return float(np.clip(p, 0.0, cap))
+
+
+def _edge_alt_value_v23411(prob, cuota, tipo="otro"):
+    try:
+        q = float(str(cuota).replace(",", "."))
+        if q <= 1.0:
+            return None
+        p_raw = float(prob or 0.0)
+        p = _prob_stake_cap_v23411(p_raw, tipo)
+        implied = 1.0 / q
+        edge = p - implied
+        ev = (p * q) - 1.0
+        return {"prob_raw": p_raw, "prob_used": p, "cuota": q, "implied": implied, "edge": edge, "ev": ev}
+    except Exception:
+        return None
+
+
+def _alt_candidates_from_row_v23411(row):
+    """Devuelve mercados alternativos disponibles para una fila acumulada."""
+    base = []
+    partido = str(row.get("Partido", "") or "")
+    actual_market = str(row.get("Mercado", "") or "")
+    actual_prob = float(row.get("Prob", 0.0) or 0.0)
+    actual_tipo = str(row.get("Tipo", "") or _combi_tipo_mercado(actual_market))
+    base.append({"Partido": partido, "Mercado": actual_market, "Prob": actual_prob, "Tipo": actual_tipo, "odds_col": "Cuota real actual", "kind": "actual"})
+
+    for line, col, tipo in [
+        ("17.5", "Prob Over 17.5", "over17"),
+        ("18.5", "Prob Over 18.5", "over18"),
+        ("19.5", "Prob Over 19.5", "over19"),
+        ("20.5", "Prob Over 20.5", "over20"),
+        ("22.5", "Prob Over 22.5", "over22"),
+    ]:
+        try:
+            pr = float(row.get(col, 0.0) or 0.0)
+        except Exception:
+            pr = 0.0
+        if pr > 0:
+            base.append({"Partido": partido, "Mercado": f"OVER {line}", "Prob": pr, "Tipo": tipo, "odds_col": f"Cuota Over {line}", "kind": "alt"})
+
+    # Eliminar duplicados por mercado conservando el primero.
+    seen = set()
+    out = []
+    for c in base:
+        k = limpiar(c.get("Mercado", ""))
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(c)
+    return out
+
+
+def _preparar_editor_cuotas_v23411(global_df):
+    if global_df is None or global_df.empty:
+        return pd.DataFrame()
+    df = global_df.copy().reset_index(drop=True)
+    if "GlobalKey" not in df.columns:
+        df["GlobalKey"] = df.apply(_global_pick_key_v23410, axis=1)
+    for c in ["Cuota real actual", "Cuota Over 17.5", "Cuota Over 18.5", "Cuota Over 19.5", "Cuota Over 20.5", "Cuota Over 22.5"]:
+        if c not in df.columns:
+            df[c] = ""
+    show_cols = [
+        "GlobalKey", "Etiqueta", "Partido", "Mercado", "Prob", "Cuota", "Cuota tipo",
+        "Cuota real actual", "Cuota Over 17.5", "Cuota Over 18.5", "Cuota Over 19.5", "Cuota Over 20.5", "Cuota Over 22.5",
+        "Prob Over 17.5", "Prob Over 18.5", "Prob Over 19.5", "Prob Over 20.5", "Prob Over 22.5"
+    ]
+    return df[[c for c in show_cols if c in df.columns]].copy()
+
+
+def _aplicar_cuotas_alternativas_v23411(global_df, odds_editor_df):
+    """Elige el mejor mercado por edge positivo entre mercado actual y líneas alternativas con cuota real."""
+    if global_df is None or global_df.empty or odds_editor_df is None or odds_editor_df.empty:
+        return global_df.copy() if isinstance(global_df, pd.DataFrame) else pd.DataFrame(), pd.DataFrame()
+
+    df = global_df.copy().reset_index(drop=True)
+    if "GlobalKey" not in df.columns:
+        df["GlobalKey"] = df.apply(_global_pick_key_v23410, axis=1)
+    odds = odds_editor_df.copy()
+    if "GlobalKey" not in odds.columns:
+        return df, pd.DataFrame()
+    odds = odds.drop_duplicates("GlobalKey", keep="last").set_index("GlobalKey")
+
+    decisions = []
+    updated_rows = []
+    for _, row in df.iterrows():
+        r = row.copy()
+        gk = r.get("GlobalKey")
+        odds_row = odds.loc[gk] if gk in odds.index else None
+        best = None
+        evals = []
+        for cand in _alt_candidates_from_row_v23411(r):
+            q = None
+            if odds_row is not None and cand["odds_col"] in odds_row.index:
+                q = odds_row.get(cand["odds_col"], "")
+            # Para el mercado actual, si no se rellenó cuota real, mantenemos cuota pegada/estimada solo como referencia.
+            if (q is None or str(q).strip() == "") and cand["kind"] == "actual":
+                q = r.get("Cuota", "") if str(r.get("Cuota tipo", "")).lower() == "pegada" else ""
+            val = _edge_alt_value_v23411(cand.get("Prob"), q, cand.get("Tipo"))
+            if val is None:
+                continue
+            item = {**cand, **val}
+            evals.append(item)
+            # Exigimos edge positivo real. Para alternativas más altas pedimos un poco más.
+            min_edge = 0.015 if cand.get("kind") == "actual" else 0.020
+            if item["edge"] >= min_edge:
+                if best is None or (item["ev"], item["edge"], item["cuota"]) > (best["ev"], best["edge"], best["cuota"]):
+                    best = item
+
+        if best is not None:
+            r["Mercado"] = best["Mercado"]
+            r["Prob"] = float(best["prob_used"])
+            r["Prob modelo original"] = float(best["prob_raw"])
+            r["Cuota"] = float(best["cuota"])
+            r["Cuota tipo"] = "real alternativa" if best.get("kind") == "alt" else "real"
+            r["Tipo"] = best["Tipo"]
+            r["Edge real"] = float(best["edge"])
+            r["EV real"] = float(best["ev"])
+            r["Mercado elegido value"] = best["Mercado"]
+            if str(r.get("Etiqueta", "")) == "❌ NO COMBI" and best["prob_used"] >= float(r.get("Min", 0.80) or 0.80):
+                r["Etiqueta"] = "🔥 FUERTE SIMPLE"
+            decisions.append({
+                "Partido": r.get("Partido", ""),
+                "Mercado elegido": best["Mercado"],
+                "Prob usada %": round(best["prob_used"] * 100, 1),
+                "Prob modelo %": round(best["prob_raw"] * 100, 1),
+                "Cuota real": round(best["cuota"], 2),
+                "Implícita %": round(best["implied"] * 100, 1),
+                "Edge %": round(best["edge"] * 100, 1),
+                "EV %": round(best["ev"] * 100, 1),
+                "Tipo cuota": r.get("Cuota tipo", ""),
+            })
+        else:
+            # Si se han rellenado cuotas pero ninguna tiene value, bloqueamos para stake automático.
+            if evals:
+                r["Etiqueta"] = "❌ NO COMBI"
+                r["Combi Safe"] = False
+                r["Motivos"] = str(r.get("Motivos", "")) + " · sin value real en cuotas introducidas"
+                best_no = max(evals, key=lambda x: x["ev"])
+                decisions.append({
+                    "Partido": r.get("Partido", ""),
+                    "Mercado elegido": "PASAR",
+                    "Prob usada %": round(best_no["prob_used"] * 100, 1),
+                    "Prob modelo %": round(best_no["prob_raw"] * 100, 1),
+                    "Cuota real": round(best_no["cuota"], 2),
+                    "Implícita %": round(best_no["implied"] * 100, 1),
+                    "Edge %": round(best_no["edge"] * 100, 1),
+                    "EV %": round(best_no["ev"] * 100, 1),
+                    "Tipo cuota": "sin value",
+                })
+        updated_rows.append(r)
+
+    out = pd.DataFrame(updated_rows)
+    if "Combi Safe" not in out.columns:
+        out["Combi Safe"] = out.get("Etiqueta", "").astype(str).str.contains("COMBI SAFE", na=False)
+    else:
+        out["Combi Safe"] = out.get("Etiqueta", "").astype(str).str.contains("COMBI SAFE", na=False)
+    return out, pd.DataFrame(decisions)
+
+
 def construir_combinadas_desde_picks_v23410(picks_df, cuota_min=1.70, cuota_max=2.40, min_picks=2, max_picks=2):
     """Construye combinadas oficiales desde picks ya clasificados en la bolsa global."""
     if picks_df is None or picks_df.empty:
@@ -8097,15 +8294,37 @@ def render_plan_global_dia_v23410(picks_df_actual, cuota_min, cuota_max, max_pic
         cols = ["Etiqueta", "Partido", "Mercado", "Prob %", "Mínimo %", "Cuota", "Cuota tipo", "Fuente análisis", "Motivos"]
         st.dataframe(show_global[[c for c in cols if c in show_global.columns]], width='stretch', hide_index=True)
 
+    st.markdown("#### 💸 Cuotas reales y mercados alternativos")
+    st.caption("Rellena la cuota real del mercado recomendado y, si existe, la cuota de otra línea del mismo partido. Ejemplo: pick Over 18.5, puedes poner también cuota Over 19.5 y la app elegirá la opción con más value real.")
+
+    editor_base = _preparar_editor_cuotas_v23411(global_df)
+    with st.expander("Editar cuotas reales / alternativas", expanded=True):
+        odds_editor = st.data_editor(
+            editor_base,
+            width='stretch',
+            hide_index=True,
+            key="odds_editor_global_v23411",
+            disabled=[c for c in editor_base.columns if c not in ["Cuota real actual", "Cuota Over 17.5", "Cuota Over 18.5", "Cuota Over 19.5", "Cuota Over 20.5", "Cuota Over 22.5"]],
+        )
+        st.info("Si no rellenas cuotas reales, la app sigue usando las cuotas estimadas solo como orientación. Para stake rentable, lo ideal es rellenar al menos la cuota real de los picks que te interesan.")
+
+    global_df_value, value_decisions = _aplicar_cuotas_alternativas_v23411(global_df, odds_editor)
+    if not value_decisions.empty:
+        st.markdown("##### 🧮 Mejor mercado por value real")
+        st.dataframe(value_decisions, width='stretch', hide_index=True)
+        st.success("El plan de stake de abajo ya usa estas cuotas reales y el mercado alternativo elegido cuando tiene más value.")
+    else:
+        global_df_value = global_df
+
     global_combos = construir_combinadas_desde_picks_v23410(
-        global_df,
+        global_df_value,
         cuota_min=cuota_min,
         cuota_max=cuota_max,
         min_picks=2,
         max_picks=max_picks,
     )
     singles_g, combos_g, no_play_g, total_g, cap_g = construir_plan_apuestas_v23401(
-        global_df,
+        global_df_value,
         global_combos,
         bankroll=bankroll_plan,
         unit_amount=unit_plan,
