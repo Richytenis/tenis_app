@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.42.0-auto-profile-finder"
+APP_VERSION = "v23.42.1-auto-profile-visible"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -8618,6 +8618,15 @@ def render_plan_global_dia_v23410(picks_df_actual, cuota_min, cuota_max, max_pic
         st.info("Flujo: analiza Challenger → añadir · analiza ATP GS → añadir · analiza WTA → añadir · mira este plan global.")
 
     global_df = _get_global_picks_v23410()
+
+    # v23.42.1: Auto perfiles visible incluso antes de tener plan global acumulado.
+    # Así puedes analizar una tanda, ver faltantes y buscarlos sin tener que descubrir el bloque por error.
+    try:
+        render_auto_profile_finder_v23420(current_df=picks_df_actual, global_df=global_df)
+    except Exception as e:
+        st.warning("No se pudo mostrar el bloque de Auto perfiles, pero el resto del Plan Global sigue funcionando.")
+        st.caption(f"Detalle técnico Auto perfiles: {type(e).__name__}: {e}")
+
     if global_df.empty:
         st.warning("Todavía no hay picks acumulados. Añade la tanda actual y repite con los otros circuitos.")
         return
