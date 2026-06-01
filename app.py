@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.41.3-mobile-safe-cuotas"
+APP_VERSION = "v23.42.0-auto-profile-finder"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -1369,6 +1369,348 @@ def buscar_quality(nombre, quality_map):
         "candidate_matches": closest_quality_candidates(nombre, quality_map, limit=8),
     }
 
+
+
+# =========================================================
+# v23.42.0 AUTO PROFILE FINDER + CACHE
+# Objetivo: evitar copiar/pegar perfiles manuales cada día.
+# - Detecta jugadores del plan global / tanda actual.
+# - Busca primero en caché local.
+# - Opcional: descarga ranking Elo TennisAbstract y guarda coincidencias.
+# - Integra la caché en cargar_datos() sin tocar motor Over.
+# =========================================================
+
+AUTO_PROFILE_VERSION = "v23.42.0-auto-profile-finder"
+AUTO_PROFILE_DIR = os.path.join("datos", "auto_profiles")
+
+
+def _auto_profile_ensure_dir_v23420():
+    try:
+        os.makedirs(AUTO_PROFILE_DIR, exist_ok=True)
+    except Exception:
+        pass
+
+
+def _auto_profile_circuit_key_v23420(circuito):
+    c = str(circuito or "ATP").upper().strip()
+    if c == "CHALLENGER" or c == "CHALLENGER_ATP":
+        return "CHALLENGER"
+    if c == "WTA":
+        return "WTA"
+    return "ATP"
+
+
+def _auto_profile_path_v23420(circuito):
+    _auto_profile_ensure_dir_v23420()
+    c = _auto_profile_circuit_key_v23420(circuito).lower()
+    return os.path.join(AUTO_PROFILE_DIR, f"{c}_profiles.csv")
+
+
+def _auto_profile_read_cache_v23420(circuito):
+    path = _auto_profile_path_v23420(circuito)
+    if not os.path.exists(path):
+        return pd.DataFrame()
+    try:
+        df = pd.read_csv(path)
+        if "Player" not in df.columns:
+            return pd.DataFrame()
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def _auto_profile_write_cache_v23420(circuito, rows):
+    if rows is None:
+        return 0
+    new = pd.DataFrame(rows)
+    if new.empty or "Player" not in new.columns:
+        return 0
+    path = _auto_profile_path_v23420(circuito)
+    old = _auto_profile_read_cache_v23420(circuito)
+    df = pd.concat([old, new], ignore_index=True) if not old.empty else new
+    df["_clean"] = df["Player"].apply(limpiar)
+    df = df[df["_clean"].astype(str).str.len() > 0].copy()
+    if "SourceScore" not in df.columns:
+        df["SourceScore"] = 0.0
+    df["SourceScore"] = pd.to_numeric(df["SourceScore"], errors="coerce").fillna(0.0)
+    df = df.sort_values(["SourceScore"], ascending=False).drop_duplicates("_clean", keep="first")
+    df = df.drop(columns=["_clean"], errors="ignore")
+    try:
+        df.to_csv(path, index=False)
+        return len(new)
+    except Exception:
+        return 0
+
+
+def _auto_profile_default_quality_v23420(name=""):
+    return {
+        "matches_total": 0,
+        "matches_surface": {"Hard": 0, "Clay": 0, "Grass": 0},
+        "level_counts": {"tour": 0, "challenger": 0, "itf": 0, "qualy": 0, "unknown": 0},
+        "tour_quality": 0.45,
+        "stability": {"Hard": 0.05, "Clay": 0.05, "Grass": 0.05},
+        "confidence": {"Hard": 0.32, "Clay": 0.32, "Grass": 0.32},
+        "raw_names": [name] if name else [],
+        "aliases": list(variantes_nombre_quality(name)) if name else [],
+        "source_files": ["auto_profile_cache"],
+        "matched_name": name or "AUTO PROFILE",
+        "match_score": 1.0 if name else 0.0,
+        "quality_map_size": 0,
+        "quality_meta": {"version": AUTO_PROFILE_VERSION, "mode": "auto_profile_cache"},
+        "candidate_matches": [],
+        "auto_profile": True,
+    }
+
+
+def aplicar_auto_profile_cache_v23420(players, circuito):
+    """Añade perfiles auto-completados desde datos/auto_profiles/*.csv.
+    No pisa jugadores ya encontrados; solo rellena faltantes.
+    """
+    try:
+        df = _auto_profile_read_cache_v23420(circuito)
+        if df.empty:
+            return players
+        out = dict(players or {})
+        existing = {limpiar(k) for k in out.keys()}
+        circ = str(circuito or "ATP").upper().strip()
+        circ_for_stats = "ATP" if circ in ["CHALLENGER", "CHALLENGER_ATP"] else circ
+        for _, row in df.iterrows():
+            name = normalizar_texto(row.get("Player", ""))
+            if not name or limpiar(name) in existing:
+                continue
+            rank = int(leer_float(row.get("Rank", row.get("EloRank", 999)), 999))
+            elo = leer_float(row.get("Elo", 1500), 1500)
+            hard = leer_float(row.get("Hard", row.get("hElo", elo)), elo)
+            clay = leer_float(row.get("Clay", row.get("cElo", elo)), elo)
+            grass = leer_float(row.get("Grass", row.get("gElo", elo)), elo)
+            stats_general = stats_default_por_elo(clay, rank, "Clay", circ_for_stats)
+            stats_general["found_stats"] = True
+            stats_general["raw_name_stats"] = name
+            stats_general["match_type"] = "auto_profile_cache"
+            stats_by_surface = {
+                "Hard": stats_default_por_elo(hard, rank, "Hard", circ_for_stats),
+                "Clay": stats_default_por_elo(clay, rank, "Clay", circ_for_stats),
+                "Grass": stats_default_por_elo(grass, rank, "Grass", circ_for_stats),
+            }
+            for sf in stats_by_surface:
+                stats_by_surface[sf]["found_stats"] = True
+                stats_by_surface[sf]["raw_name_stats"] = name
+                stats_by_surface[sf]["match_type"] = f"auto_profile_{sf.lower()}"
+            out[name] = {
+                "Player": name,
+                "Rank": rank,
+                "Hard": hard,
+                "Clay": clay,
+                "Grass": grass,
+                "Stats": stats_general,
+                "StatsBySurface": stats_by_surface,
+                "Fatigue": {"recent_matches": 0, "fatigue_score": 0.0, "days_since_last": None, "surface_fatigue": 0.0},
+                "Quality": _auto_profile_default_quality_v23420(name),
+                "FuenteDB": "AutoProfileCache",
+            }
+            existing.add(limpiar(name))
+        return out
+    except Exception:
+        return players
+
+
+def _auto_profile_ta_report_url_v23420(circuito):
+    c = _auto_profile_circuit_key_v23420(circuito)
+    if c == "WTA":
+        return "https://tennisabstract.com/reports/wta_elo_ratings.html"
+    return "https://tennisabstract.com/reports/atp_elo_ratings.html"
+
+
+def _auto_profile_parse_ta_elo_html_v23420(html_text):
+    """Parser ligero del leaderboard Elo de TennisAbstract."""
+    try:
+        import html as _html
+        raw = str(html_text or "")
+        raw = re.sub(r"</tr\s*>", "\n", raw, flags=re.I)
+        raw = re.sub(r"<br\s*/?>", "\n", raw, flags=re.I)
+        raw = re.sub(r"<[^>]+>", " ", raw)
+        raw = _html.unescape(raw)
+        rows = []
+        pat = re.compile(r"^\s*(\d+)\s+(.+?)\s+(\d{1,2}\.\d)\s+(\d{3,4}\.\d)\s+(\d+)\s+(\d{3,4}\.\d)\s+(\d+)\s+(\d{3,4}\.\d)\s+(\d+)\s+(\d{3,4}\.\d)\b")
+        for line in raw.splitlines():
+            line = re.sub(r"\s+", " ", line).strip()
+            if not line or "Updated weekly" in line or "Elo Rank Player" in line:
+                continue
+            m = pat.match(line)
+            if not m:
+                continue
+            elo_rank, player, age, elo, h_rank, helo, c_rank, celo, g_rank, gelo = m.groups()
+            player = normalizar_texto(player)
+            if not player or len(player) < 3:
+                continue
+            rows.append({
+                "Player": player,
+                "EloRank": int(float(elo_rank)),
+                "Rank": int(float(elo_rank)),
+                "Elo": float(elo),
+                "Hard": float(helo),
+                "Clay": float(celo),
+                "Grass": float(gelo),
+                "Source": "TennisAbstract Elo leaderboard",
+                "Updated": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "SourceScore": 0.90,
+            })
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 6)
+def _auto_profile_download_ta_elo_v23420(circuito):
+    url = _auto_profile_ta_report_url_v23420(circuito)
+    try:
+        resp = requests.get(url, timeout=12, headers={"User-Agent": "Mozilla/5.0 TennisIA/AutoProfile"})
+        if resp.status_code != 200:
+            return pd.DataFrame(), f"HTTP {resp.status_code}"
+        df = _auto_profile_parse_ta_elo_html_v23420(resp.text)
+        if df.empty:
+            return pd.DataFrame(), "No se pudo parsear la tabla Elo"
+        return df, "OK"
+    except Exception as e:
+        return pd.DataFrame(), f"{type(e).__name__}: {e}"
+
+
+def _auto_profile_match_names_v23420(missing_names, ta_df, min_score=0.86):
+    if ta_df is None or ta_df.empty or not missing_names:
+        return [], []
+    found, not_found = [], []
+    ta_rows = ta_df.to_dict("records")
+    for name in missing_names:
+        best = None
+        best_score = 0.0
+        for row in ta_rows:
+            cand = row.get("Player", "")
+            score = similitud_nombre(name, cand)
+            ai1, ai2 = apellido_inicial_key(name), apellido_inicial_key(cand)
+            if ai1 and ai2 and ai1 == ai2:
+                score = max(score, 0.98)
+            if score > best_score:
+                best_score = score
+                best = row
+        if best is not None and best_score >= min_score:
+            r = dict(best)
+            r["RequestedName"] = name
+            r["Player"] = best.get("Player", name)
+            r["MatchScore"] = round(float(best_score), 3)
+            r["SourceScore"] = max(float(r.get("SourceScore", 0.90) or 0.90), float(best_score))
+            found.append(r)
+        else:
+            not_found.append({"Jugador": name, "Mejor score": round(float(best_score), 3), "Candidato": best.get("Player", "") if best else ""})
+    return found, not_found
+
+
+def _auto_profile_extract_players_from_partido_v23420(partido):
+    txt = normalizar_texto(partido)
+    if not txt:
+        return []
+    for sep in [" vs ", " VS ", " v ", " V ", " - "]:
+        if sep in txt:
+            parts = [p.strip() for p in txt.split(sep) if p.strip()]
+            return parts[:2]
+    return []
+
+
+def _auto_profile_players_from_df_v23420(df):
+    if df is None or df.empty or "Partido" not in df.columns:
+        return []
+    names = []
+    for partido in df["Partido"].dropna().astype(str).tolist():
+        names.extend(_auto_profile_extract_players_from_partido_v23420(partido))
+    seen, out = set(), []
+    for n in names:
+        ck = limpiar(n)
+        if ck and ck not in seen:
+            seen.add(ck); out.append(n)
+    return out
+
+
+def _auto_profile_known_clean_v23420(circuito):
+    known = set()
+    try:
+        db = cargar_datos(circuito)
+        known.update(limpiar(k) for k in db.keys())
+    except Exception:
+        pass
+    try:
+        cache = _auto_profile_read_cache_v23420(circuito)
+        if not cache.empty:
+            known.update(cache["Player"].dropna().astype(str).apply(limpiar).tolist())
+    except Exception:
+        pass
+    return {x for x in known if x}
+
+
+def render_auto_profile_finder_v23420(current_df=None, global_df=None):
+    st.markdown("#### 🔎 Auto perfiles faltantes")
+    st.caption("Detecta jugadores del plan/tanda y busca Elo de TennisAbstract para guardarlos en caché. No toca el motor Over; solo evita meter perfiles a mano.")
+
+    c1, c2, c3 = st.columns([1, 1, 1.4])
+    with c1:
+        circuito_busqueda = st.selectbox("Circuito para buscar perfiles", ["ATP", "CHALLENGER", "WTA"], index=0, key="auto_profile_circuit_v23420")
+    with c2:
+        min_score = st.slider("Coincidencia mínima", 0.80, 0.98, 0.86, 0.01, key="auto_profile_score_v23420")
+    with c3:
+        st.info("ATP también sirve para muchos Challenger, porque el Elo ATP de TA incluye Challenger/qualy recientes.")
+
+    names = []
+    names.extend(_auto_profile_players_from_df_v23420(global_df))
+    names.extend(_auto_profile_players_from_df_v23420(current_df))
+    seen, all_names = set(), []
+    for n in names:
+        ck = limpiar(n)
+        if ck and ck not in seen:
+            seen.add(ck); all_names.append(n)
+
+    if not all_names:
+        st.warning("No he detectado jugadores en picks actuales/acumulados todavía.")
+        return
+
+    known = _auto_profile_known_clean_v23420(circuito_busqueda)
+    missing = [n for n in all_names if limpiar(n) not in known]
+    ok_count = len(all_names) - len(missing)
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Jugadores detectados", len(all_names))
+    m2.metric("Perfil ya OK", ok_count)
+    m3.metric("Posibles faltantes", len(missing))
+
+    with st.expander("Ver posibles perfiles faltantes", expanded=len(missing) > 0):
+        st.dataframe(pd.DataFrame({"Jugador": missing}), width='stretch', hide_index=True)
+
+    if not missing:
+        st.success("No veo perfiles faltantes para este circuito en la tanda/plan actual.")
+        return
+
+    if st.button("🔎 Buscar faltantes en TennisAbstract Elo y guardar caché", key="auto_profile_search_v23420", use_container_width=True):
+        with st.spinner("Buscando en TennisAbstract Elo..."):
+            ta_df, status = _auto_profile_download_ta_elo_v23420(circuito_busqueda)
+            if ta_df.empty:
+                st.error(f"No se pudo descargar/leer TennisAbstract Elo: {status}")
+                return
+            found, not_found = _auto_profile_match_names_v23420(missing, ta_df, min_score=float(min_score))
+            saved = _auto_profile_write_cache_v23420(circuito_busqueda, found)
+            if saved > 0:
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
+                st.success(f"Guardados {saved} perfiles en caché. Reejecuta el análisis o pulsa Rerun para que entren en el modelo.")
+            else:
+                st.warning("No se guardó ningún perfil nuevo.")
+            if found:
+                show_found = pd.DataFrame(found)
+                cols = ["RequestedName", "Player", "MatchScore", "Elo", "Hard", "Clay", "Grass", "Rank", "Source"]
+                st.markdown("##### ✅ Perfiles encontrados")
+                st.dataframe(show_found[[c for c in cols if c in show_found.columns]], width='stretch', hide_index=True)
+            if not_found:
+                st.markdown("##### ⚠️ No encontrados con suficiente seguridad")
+                st.dataframe(pd.DataFrame(not_found), width='stretch', hide_index=True)
+
+
 @st.cache_data
 def cargar_datos(circuito, cache_version=QUALITY_ENGINE_VERSION):
     r = rutas(circuito)
@@ -1446,7 +1788,8 @@ def cargar_datos(circuito, cache_version=QUALITY_ENGINE_VERSION):
 
     if not os.path.exists(r["elo"]):
         if str(circuito).upper().strip() == "WTA":
-            return aplicar_wta_real_data_upgrade(players)
+            players = aplicar_wta_real_data_upgrade(players)
+        players = aplicar_auto_profile_cache_v23420(players, circuito)
         return players
 
     df = pd.read_excel(r["elo"])
@@ -1499,6 +1842,8 @@ def cargar_datos(circuito, cache_version=QUALITY_ENGINE_VERSION):
 
     if str(circuito).upper().strip() == "WTA":
         players = aplicar_wta_real_data_upgrade(players)
+
+    players = aplicar_auto_profile_cache_v23420(players, circuito)
 
     return players
 
