@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.43.1-auto-fichas-ta"
+APP_VERSION = "v23.43.2-auto-ta-match-reinforcer"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11518,6 +11518,145 @@ def _ta_profile_cache_status_text(player_name):
     return txt, item
 
 
+# =========================================================
+# v23.43.2 AUTO TA MATCH REINFORCER
+# Descarga de forma controlada fichas TennisAbstract para el bloque
+# "Datos extra" de picks Over. No toca el motor Over: solo rellena
+# la caché de fichas que antes se pegaban a mano.
+# =========================================================
+
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
+def _ta_match_fetch_url_v23432(url, timeout_sec=22):
+    try:
+        resp = requests.get(str(url), timeout=int(timeout_sec), headers={
+            "User-Agent": "Mozilla/5.0 TennisIA/AutoTAReinforcer"
+        })
+        if resp.status_code != 200:
+            return "", f"HTTP {resp.status_code}"
+        return resp.text, "OK"
+    except Exception as e:
+        return "", f"{type(e).__name__}: {e}"
+
+
+def _ta_match_html_to_profile_text_v23432(html_text, expected_player=""):
+    """Convierte HTML de TennisAbstract a texto parecido al copiado manual.
+    Importante: convierte celdas de tabla a tabuladores para que
+    _parse_tennisabstract_player_profile() pueda leer Recent Results.
+    """
+    try:
+        import html as _html
+        raw = str(html_text or "")
+        txt = raw
+        txt = re.sub(r"<script[^>]*>.*?</script>", " ", txt, flags=re.I | re.S)
+        txt = re.sub(r"<style[^>]*>.*?</style>", " ", txt, flags=re.I | re.S)
+        txt = re.sub(r"</t[dh]>\s*<t[dh][^>]*>", "\t", txt, flags=re.I)
+        txt = re.sub(r"<t[dh][^>]*>", "", txt, flags=re.I)
+        txt = re.sub(r"</t[dh]>", "\t", txt, flags=re.I)
+        txt = re.sub(r"</tr>", "\n", txt, flags=re.I)
+        txt = re.sub(r"<br\s*/?>", "\n", txt, flags=re.I)
+        txt = re.sub(r"</p>|</div>|</h\d>", "\n", txt, flags=re.I)
+        txt = re.sub(r"<[^>]+>", " ", txt)
+        txt = _html.unescape(txt)
+        # Limpieza conservadora: mantiene tabs y saltos.
+        lines = []
+        for line in txt.splitlines():
+            parts = [re.sub(r"\s+", " ", x).strip() for x in line.split("\t")]
+            line2 = "\t".join([x for x in parts if x])
+            line2 = re.sub(r"[ \u00a0]+", " ", line2).strip()
+            if line2:
+                lines.append(line2)
+        body = "\n".join(lines)
+        # El parser espera que la primera línea sea el jugador.
+        header = normalizar_texto(expected_player or "").strip()
+        if header:
+            return f"{header}\nTennis Abstract\n{body}"
+        return f"Tennis Abstract\n{body}"
+    except Exception:
+        return str(html_text or "")
+
+
+def _ta_match_profile_urls_v23432(name):
+    """URLs candidatas de ficha TA. Primero usa generador existente y añade variantes."""
+    urls = []
+    try:
+        urls.extend(_auto_profile_direct_urls_v23431(name))
+    except Exception:
+        pass
+    toks = tokens(name)
+    if toks:
+        variants = []
+        title_tokens = [str(t).title() for t in toks]
+        variants.append("".join(title_tokens))
+        variants.append("-".join(title_tokens))
+        # Por si viene Apellido Inicial, intentamos solo apellido+inicial sin punto.
+        variants.append("".join(toks).title())
+        for v in variants:
+            u = f"https://www.tennisabstract.com/cgi-bin/player.cgi?p={v}"
+            if v and u not in urls:
+                urls.append(u)
+    return urls[:5]
+
+
+def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
+    """Busca la ficha TA de un jugador y la guarda en ta_profile_cache.
+    Devuelve (ok, mensaje). Si ya está en caché, no descarga.
+    """
+    name = normalizar_texto(player_name)
+    if not name:
+        return False, "sin nombre"
+    existing = _ta_profile_cache_find(name)
+    if existing and str(existing.get("raw_text", "")).strip():
+        return True, f"ya estaba en caché: {existing.get('player', name)}"
+
+    last_status = ""
+    for url in _ta_match_profile_urls_v23432(name):
+        html_text, status = _ta_match_fetch_url_v23432(url, timeout_sec=timeout_sec)
+        last_status = status
+        if not html_text:
+            continue
+        profile_text = _ta_match_html_to_profile_text_v23432(html_text, name)
+        # Comprobación directa antes de guardar.
+        parsed = _parse_tennisabstract_player_profile(profile_text)
+        if not parsed:
+            # Algunas páginas cargan pero no incluyen recientes; aun así no guardamos como ficha refuerzo.
+            continue
+        ok, msg = _ta_profile_cache_upsert_from_raw(name, profile_text, parsed=parsed)
+        if ok:
+            return True, f"{name}: ficha TA guardada ({parsed.get('matches', 0)} recientes)"
+        last_status = msg
+    return False, f"{name}: no extraída ({last_status or 'sin coincidencia'})"
+
+
+def _ta_match_players_from_extra_candidates_v23432(cand_df):
+    names = []
+    try:
+        for _, row in (cand_df if cand_df is not None else pd.DataFrame()).iterrows():
+            partido = str(row.get("Partido", ""))
+            if " vs " in partido:
+                p1, p2 = [x.strip() for x in partido.split(" vs ", 1)]
+                names.extend([p1, p2])
+    except Exception:
+        pass
+    # únicos conservando orden
+    out, seen = [], set()
+    for n in names:
+        k = limpiar(n)
+        if k and k not in seen:
+            out.append(n); seen.add(k)
+    return out
+
+
+def _ta_match_cache_status_counts_v23432(players):
+    ok, missing = [], []
+    for n in players or []:
+        item = _ta_profile_cache_find(n)
+        if item and str(item.get("raw_text", "")).strip():
+            ok.append(n)
+        else:
+            missing.append(n)
+    return ok, missing
+
+
 def _inferir_jugador_mercado(row):
     """Intenta saber qué jugador es el elegido en mercados tipo 'X gana al menos 1 set'."""
     mercado = str(row.get("🎯 Mercado más probable", ""))
@@ -12468,6 +12607,42 @@ def render_datos_extra_reanalysis_panel(ok_saved):
     st.dataframe(cand[show_cols], width='stretch', hide_index=True)
 
     st.info("Uso recomendado: Tennis Abstract → ficha del jugador completa, o Flashscore → jugador → Resultados/Partidos. Pega una ficha por jugador. Con los dos jugadores el análisis es mucho más fiable.")
+
+    # v23.43.2: antes de pedir pegado manual, intenta rellenar las fichas TA en bloque.
+    try:
+        players_extra = _ta_match_players_from_extra_candidates_v23432(cand)
+        ok_cached, missing_cached = _ta_match_cache_status_counts_v23432(players_extra)
+        cta1, cta2, cta3 = st.columns(3)
+        cta1.metric("Jugadores a reforzar", len(players_extra))
+        cta2.metric("Fichas TA en caché", len(ok_cached))
+        cta3.metric("Fichas TA pendientes", len(missing_cached))
+        with st.expander("🔎 Auto extraer fichas TennisAbstract para estos picks", expanded=bool(missing_cached)):
+            st.caption("Esto intenta leer la ficha TA de los jugadores de estos picks Over y guardarla en caché. Si funciona, no tienes que pegarla a mano.")
+            if missing_cached:
+                st.dataframe(pd.DataFrame({"Jugador pendiente": missing_cached}), width='stretch', hide_index=True)
+            else:
+                st.success("Todas las fichas de estos picks ya están en caché.")
+            timeout_auto = st.slider("Timeout por ficha TA", 12, 35, 22, 1, key="ta_auto_timeout_v23432")
+            max_auto = st.slider("Máximo fichas a intentar ahora", 2, 30, min(20, max(2, len(missing_cached) if missing_cached else 2)), 1, key="ta_auto_max_v23432")
+            if st.button("🔎 Extraer fichas TA pendientes y guardar caché", key="ta_auto_fetch_v23432", use_container_width=True, disabled=not bool(missing_cached)):
+                results = []
+                with st.spinner("Extrayendo fichas TennisAbstract en bloque..."):
+                    for name in missing_cached[:int(max_auto)]:
+                        ok, msg = _ta_match_auto_cache_one_player_v23432(name, timeout_sec=int(timeout_auto))
+                        results.append({"Jugador": name, "OK": "Sí" if ok else "No", "Detalle": msg})
+                if results:
+                    st.dataframe(pd.DataFrame(results), width='stretch', hide_index=True)
+                    saved_n = sum(1 for r in results if r.get("OK") == "Sí")
+                    if saved_n:
+                        st.success(f"Guardadas {saved_n} fichas. Pulsa Rerun o vuelve a analizar para que se apliquen al reanálisis.")
+                    else:
+                        st.warning("No se pudo guardar ninguna ficha automática. Puede ser timeout, nombre distinto o página TA sin resultados recientes parseables.")
+                try:
+                    st.rerun()
+                except Exception:
+                    pass
+    except Exception as e:
+        st.warning(f"No se pudo mostrar Auto TA reinforcer: {type(e).__name__}: {e}")
 
     with st.form("wm_reanalysis_ocr_form_2_players"):
         ajustes = {}
