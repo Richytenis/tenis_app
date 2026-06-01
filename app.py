@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.43.0-plantilla-rapida-cuotas"
+APP_VERSION = "v23.43.1-auto-fichas-ta"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -1521,22 +1521,43 @@ def _auto_profile_ta_report_url_v23420(circuito):
     return "https://tennisabstract.com/reports/atp_elo_ratings.html"
 
 
+def _auto_profile_abs_url_v23431(href):
+    href = str(href or "").strip()
+    if not href:
+        return ""
+    if href.startswith("http"):
+        return href
+    if href.startswith("/"):
+        return "https://www.tennisabstract.com" + href
+    return "https://www.tennisabstract.com/" + href.lstrip("./")
+
+
 def _auto_profile_parse_ta_elo_html_v23420(html_text):
-    """Parser ligero del leaderboard Elo de TennisAbstract."""
+    """Parser del leaderboard Elo de TennisAbstract con enlace a ficha cuando está disponible.
+    Mantiene compatibilidad con el parser anterior y añade PlayerUrl.
+    """
     try:
         import html as _html
         raw = str(html_text or "")
-        raw = re.sub(r"</tr\s*>", "\n", raw, flags=re.I)
-        raw = re.sub(r"<br\s*/?>", "\n", raw, flags=re.I)
-        raw = re.sub(r"<[^>]+>", " ", raw)
-        raw = _html.unescape(raw)
         rows = []
-        pat = re.compile(r"^\s*(\d+)\s+(.+?)\s+(\d{1,2}\.\d)\s+(\d{3,4}\.\d)\s+(\d+)\s+(\d{3,4}\.\d)\s+(\d+)\s+(\d{3,4}\.\d)\s+(\d+)\s+(\d{3,4}\.\d)\b")
-        for line in raw.splitlines():
+        pat = re.compile(r"^\s*(\d+)\s+(.+?)\s+(\d{1,2}\.\d)\s+(\d{3,4}(?:\.\d)?)\s+(\d+)\s+(\d{3,4}(?:\.\d)?)\s+(\d+)\s+(\d{3,4}(?:\.\d)?)\s+(\d+)\s+(\d{3,4}(?:\.\d)?)\b")
+
+        # Preferimos filas HTML para poder recuperar el enlace player.cgi.
+        html_rows = re.findall(r"<tr[^>]*>(.*?)</tr>", raw, flags=re.I | re.S)
+        iterable = html_rows if html_rows else raw.splitlines()
+        for row_html in iterable:
+            href = ""
+            mh = re.search(r'href=["\']([^"\']*player\.cgi[^"\']*)["\']', row_html, flags=re.I)
+            if mh:
+                href = _auto_profile_abs_url_v23431(mh.group(1))
+
+            line = re.sub(r"<br\s*/?>", "\n", row_html, flags=re.I)
+            line = re.sub(r"<[^>]+>", " ", line)
+            line = _html.unescape(line)
             line = re.sub(r"\s+", " ", line).strip()
             if not line or "Updated weekly" in line or "Elo Rank Player" in line:
                 continue
-            m = pat.match(line)
+            m = pat.search(line)
             if not m:
                 continue
             elo_rank, player, age, elo, h_rank, helo, c_rank, celo, g_rank, gelo = m.groups()
@@ -1551,6 +1572,7 @@ def _auto_profile_parse_ta_elo_html_v23420(html_text):
                 "Hard": float(helo),
                 "Clay": float(celo),
                 "Grass": float(gelo),
+                "PlayerUrl": href,
                 "Source": "TennisAbstract Elo leaderboard",
                 "Updated": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "SourceScore": 0.90,
@@ -1558,6 +1580,115 @@ def _auto_profile_parse_ta_elo_html_v23420(html_text):
         return pd.DataFrame(rows)
     except Exception:
         return pd.DataFrame()
+
+
+def _auto_profile_direct_urls_v23431(name):
+    """Candidatos de URL para fichas TennisAbstract. Se usan solo si la tabla Elo no trae enlace."""
+    toks = tokens(name)
+    if not toks:
+        return []
+    if len(toks) >= 2:
+        # Si viene "Apellido I" intentamos apellido + inicial, y también formato normal si existe.
+        first = toks[0]
+        last = toks[-1]
+        if len(last) == 1 and len(toks) >= 2:
+            # Mejor no inventar demasiado con iniciales abreviadas; probablemente no baste para URL directa.
+            base1 = "".join(toks)
+            base2 = "-".join(toks)
+        else:
+            base1 = "".join([t.title() for t in toks])
+            base2 = "-".join([t.title() for t in toks])
+    else:
+        base1 = toks[0].title(); base2 = toks[0].title()
+    out = []
+    for b in [base1, base2]:
+        if b and b not in out:
+            out.append(f"https://www.tennisabstract.com/cgi-bin/player.cgi?p={b}")
+    return out
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
+def _auto_profile_fetch_url_v23431(url):
+    try:
+        resp = requests.get(str(url), timeout=12, headers={"User-Agent": "Mozilla/5.0 TennisIA/AutoProfile"})
+        if resp.status_code != 200:
+            return "", f"HTTP {resp.status_code}"
+        return resp.text, "OK"
+    except Exception as e:
+        return "", f"{type(e).__name__}: {e}"
+
+
+def _auto_profile_parse_player_page_hint_v23431(html_text, name):
+    """Extrae señales básicas de la ficha. No inventa stats: solo confirma que la ficha parece del jugador.
+    Si encuentra números Elo en la ficha, los usa; si no, devuelve vacío.
+    """
+    try:
+        import html as _html
+        raw = str(html_text or "")
+        txt = re.sub(r"<br\s*/?>", "\n", raw, flags=re.I)
+        txt = re.sub(r"<[^>]+>", " ", txt)
+        txt = _html.unescape(txt)
+        txt = re.sub(r"\s+", " ", txt).strip()
+        if similitud_nombre(name, txt[:300]) < 0.15 and limpiar(name) not in limpiar(txt[:800]):
+            return {}
+
+        def find_num(label_patterns):
+            for lp in label_patterns:
+                m = re.search(lp + r"\D{0,40}(\d{3,4}(?:\.\d)?)", txt, flags=re.I)
+                if m:
+                    val = float(m.group(1))
+                    if 900 <= val <= 2600:
+                        return val
+            return None
+
+        elo = find_num([r"\bElo\b", r"Current\s+Elo"])
+        hard = find_num([r"Hard\s+Elo", r"hElo", r"Hard"])
+        clay = find_num([r"Clay\s+Elo", r"cElo", r"Clay"])
+        grass = find_num([r"Grass\s+Elo", r"gElo", r"Grass"])
+        out = {"FichaOK": True}
+        if elo: out["Elo"] = elo
+        if hard: out["Hard"] = hard
+        if clay: out["Clay"] = clay
+        if grass: out["Grass"] = grass
+        return out
+    except Exception:
+        return {}
+
+
+def _auto_profile_enrich_with_player_pages_v23431(found_rows, requested_missing=None, max_pages=25):
+    """Abre fichas de TennisAbstract de forma controlada y añade confirmación/enlace.
+    Para filas sin URL intenta URL directa. No cambia motor; solo mejora caché.
+    """
+    enriched = []
+    for i, row in enumerate(found_rows or []):
+        if i >= int(max_pages):
+            enriched.append(row); continue
+        r = dict(row)
+        req = r.get("RequestedName") or r.get("Player") or ""
+        urls = []
+        if r.get("PlayerUrl"):
+            urls.append(r.get("PlayerUrl"))
+        urls.extend([u for u in _auto_profile_direct_urls_v23431(r.get("Player", req)) if u not in urls])
+        ok = False
+        for url in urls[:3]:
+            html_text, status = _auto_profile_fetch_url_v23431(url)
+            if not html_text:
+                continue
+            hint = _auto_profile_parse_player_page_hint_v23431(html_text, r.get("Player", req))
+            if hint.get("FichaOK"):
+                for k in ["Elo", "Hard", "Clay", "Grass"]:
+                    if k in hint and (pd.isna(r.get(k, None)) or not r.get(k, None) or float(r.get(k, 0)) <= 0):
+                        r[k] = hint[k]
+                r["PlayerUrl"] = url
+                r["FichaTA"] = "OK"
+                r["Source"] = str(r.get("Source", "TennisAbstract")) + " + ficha"
+                r["SourceScore"] = max(float(r.get("SourceScore", 0.90) or 0.90), 0.94)
+                ok = True
+                break
+        if not ok:
+            r["FichaTA"] = r.get("FichaTA", "No confirmada")
+        enriched.append(r)
+    return enriched
 
 
 @st.cache_data(show_spinner=False, ttl=60 * 60 * 6)
@@ -1647,7 +1778,7 @@ def _auto_profile_known_clean_v23420(circuito):
 
 def render_auto_profile_finder_v23420(current_df=None, global_df=None):
     st.markdown("#### 🔎 Auto perfiles faltantes")
-    st.caption("Detecta jugadores del plan/tanda y busca Elo de TennisAbstract para guardarlos en caché. No toca el motor Over; solo evita meter perfiles a mano.")
+    st.caption("Detecta jugadores del plan/tanda y busca perfiles en TennisAbstract en bloque. No toca el motor Over; solo evita meter fichas a mano.")
 
     c1, c2, c3 = st.columns([1, 1, 1.4])
     with c1:
@@ -1655,7 +1786,7 @@ def render_auto_profile_finder_v23420(current_df=None, global_df=None):
     with c2:
         min_score = st.slider("Coincidencia mínima", 0.80, 0.98, 0.86, 0.01, key="auto_profile_score_v23420")
     with c3:
-        st.info("ATP también sirve para muchos Challenger, porque el Elo ATP de TA incluye Challenger/qualy recientes.")
+        modo_ficha = st.selectbox("Modo", ["Elo rápido", "Elo + abrir ficha TA"], index=1, key="auto_profile_mode_v23431")
 
     names = []
     names.extend(_auto_profile_players_from_df_v23420(global_df))
@@ -1676,39 +1807,55 @@ def render_auto_profile_finder_v23420(current_df=None, global_df=None):
     m1, m2, m3 = st.columns(3)
     m1.metric("Jugadores detectados", len(all_names))
     m2.metric("Perfil ya OK", ok_count)
-    m3.metric("Posibles faltantes", len(missing))
+    m3.metric("Fichas a buscar", len(missing))
 
-    with st.expander("Ver posibles perfiles faltantes", expanded=len(missing) > 0):
+    with st.expander("Ver fichas que la app intentará buscar", expanded=len(missing) > 0):
         st.dataframe(pd.DataFrame({"Jugador": missing}), width='stretch', hide_index=True)
 
     if not missing:
         st.success("No veo perfiles faltantes para este circuito en la tanda/plan actual.")
         return
 
-    if st.button("🔎 Buscar faltantes en TennisAbstract Elo y guardar caché", key="auto_profile_search_v23420", use_container_width=True):
-        with st.spinner("Buscando en TennisAbstract Elo..."):
+    st.info("Pulsa el botón y la app intentará buscar esos jugadores en TennisAbstract en bloque. Si encuentra Elo/ficha, lo guarda en caché para no pedírtelo mañana.")
+
+    if st.button("🔎 Buscar fichas faltantes en TennisAbstract y guardar caché", key="auto_profile_search_v23420", use_container_width=True):
+        with st.spinner("Buscando fichas en TennisAbstract..."):
             ta_df, status = _auto_profile_download_ta_elo_v23420(circuito_busqueda)
             if ta_df.empty:
                 st.error(f"No se pudo descargar/leer TennisAbstract Elo: {status}")
                 return
             found, not_found = _auto_profile_match_names_v23420(missing, ta_df, min_score=float(min_score))
+
+            if modo_ficha == "Elo + abrir ficha TA" and found:
+                found = _auto_profile_enrich_with_player_pages_v23431(found, missing, max_pages=min(25, len(found)))
+
             saved = _auto_profile_write_cache_v23420(circuito_busqueda, found)
             if saved > 0:
                 try:
                     st.cache_data.clear()
                 except Exception:
                     pass
-                st.success(f"Guardados {saved} perfiles en caché. Reejecuta el análisis o pulsa Rerun para que entren en el modelo.")
+                st.success(f"Guardados {saved} perfiles/fichas en caché. Reejecuta el análisis o pulsa Rerun para que entren en el modelo.")
             else:
                 st.warning("No se guardó ningún perfil nuevo.")
             if found:
                 show_found = pd.DataFrame(found)
-                cols = ["RequestedName", "Player", "MatchScore", "Elo", "Hard", "Clay", "Grass", "Rank", "Source"]
-                st.markdown("##### ✅ Perfiles encontrados")
+                cols = ["RequestedName", "Player", "MatchScore", "Elo", "Hard", "Clay", "Grass", "Rank", "FichaTA", "PlayerUrl", "Source"]
+                st.markdown("##### ✅ Fichas encontradas")
                 st.dataframe(show_found[[c for c in cols if c in show_found.columns]], width='stretch', hide_index=True)
             if not_found:
                 st.markdown("##### ⚠️ No encontrados con suficiente seguridad")
                 st.dataframe(pd.DataFrame(not_found), width='stretch', hide_index=True)
+
+    with st.expander("Cómo usarlo", expanded=False):
+        st.markdown("""
+1. Analiza la lista de partidos.
+2. Entra aquí y pulsa **Buscar fichas faltantes**.
+3. Si guarda perfiles, pulsa **Rerun** o vuelve a analizar.
+4. Los jugadores encontrados quedarán guardados en `datos/auto_profiles/`.
+
+Si alguno no aparece, la app seguirá usando fallback prudente y te lo dejará como perfil débil, pero ya no tendrás que copiar 20 fichas una por una.
+""")
 
 
 @st.cache_data
