@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.43.2-auto-ta-match-reinforcer"
+APP_VERSION = "v23.43.3-auto-ta-reinforcer-fallback"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11525,17 +11525,33 @@ def _ta_profile_cache_status_text(player_name):
 # la caché de fichas que antes se pegaban a mano.
 # =========================================================
 
-@st.cache_data(show_spinner=False, ttl=60 * 60 * 24)
 def _ta_match_fetch_url_v23432(url, timeout_sec=22):
-    try:
-        resp = requests.get(str(url), timeout=int(timeout_sec), headers={
-            "User-Agent": "Mozilla/5.0 TennisIA/AutoTAReinforcer"
-        })
-        if resp.status_code != 200:
-            return "", f"HTTP {resp.status_code}"
-        return resp.text, "OK"
-    except Exception as e:
-        return "", f"{type(e).__name__}: {e}"
+    """Fetch sin cachear errores.
+    v23.43.3: la versión anterior usaba st.cache_data y podía dejar cacheado
+    un timeout durante 24h. Ahora reintenta y no arrastra fallos antiguos.
+    """
+    last = ""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 TennisIA/AutoTAReinforcer",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9,es;q=0.8",
+        "Connection": "close",
+    }
+    for attempt in range(2):
+        try:
+            resp = requests.get(str(url), timeout=max(8, int(timeout_sec)), headers=headers)
+            if resp.status_code != 200:
+                last = f"HTTP {resp.status_code}"
+                continue
+            txt = resp.text or ""
+            if not txt.strip():
+                last = "respuesta vacía"
+                continue
+            return txt, "OK"
+        except Exception as e:
+            last = f"{type(e).__name__}: {e}"
+            time.sleep(0.4)
+    return "", last or "sin respuesta"
 
 
 def _ta_match_html_to_profile_text_v23432(html_text, expected_player=""):
@@ -11598,8 +11614,9 @@ def _ta_match_profile_urls_v23432(name):
 
 
 def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
-    """Busca la ficha TA de un jugador y la guarda en ta_profile_cache.
-    Devuelve (ok, mensaje). Si ya está en caché, no descarga.
+    """Busca la ficha TA y, si TA no responde/no parsea, crea ficha de refuerzo
+    desde histórico local Challenger/WTA/ATP disponible. Esto evita tener que pegar
+    20 fichas manuales cuando la web se bloquea o tarda.
     """
     name = normalizar_texto(player_name)
     if not name:
@@ -11608,23 +11625,61 @@ def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
     if existing and str(existing.get("raw_text", "")).strip():
         return True, f"ya estaba en caché: {existing.get('player', name)}"
 
-    last_status = ""
+    errors = []
+    # 1) Intento real TennisAbstract.
     for url in _ta_match_profile_urls_v23432(name):
         html_text, status = _ta_match_fetch_url_v23432(url, timeout_sec=timeout_sec)
-        last_status = status
         if not html_text:
+            errors.append(f"{url.split('=')[-1]}: {status}")
+            continue
+        low = html_text.lower()
+        if "player not found" in low or "no player found" in low:
+            errors.append("TA: jugador no encontrado")
             continue
         profile_text = _ta_match_html_to_profile_text_v23432(html_text, name)
-        # Comprobación directa antes de guardar.
         parsed = _parse_tennisabstract_player_profile(profile_text)
-        if not parsed:
-            # Algunas páginas cargan pero no incluyen recientes; aun así no guardamos como ficha refuerzo.
-            continue
-        ok, msg = _ta_profile_cache_upsert_from_raw(name, profile_text, parsed=parsed)
-        if ok:
-            return True, f"{name}: ficha TA guardada ({parsed.get('matches', 0)} recientes)"
-        last_status = msg
-    return False, f"{name}: no extraída ({last_status or 'sin coincidencia'})"
+        if parsed and int(parsed.get("matches", 0) or 0) >= 1:
+            ok, msg = _ta_profile_cache_upsert_from_raw(name, profile_text, parsed=parsed)
+            if ok:
+                return True, f"{name}: ficha TA guardada ({parsed.get('matches', 0)} recientes)"
+            errors.append(f"TA leída pero no guardada: {msg}")
+        elif parsed:
+            ok, msg = _ta_profile_cache_upsert_from_raw(name, profile_text, parsed=parsed)
+            if ok:
+                return True, f"{name}: ficha TA básica guardada"
+            errors.append(f"TA básica no guardada: {msg}")
+        else:
+            # Si descargó página pero el formato no trae Recent Results parseable,
+            # no la damos por buena para Over. Pasamos a fallback local.
+            errors.append("TA descargada pero sin Recent Results parseables")
+
+    # 2) Fallback local: usa los históricos que ya tiene la app para generar una ficha automática.
+    # Esto NO toca el motor Over; solo rellena la caja de refuerzo con evidencia local.
+    try:
+        # Intento por superficie genérica; el propio buscador elige últimos partidos.
+        st_ch = _ch_recent_stats(name, surface=None, limit=12)
+        if isinstance(st_ch, dict) and st_ch.get("found") and int(st_ch.get("n", 0) or 0) >= 3:
+            raw = (
+                f"Auto Challenger Recent Form\n"
+                f"Player: {st_ch.get('player', name)}\n"
+                f"n={int(st_ch.get('n', 0) or 0)}; wins={int(st_ch.get('wins', 0) or 0)}; "
+                f"over18={int(st_ch.get('over18', 0) or 0)}; over19={int(st_ch.get('over19', 0) or 0)}; "
+                f"three_sets={int(st_ch.get('three_sets', 0) or 0)}; set_won={int(st_ch.get('set_won', 0) or 0)}; "
+                f"lost02={int(st_ch.get('lost_02', 0) or 0)}; short={int(st_ch.get('short', 0) or 0)}; "
+                f"avg_games={float(st_ch.get('avg_games', 0.0) or 0.0):.1f}\n"
+                f"Summary: {st_ch.get('summary', '')}\n"
+                f"Nota: TennisAbstract no respondió o no fue parseable; se usa histórico local como refuerzo provisional."
+            )
+            parsed_local = _parse_auto_recent_profile_v23433(raw) or {}
+            ok, msg = _ta_profile_cache_upsert_auto_recent_v23433(name, parsed_local, raw)
+            if ok:
+                return True, f"{name}: {msg} (TA falló; fallback local n={st_ch.get('n')})"
+            errors.append(msg)
+    except Exception as e:
+        errors.append(f"fallback local error {type(e).__name__}: {e}")
+
+    detail = " | ".join(errors[-3:]) if errors else "sin coincidencia"
+    return False, f"{name}: no extraída ({detail})"
 
 
 def _ta_match_players_from_extra_candidates_v23432(cand_df):
@@ -12116,6 +12171,94 @@ def _parse_tennisabstract_player_profile(raw_text):
     }
 
 
+
+def _parse_auto_recent_profile_v23433(raw_text):
+    """Lee fichas auto generadas desde históricos locales cuando TA no responde.
+    No sustituye TennisAbstract si existe; solo evita pedir pegado manual cuando hay
+    histórico Challenger/WTA suficiente en los CSV locales.
+    """
+    text = normalizar_texto(raw_text or "")
+    if "Auto Challenger Recent Form" not in text and "Auto Recent Form" not in text:
+        return None
+    def grab(pattern, default=0.0, as_int=False):
+        m = re.search(pattern, text, flags=re.I)
+        if not m:
+            return default
+        try:
+            v = float(str(m.group(1)).replace(",", "."))
+            return int(v) if as_int else v
+        except Exception:
+            return default
+    player = ""
+    m_player = re.search(r"Player\s*:\s*([^\n]+)", text, flags=re.I)
+    if m_player:
+        player = normalizar_texto(m_player.group(1)).strip()
+    n = grab(r"n\s*=\s*(\d+)", 0, True)
+    wins = grab(r"wins\s*=\s*(\d+)", 0, True)
+    over18 = grab(r"over18\s*=\s*(\d+)", 0, True)
+    over19 = grab(r"over19\s*=\s*(\d+)", 0, True)
+    threes = grab(r"three_sets\s*=\s*(\d+)", 0, True)
+    setwon = grab(r"set_won\s*=\s*(\d+)", 0, True)
+    lost02 = grab(r"lost02\s*=\s*(\d+)", 0, True)
+    short = grab(r"short\s*=\s*(\d+)", 0, True)
+    avg_games = grab(r"avg_games\s*=\s*([0-9]+(?:[\.,][0-9]+)?)", 0.0, False)
+    if n <= 0:
+        return None
+    over_rate = over18 / max(n, 1)
+    over19_rate = over19 / max(n, 1)
+    three_rate = threes / max(n, 1)
+    set_rate = setwon / max(n, 1)
+    lost02_rate = lost02 / max(n, 1)
+    easy_rate = short / max(n, 1)
+    if over_rate >= 0.70 or avg_games >= 22 or threes >= 3:
+        largos = "Muchos: histórico local muestra Over/3 sets"
+    elif over_rate >= 0.50 or avg_games >= 20 or threes >= 1:
+        largos = "Algunos"
+    else:
+        largos = "Pocos: pocos Overs recientes en histórico local"
+    if easy_rate >= 0.45 or lost02 >= 3:
+        palizas = "Muchas palizas en general"
+    elif easy_rate >= 0.20 or lost02 >= 2:
+        palizas = "No se ve claro"
+    else:
+        palizas = "No se ven muchas"
+    summary = f"AutoRecent {player}: n={n}, W={wins}/{n}, Over18={over18}/{n}, Over19={over19}/{n}, 3sets={threes}/{n}, set ganado={setwon}/{n}, perdió 0-2={lost02}/{n}, media juegos={avg_games:.1f}"
+    return {
+        "source": "Auto Recent Form", "player": player, "matches": n, "wins": wins,
+        "overs": over18, "over_rate": over_rate, "overs19": over19, "over19_rate": over19_rate,
+        "three_sets": threes, "three_rate": three_rate, "set_won": setwon, "set_rate": set_rate,
+        "lost02": lost02, "lost02_rate": lost02_rate, "easy_short": short, "easy_rate": easy_rate,
+        "avg_games": avg_games, "largos": largos, "palizas": palizas, "summary": summary,
+    }
+
+
+def _ta_profile_cache_upsert_auto_recent_v23433(expected_player, stats, raw_text):
+    try:
+        player = normalizar_texto((stats or {}).get("player") or expected_player)
+        key = _ta_profile_cache_key(player or expected_player)
+        if not key:
+            return False, "sin nombre"
+        cache = _ta_profile_cache_load()
+        cache[key] = {
+            "player": player,
+            "expected_player": expected_player,
+            "source": "Auto Recent Form local",
+            "uploaded_at": _ta_profile_cache_today(),
+            "raw_text": str(raw_text or ""),
+            "summary": (stats or {}).get("summary", ""),
+            "matches": (stats or {}).get("matches", (stats or {}).get("n", "")),
+            "over_rate": (stats or {}).get("over_rate", (stats or {}).get("over18_rate", "")),
+            "set_rate": (stats or {}).get("set_rate", (stats or {}).get("set_won_rate", "")),
+            "three_rate": (stats or {}).get("three_rate", ""),
+            "elo": "",
+        }
+        ok_save, info = _ta_profile_cache_save(cache)
+        if not ok_save:
+            return False, f"no guardado: {info}"
+        return True, f"perfil local guardado para {player}"
+    except Exception as e:
+        return False, f"error guardando local: {type(e).__name__}: {e}"
+
 def _safe_pct_from_row(row, col, default=0.0):
     try:
         return float(leer_porcentaje(row.get(col, default), default))
@@ -12385,6 +12528,17 @@ def _extraer_datos_extra_desde_texto(raw_text, row=None):
         data["h2h"] = "No aparece"
         data["nota"] = ta.get("summary", "")
         data["tennisabstract"] = ta
+        return data
+
+    # 0b) Ficha auto generada desde históricos locales cuando TA no responde.
+    ar = _parse_auto_recent_profile_v23433(text)
+    if ar:
+        data["j1_v"] = int(ar.get("wins", 0))
+        data["largos"] = ar.get("largos", "")
+        data["palizas"] = ar.get("palizas", "")
+        data["h2h"] = "No aparece"
+        data["nota"] = ar.get("summary", "")
+        data["tennisabstract"] = ar
         return data
 
     # 1) Ficha Flashscore pegada: resultados recientes y marcadores.
