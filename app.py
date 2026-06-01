@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.43.3-auto-ta-reinforcer-fallback"
+APP_VERSION = "v23.43.4-cuotas-siempre-visibles"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -8775,8 +8775,15 @@ def render_plan_global_dia_v23410(picks_df_actual, cuota_min, cuota_max, max_pic
         st.caption(f"Detalle técnico Auto perfiles: {type(e).__name__}: {e}")
 
     if global_df.empty:
-        st.warning("Todavía no hay picks acumulados. Añade la tanda actual y repite con los otros circuitos.")
-        return
+        st.warning("Todavía no hay picks acumulados. Para que puedas meter cuotas sin perder tiempo, uso la tanda actual como VISTA PREVIA. Para el stake global real, pulsa primero ➕ Añadir picks actuales al plan global.")
+        try:
+            preview_current = _normalizar_picks_global_v23410(picks_df_actual, fuente="Tanda actual · preview cuotas")
+        except Exception:
+            preview_current = pd.DataFrame()
+        if preview_current is None or preview_current.empty:
+            st.warning("No hay picks actuales suficientes para mostrar cuotas. Analiza una lista o añade picks al plan global.")
+            return
+        global_df = preview_current
 
     safe_count = int(global_df.get("Combi Safe", pd.Series(dtype=bool)).astype(bool).sum()) if "Combi Safe" in global_df.columns else 0
     fuerte_count = int(global_df.get("Etiqueta", pd.Series(dtype=str)).astype(str).str.contains("FUERTE SIMPLE", na=False).sum()) if "Etiqueta" in global_df.columns else 0
