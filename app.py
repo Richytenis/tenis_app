@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.42.1-auto-profile-visible"
+APP_VERSION = "v23.43.0-plantilla-rapida-cuotas"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -8665,6 +8665,41 @@ def render_plan_global_dia_v23410(picks_df_actual, cuota_min, cuota_max, max_pic
         ref_cols = ["Nº", "Partido", "Mercado", "Prob %", "Cuota", "Cuota tipo"]
         st.dataframe(tabla_ref[[c for c in ref_cols if c in tabla_ref.columns]], width='stretch', hide_index=True)
 
+        # v23.43.0: Plantilla rápida para buscar y pegar cuotas sin ir editando celda a celda.
+        try:
+            template_lines = []
+            search_lines = []
+            for _, rr in tabla_ref.iterrows():
+                n = int(rr.get("Nº", 0))
+                partido_txt = str(rr.get("Partido", "")).strip()
+                mercado_txt = str(rr.get("Mercado", "")).strip()
+                prob_txt = rr.get("Prob %", "")
+                try:
+                    prob_txt = f"{float(prob_txt):.1f}%"
+                except Exception:
+                    prob_txt = ""
+                search_lines.append(f"{n}. {partido_txt} | {mercado_txt} | Modelo {prob_txt}")
+                # Formato: Nº; cuota real; over17.5; over18.5; over19.5; over20.5; over22.5
+                template_lines.append(f"{n};;;;;;  # {partido_txt} | {mercado_txt}")
+
+            with st.expander("📋 Plantilla rápida para buscar/pegar cuotas", expanded=False):
+                st.caption("Copia la primera lista para buscar cuotas en la casa. Luego rellena la segunda plantilla con las cuotas reales que encuentres.")
+                st.text_area(
+                    "Lista de picks para buscar cuotas",
+                    value="\n".join(search_lines),
+                    height=180,
+                    key="quick_odds_search_template_v23430",
+                )
+                st.text_area(
+                    "Plantilla para pegar cuotas",
+                    value="\n".join(template_lines),
+                    height=180,
+                    key="quick_odds_input_template_v23430",
+                )
+                st.caption("Borra los comentarios si quieres, o deja las líneas tal cual: la app solo lee lo que está antes del #.")
+        except Exception as e:
+            st.caption(f"No se pudo crear la plantilla rápida de cuotas: {type(e).__name__}")
+
         st.caption("Formato: Nº; cuota real; over17.5; over18.5; over19.5; over20.5; over22.5")
         st.caption("Ejemplo: 3;1.42;;1.42;1.65;1.90;  → rellena la fila 3 con Over18/19/20.")
         odds_text = st.text_area(
@@ -8681,6 +8716,8 @@ def render_plan_global_dia_v23410(picks_df_actual, cuota_min, cuota_max, max_pic
                 col_map = ["Cuota real actual", "Cuota Over 17.5", "Cuota Over 18.5", "Cuota Over 19.5", "Cuota Over 20.5", "Cuota Over 22.5"]
                 for raw_line in str(odds_text).splitlines():
                     line = raw_line.strip()
+                    if "#" in line:
+                        line = line.split("#", 1)[0].strip()
                     if not line or line.startswith("#"):
                         continue
                     parts = [x.strip().replace(",", ".") for x in line.split(";")]
