@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.44.0-predictor-ta-finetune"
+APP_VERSION = "v23.44.1-predictor-excel-download"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -14357,6 +14357,128 @@ def _pred_ta_compute_adjustments(base, ta1, ta2, p1_name="Jugador 1", p2_name="J
     }
 
 
+
+# =========================================================
+# v23.44.1 PREDICTOR · EXCEL DOWNLOAD
+# Descarga un Excel del Predictor individual con datos base y, si existe,
+# afinado TennisAbstract. No toca motor ni fórmulas; solo exporta lectura.
+# =========================================================
+
+def _predictor_excel_safe_pct(v):
+    try:
+        if v is None or v == "":
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
+def _predictor_excel_bytes(payload, ta_adj=None):
+    output = io.BytesIO()
+    payload = payload or {}
+    base = payload.get("base", {}) if isinstance(payload.get("base", {}), dict) else {}
+
+    resumen_rows = [
+        {"Campo": "Versión app", "Valor": APP_VERSION},
+        {"Campo": "Jugador 1", "Valor": payload.get("p1_name", "")},
+        {"Campo": "Jugador 2", "Valor": payload.get("p2_name", "")},
+        {"Campo": "Partido", "Valor": f"{payload.get('p1_name','')} vs {payload.get('p2_name','')}"},
+        {"Campo": "Circuito", "Valor": payload.get("circuito", "")},
+        {"Campo": "Superficie", "Valor": payload.get("surface", "")},
+        {"Campo": "Formato", "Valor": "5 sets" if int(payload.get("best_of", 3) or 3) == 5 else "3 sets"},
+        {"Campo": "Nota", "Valor": "Exportación del Predictor individual. No modifica cálculos; refleja lectura base y ajuste TA si existe."},
+    ]
+    resumen_df = pd.DataFrame(resumen_rows)
+
+    mercados = [
+        {"Mercado": f"{payload.get('p1_name','Jugador 1')} gana", "Probabilidad base": _predictor_excel_safe_pct(base.get("p1")), "Tipo": "ML"},
+        {"Mercado": f"{payload.get('p2_name','Jugador 2')} gana", "Probabilidad base": _predictor_excel_safe_pct(base.get("p2")), "Tipo": "ML"},
+        {"Mercado": "Over 17.5 WTA", "Probabilidad base": _predictor_excel_safe_pct(base.get("over17")), "Tipo": "Over"},
+        {"Mercado": "Over 18.5", "Probabilidad base": _predictor_excel_safe_pct(base.get("over18")), "Tipo": "Over"},
+        {"Mercado": "Over 19.5", "Probabilidad base": _predictor_excel_safe_pct(base.get("over19")), "Tipo": "Over"},
+        {"Mercado": "Over 20.5", "Probabilidad base": _predictor_excel_safe_pct(base.get("over20")), "Tipo": "Over"},
+        {"Mercado": "Over 22.5", "Probabilidad base": _predictor_excel_safe_pct(base.get("over22")), "Tipo": "Over"},
+    ]
+    mercados_df = pd.DataFrame(mercados)
+    mercados_df = mercados_df[mercados_df["Probabilidad base"].notna()].copy()
+    mercados_df["Probabilidad base %"] = mercados_df["Probabilidad base"].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "")
+
+    ta_rows = []
+    notas_rows = []
+    signals_rows = []
+    if isinstance(ta_adj, dict):
+        ta_rows = [
+            {"Mercado": payload.get("p1_name", "Jugador 1") + " gana", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("p1_adj")), "Base": _predictor_excel_safe_pct(base.get("p1")), "Tipo": "ML"},
+            {"Mercado": payload.get("p2_name", "Jugador 2") + " gana", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("p2_adj")), "Base": _predictor_excel_safe_pct(base.get("p2")), "Tipo": "ML"},
+            {"Mercado": "Over 18.5", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("over18_adj")), "Base": _predictor_excel_safe_pct(base.get("over18")), "Tipo": "Over"},
+            {"Mercado": "Over 19.5", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("over19_adj")), "Base": _predictor_excel_safe_pct(base.get("over19")), "Tipo": "Over"},
+            {"Mercado": "Over 20.5", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("over20_adj")), "Base": _predictor_excel_safe_pct(base.get("over20")), "Tipo": "Over"},
+        ]
+        if ta_adj.get("set1_signal") is not None:
+            ta_rows.append({"Mercado": payload.get("p1_name", "Jugador 1") + " gana al menos 1 set", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("set1_signal")), "Base": None, "Tipo": "Gana set"})
+        if ta_adj.get("set2_signal") is not None:
+            ta_rows.append({"Mercado": payload.get("p2_name", "Jugador 2") + " gana al menos 1 set", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("set2_signal")), "Base": None, "Tipo": "Gana set"})
+        for i, n in enumerate(ta_adj.get("notes", []) or [], 1):
+            notas_rows.append({"Nº": i, "Nota TA": str(n)})
+        raw = ta_adj.get("raw_signals", {}) or {}
+        for k, v in raw.items():
+            signals_rows.append({"Señal": k, "Valor": v})
+
+    ta_df = pd.DataFrame(ta_rows)
+    if not ta_df.empty:
+        ta_df["Probabilidad TA ajustada %"] = ta_df["Probabilidad TA ajustada"].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "")
+        ta_df["Base %"] = ta_df["Base"].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "")
+    notas_df = pd.DataFrame(notas_rows) if notas_rows else pd.DataFrame([{"Nº": "", "Nota TA": "Sin ajuste TA guardado todavía."}])
+    signals_df = pd.DataFrame(signals_rows) if signals_rows else pd.DataFrame([{"Señal": "", "Valor": ""}])
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        resumen_df.to_excel(writer, index=False, sheet_name="RESUMEN")
+        mercados_df.to_excel(writer, index=False, sheet_name="MERCADOS BASE")
+        ta_df.to_excel(writer, index=False, sheet_name="TA AJUSTE")
+        notas_df.to_excel(writer, index=False, sheet_name="NOTAS")
+        signals_df.to_excel(writer, index=False, sheet_name="SENALES TA")
+
+        wb = writer.book
+        for ws in wb.worksheets:
+            ws.freeze_panes = "A2"
+            for cell in ws[1]:
+                cell.font = cell.font.copy(bold=True)
+            for col in ws.columns:
+                max_len = 0
+                col_letter = col[0].column_letter
+                for cell in col:
+                    try:
+                        max_len = max(max_len, len(str(cell.value)) if cell.value is not None else 0)
+                    except Exception:
+                        pass
+                ws.column_dimensions[col_letter].width = min(max(max_len + 2, 12), 42)
+    output.seek(0)
+    return output.getvalue()
+
+
+def render_predictor_excel_download_panel():
+    payload = st.session_state.get("predictor_last_payload_v23440")
+    if not isinstance(payload, dict):
+        return
+    ta_adj = st.session_state.get("predictor_last_ta_adjustment_v23441")
+    st.divider()
+    with st.expander("📥 Descargar Excel del Predictor", expanded=False):
+        st.caption("Descarga un Excel con resumen del partido, mercados base y ajuste TennisAbstract si lo has calculado. No modifica ningún cálculo.")
+        try:
+            data = _predictor_excel_bytes(payload, ta_adj if isinstance(ta_adj, dict) else None)
+            p1 = limpiar(payload.get("p1_name", "jugador1"))[:18] or "jugador1"
+            p2 = limpiar(payload.get("p2_name", "jugador2"))[:18] or "jugador2"
+            st.download_button(
+                "📊 Descargar Excel Predictor",
+                data=data,
+                file_name=f"predictor_{p1}_vs_{p2}_{APP_VERSION}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="download_predictor_excel_v23441"
+            )
+        except Exception as e:
+            st.warning(f"No se pudo preparar el Excel del Predictor: {type(e).__name__}: {e}")
+
 def render_predictor_ta_finetune_panel():
     payload = st.session_state.get("predictor_last_payload_v23440")
     if not isinstance(payload, dict):
@@ -14413,6 +14535,7 @@ def render_predictor_ta_finetune_panel():
                 return
 
             adj = _pred_ta_compute_adjustments(payload.get("base", {}), ta1, ta2, p1_name, p2_name)
+            st.session_state["predictor_last_ta_adjustment_v23441"] = adj
             st.subheader("🎯 Porcentajes afinados por TA")
             st.caption(f"Confianza del ajuste: {adj['confidence']} · peso aplicado sobre el motor base: {adj['weight']:.0%}")
             m1, m2, m3, m4, m5 = st.columns(5)
@@ -15069,6 +15192,7 @@ elif modo == "Predictor":
 
     # Mostrar afinador TA aunque el botón de simulación ya no esté pulsado.
     render_predictor_ta_finetune_panel()
+    render_predictor_excel_download_panel()
 
 elif modo == "Analizador por lista":
     st.subheader("📋 Analizador por lista pegada")
