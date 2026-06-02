@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.45.0-deep-match-analyzer"
+APP_VERSION = "v23.45.1-deep-excel-export"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -14421,6 +14421,60 @@ def _predictor_excel_bytes(payload, ta_adj=None):
         if _predictor_excel_safe_pct(prob) is not None:
             rows.append({"Sección": "MERCADOS BASE", "Campo/Mercado": mercado, "Tipo": tipo, "Base %": pct(prob), "TA ajustada %": "", "Valor/Nota": ""})
 
+    # v23.45.1: exportar también el Deep Match Analyzer en esta misma hoja.
+    deep = payload.get("deep", {}) if isinstance(payload.get("deep", {}), dict) else {}
+    add_section("DEEP MATCH ANALYZER · RESUMEN")
+    if deep:
+        deep_info = [
+            ("Media juegos esperada", deep.get("avg_games")),
+            ("Mediana juegos", deep.get("med_games")),
+            (f"Media juegos {payload.get('p1_name','Jugador 1')}", deep.get("avg_g1")),
+            (f"Media juegos {payload.get('p2_name','Jugador 2')}", deep.get("avg_g2")),
+            (f"Mediana juegos {payload.get('p1_name','Jugador 1')}", deep.get("med_g1")),
+            (f"Mediana juegos {payload.get('p2_name','Jugador 2')}", deep.get("med_g2")),
+            ("Diferencia media J1-J2", deep.get("game_diff")),
+            (f"Rank {payload.get('p1_name','Jugador 1')}", deep.get("p1_rank")),
+            (f"Rank {payload.get('p2_name','Jugador 2')}", deep.get("p2_rank")),
+            (f"Elo superficie {payload.get('p1_name','Jugador 1')}", deep.get("p1_elo_surface")),
+            (f"Elo superficie {payload.get('p2_name','Jugador 2')}", deep.get("p2_elo_surface")),
+            (f"Hold {payload.get('p1_name','Jugador 1')}", deep.get("hold1")),
+            (f"Hold {payload.get('p2_name','Jugador 2')}", deep.get("hold2")),
+            (f"Return {payload.get('p1_name','Jugador 1')}", deep.get("ret1")),
+            (f"Return {payload.get('p2_name','Jugador 2')}", deep.get("ret2")),
+            ("Volatilidad", deep.get("vol")),
+        ]
+        for campo, valor in deep_info:
+            if valor is not None and valor != "":
+                rows.append({"Sección": "DEEP MATCH ANALYZER · RESUMEN", "Campo/Mercado": campo, "Tipo": "Dato profundo", "Base %": "", "TA ajustada %": "", "Valor/Nota": valor})
+    else:
+        rows.append({"Sección": "DEEP MATCH ANALYZER · RESUMEN", "Campo/Mercado": "", "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": "Sin datos profundos calculados."})
+
+    add_section("DEEP MATCH ANALYZER · MERCADOS")
+    try:
+        df_deep = _deep_build_markets(payload, ta_adj if isinstance(ta_adj, dict) else None)
+        if isinstance(df_deep, pd.DataFrame) and not df_deep.empty:
+            for _, r in df_deep.iterrows():
+                rows.append({
+                    "Sección": "DEEP MATCH ANALYZER · MERCADOS",
+                    "Campo/Mercado": r.get("Mercado / lectura", ""),
+                    "Tipo": r.get("Grupo", ""),
+                    "Base %": r.get("Probabilidad", ""),
+                    "TA ajustada %": "",
+                    "Valor/Nota": f"{r.get('Nivel','')} · {r.get('Lectura','')} {r.get('Nota','')}",
+                })
+        else:
+            rows.append({"Sección": "DEEP MATCH ANALYZER · MERCADOS", "Campo/Mercado": "", "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": "Sin mercados profundos disponibles."})
+    except Exception as e:
+        rows.append({"Sección": "DEEP MATCH ANALYZER · MERCADOS", "Campo/Mercado": "", "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": f"No se pudo exportar deep markets: {type(e).__name__}: {e}"})
+
+    add_section("DEEP MATCH ANALYZER · CONCLUSIONES")
+    try:
+        conclusiones = _deep_conclusions(payload, ta_adj if isinstance(ta_adj, dict) else None)
+        for i, n in enumerate(conclusiones or [], 1):
+            rows.append({"Sección": "DEEP MATCH ANALYZER · CONCLUSIONES", "Campo/Mercado": f"Conclusión {i}", "Tipo": "Lectura deportiva", "Base %": "", "TA ajustada %": "", "Valor/Nota": str(n)})
+    except Exception as e:
+        rows.append({"Sección": "DEEP MATCH ANALYZER · CONCLUSIONES", "Campo/Mercado": "", "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": f"No se pudieron exportar conclusiones: {type(e).__name__}: {e}"})
+
     add_section("AJUSTE TENNIS ABSTRACT")
     if isinstance(ta_adj, dict):
         ta_markets = [
@@ -14505,7 +14559,7 @@ def render_predictor_excel_download_panel():
     ta_adj = st.session_state.get("predictor_last_ta_adjustment_v23441")
     st.divider()
     with st.expander("📥 Descargar Excel del Predictor", expanded=False):
-        st.caption("Descarga un Excel del Predictor en una sola hoja, con resumen, mercados base y ajuste TennisAbstract si lo has calculado. No modifica ningún cálculo.")
+        st.caption("Descarga un Excel del Predictor en una sola hoja, incluyendo el Deep Match Analyzer, mercados derivados, conclusiones y ajuste TennisAbstract si lo has calculado. No modifica ningún cálculo.")
         try:
             data = _predictor_excel_bytes(payload, ta_adj if isinstance(ta_adj, dict) else None)
             p1 = limpiar(payload.get("p1_name", "jugador1"))[:18] or "jugador1"
@@ -14516,7 +14570,7 @@ def render_predictor_excel_download_panel():
                 file_name=f"predictor_{p1}_vs_{p2}_{APP_VERSION}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                key="download_predictor_excel_v23443"
+                key="download_predictor_excel_v23451"
             )
         except Exception as e:
             st.warning(f"No se pudo preparar el Excel del Predictor: {type(e).__name__}: {e}")
