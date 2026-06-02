@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.43.4-cuotas-siempre-visibles"
+APP_VERSION = "v23.44.0-predictor-ta-finetune"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -14193,6 +14193,264 @@ def render_api_tennis_mobile_loader(circuito):
                 st.rerun()
 
 # =========================================================
+# v23.44.0 PREDICTOR · TA FINE TUNE
+# Permite pegar ficha completa TennisAbstract/Flashscore de los dos jugadores
+# dentro del Predictor individual. No toca el motor Over ni la simulación:
+# crea un ajuste de lectura final y muestra porcentajes afinados con trazabilidad.
+# =========================================================
+
+def _pred_ta_num(d, key, default=0.0):
+    try:
+        if not isinstance(d, dict):
+            return default
+        v = d.get(key, default)
+        if v in [None, "", "nan"]:
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+
+def _pred_ta_pct_label(x):
+    try:
+        return f"{float(x):.1%}"
+    except Exception:
+        return "N/A"
+
+
+def _pred_ta_confidence(ta1, ta2):
+    n1 = _pred_ta_num(ta1, "matches", 0)
+    n2 = _pred_ta_num(ta2, "matches", 0)
+    n = min(n1, n2) if (n1 and n2) else max(n1, n2)
+    if n >= 8:
+        return 0.30, "alta"
+    if n >= 5:
+        return 0.22, "media"
+    if n >= 3:
+        return 0.14, "baja"
+    return 0.08, "muy baja"
+
+
+def _pred_blend(base, signal, weight, floor=0.02, ceil=0.98):
+    try:
+        base = float(base)
+        if signal is None:
+            return float(np.clip(base, floor, ceil))
+        signal = float(signal)
+        return float(np.clip(base * (1 - weight) + signal * weight, floor, ceil))
+    except Exception:
+        return base
+
+
+def _pred_ta_compute_adjustments(base, ta1, ta2, p1_name="Jugador 1", p2_name="Jugador 2"):
+    """Devuelve porcentajes ajustados por fichas TA recientes.
+    Es una capa visual del Predictor; no modifica el motor Monte Carlo.
+    """
+    base = base or {}
+    w, conf_label = _pred_ta_confidence(ta1, ta2)
+
+    def avg_key(key, default=0.0):
+        vals = []
+        for d in [ta1, ta2]:
+            if isinstance(d, dict) and d.get(key, "") not in [None, ""]:
+                vals.append(_pred_ta_num(d, key, default))
+        return float(np.mean(vals)) if vals else default
+
+    over_rate = avg_key("over_rate", 0.0)
+    over19_rate = avg_key("over19_rate", 0.0)
+    three_rate = avg_key("three_rate", 0.0)
+    easy_rate = avg_key("easy_rate", 0.0)
+    avg_games = avg_key("avg_games", 0.0)
+    set1 = _pred_ta_num(ta1, "set_rate", 0.0)
+    set2 = _pred_ta_num(ta2, "set_rate", 0.0)
+    lost1 = _pred_ta_num(ta1, "lost02_rate", 0.0)
+    lost2 = _pred_ta_num(ta2, "lost02_rate", 0.0)
+    elo1 = _pred_ta_num(ta1, "elo", 0.0)
+    elo2 = _pred_ta_num(ta2, "elo", 0.0)
+    wins1 = _pred_ta_num(ta1, "wins", 0.0)
+    wins2 = _pred_ta_num(ta2, "wins", 0.0)
+    n1 = max(1.0, _pred_ta_num(ta1, "matches", 0.0))
+    n2 = max(1.0, _pred_ta_num(ta2, "matches", 0.0))
+    form1 = wins1 / n1 if ta1 else 0.50
+    form2 = wins2 / n2 if ta2 else 0.50
+
+    # Señales TA prudentes.
+    over18_signal = None
+    if over_rate > 0 or avg_games > 0 or three_rate > 0:
+        over18_signal = 0.50 + (over_rate - 0.50) * 0.55 + (three_rate - 0.30) * 0.13 + ((avg_games or 21.0) - 21.0) * 0.012 - easy_rate * 0.08
+        over18_signal = float(np.clip(over18_signal, 0.42, 0.88))
+    over19_signal = None
+    if over19_rate > 0 or three_rate > 0:
+        over19_signal = 0.45 + (over19_rate - 0.45) * 0.55 + (three_rate - 0.30) * 0.10 - easy_rate * 0.10
+        over19_signal = float(np.clip(over19_signal, 0.35, 0.82))
+    over20_signal = None
+    if over19_rate > 0 or avg_games > 0:
+        over20_signal = 0.40 + (over19_rate - 0.45) * 0.38 + ((avg_games or 21.0) - 22.0) * 0.012 - easy_rate * 0.08
+        over20_signal = float(np.clip(over20_signal, 0.25, 0.74))
+
+    ml1_base = float(base.get("p1", 0.50) or 0.50)
+    ml1_signal = None
+    if elo1 and elo2:
+        ml1_signal = elo_prob(elo1, elo2)
+        # Pequeño ajuste por forma reciente, capado.
+        ml1_signal += float(np.clip((form1 - form2) * 0.10, -0.035, 0.035))
+        ml1_signal = float(np.clip(ml1_signal, 0.12, 0.88))
+
+    p1_adj = _pred_blend(ml1_base, ml1_signal, min(w, 0.24), 0.05, 0.95)
+    p2_adj = 1 - p1_adj
+    over18_adj = _pred_blend(base.get("over18", 0.0), over18_signal, w, 0.05, 0.95)
+    over19_adj = _pred_blend(base.get("over19", 0.0), over19_signal, w, 0.05, 0.90)
+    over20_adj = _pred_blend(base.get("over20", 0.0), over20_signal, w * 0.85, 0.03, 0.85)
+
+    # Gana al menos un set desde TA. Es orientativo; no sustituye al motor.
+    set1_signal = None
+    set2_signal = None
+    if set1:
+        set1_signal = float(np.clip(0.50 + set1 * 0.42 - lost1 * 0.18, 0.40, 0.94))
+    if set2:
+        set2_signal = float(np.clip(0.50 + set2 * 0.42 - lost2 * 0.18, 0.40, 0.94))
+
+    notes = []
+    if over_rate >= 0.70:
+        notes.append(f"TA refuerza Over: Over18 reciente combinado {over_rate:.0%}")
+    elif over_rate and over_rate <= 0.45:
+        notes.append(f"TA frena Over: Over18 reciente bajo {over_rate:.0%}")
+    if easy_rate >= 0.35:
+        notes.append(f"Riesgo de paliza/partido corto: {easy_rate:.0%}")
+    if three_rate >= 0.35:
+        notes.append(f"Buena señal de partido largo: 3 sets {three_rate:.0%}")
+    if elo1 and elo2:
+        notes.append(f"Elo TA: {p1_name} {elo1:.0f} vs {p2_name} {elo2:.0f}")
+    if not notes:
+        notes.append("TA leído, pero sin señal fuerte; ajuste prudente.")
+
+    markets = [
+        (p1_adj, f"{p1_name} gana", "ML"),
+        (p2_adj, f"{p2_name} gana", "ML"),
+        (over18_adj, "Over 18.5", "OVER18"),
+        (over19_adj, "Over 19.5", "OVER19"),
+        (over20_adj, "Over 20.5", "OVER20"),
+    ]
+    if set1_signal is not None:
+        markets.append((set1_signal, f"{p1_name} gana al menos 1 set", "SET"))
+    if set2_signal is not None:
+        markets.append((set2_signal, f"{p2_name} gana al menos 1 set", "SET"))
+    markets = sorted(markets, key=lambda x: x[0], reverse=True)
+
+    return {
+        "confidence": conf_label,
+        "weight": w,
+        "p1_adj": p1_adj,
+        "p2_adj": p2_adj,
+        "over18_adj": over18_adj,
+        "over19_adj": over19_adj,
+        "over20_adj": over20_adj,
+        "set1_signal": set1_signal,
+        "set2_signal": set2_signal,
+        "notes": notes,
+        "markets": markets,
+        "raw_signals": {
+            "over_rate": over_rate, "over19_rate": over19_rate, "three_rate": three_rate,
+            "easy_rate": easy_rate, "avg_games": avg_games, "set1": set1, "set2": set2,
+            "lost1": lost1, "lost2": lost2, "elo1": elo1, "elo2": elo2,
+        }
+    }
+
+
+def render_predictor_ta_finetune_panel():
+    payload = st.session_state.get("predictor_last_payload_v23440")
+    if not isinstance(payload, dict):
+        return
+    p1_name = payload.get("p1_name", "Jugador 1")
+    p2_name = payload.get("p2_name", "Jugador 2")
+    partido = f"{p1_name} vs {p2_name}"
+
+    st.divider()
+    with st.expander("🧪 Afinar Predictor con fichas completas TennisAbstract", expanded=False):
+        st.caption("Pega la ficha completa de TennisAbstract/Flashscore de cada jugador. La app lee resultados recientes, Over, 3 sets, palizas, Elo si aparece y te muestra porcentajes ajustados. No modifica el motor Over ni la simulación base.")
+        c1, c2 = st.columns(2)
+        cache1_txt, cache1 = _ta_profile_cache_status_text(p1_name)
+        cache2_txt, cache2 = _ta_profile_cache_status_text(p2_name)
+        with c1:
+            if cache1_txt:
+                st.success(cache1_txt)
+            txt1 = st.text_area(f"Ficha completa TA / Flashscore · {p1_name}", value=str((cache1 or {}).get("raw_text", "") or ""), height=220, key=f"pred_ta_txt1_{limpiar(partido)}")
+        with c2:
+            if cache2_txt:
+                st.success(cache2_txt)
+            txt2 = st.text_area(f"Ficha completa TA / Flashscore · {p2_name}", value=str((cache2 or {}).get("raw_text", "") or ""), height=220, key=f"pred_ta_txt2_{limpiar(partido)}")
+
+        save_cache = st.checkbox("💾 Guardar estas fichas en caché para próximos análisis", value=True, key=f"pred_ta_save_{limpiar(partido)}")
+        if st.button("🔬 Analizar fichas y afinar porcentajes", key=f"pred_ta_btn_{limpiar(partido)}", use_container_width=True):
+            d1 = _extraer_datos_extra_desde_texto(txt1 or "", {"Partido": partido})
+            d2 = _extraer_datos_extra_desde_texto(txt2 or "", {"Partido": partido})
+            d1 = _invalidar_lectura_si_no_coincide(d1, p1_name)
+            d2 = _invalidar_lectura_si_no_coincide(d2, p2_name)
+            ta1 = d1.get("tennisabstract") or d1.get("flashscore") if isinstance(d1, dict) else None
+            ta2 = d2.get("tennisabstract") or d2.get("flashscore") if isinstance(d2, dict) else None
+
+            if save_cache:
+                if str(txt1 or "").strip():
+                    ok, msg = _ta_profile_cache_upsert_from_raw(p1_name, txt1)
+                    if ok: st.caption(f"✅ {msg}")
+                    else: st.caption(f"⚠️ {p1_name}: {msg}")
+                if str(txt2 or "").strip():
+                    ok, msg = _ta_profile_cache_upsert_from_raw(p2_name, txt2)
+                    if ok: st.caption(f"✅ {msg}")
+                    else: st.caption(f"⚠️ {p2_name}: {msg}")
+
+            st.subheader("📌 Lectura de fichas")
+            r1a, r1b = _estado_lectura_ficha_datos_extra(d1)
+            r2a, r2b = _estado_lectura_ficha_datos_extra(d2)
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                st.info(f"{r1a}\n\n{r1b}")
+            with cc2:
+                st.info(f"{r2a}\n\n{r2b}")
+
+            if not ta1 and not ta2:
+                st.warning("No he podido leer una ficha válida. Prueba copiando más contenido de TennisAbstract, especialmente la zona de resultados recientes/summary.")
+                return
+
+            adj = _pred_ta_compute_adjustments(payload.get("base", {}), ta1, ta2, p1_name, p2_name)
+            st.subheader("🎯 Porcentajes afinados por TA")
+            st.caption(f"Confianza del ajuste: {adj['confidence']} · peso aplicado sobre el motor base: {adj['weight']:.0%}")
+            m1, m2, m3, m4, m5 = st.columns(5)
+            base = payload.get("base", {})
+            with m1: st.metric(f"{p1_name} ML", _pred_ta_pct_label(adj["p1_adj"]), f"base {_pred_ta_pct_label(base.get('p1',0.5))}")
+            with m2: st.metric(f"{p2_name} ML", _pred_ta_pct_label(adj["p2_adj"]), f"base {_pred_ta_pct_label(base.get('p2',0.5))}")
+            with m3: st.metric("Over 18.5", _pred_ta_pct_label(adj["over18_adj"]), f"base {_pred_ta_pct_label(base.get('over18',0))}")
+            with m4: st.metric("Over 19.5", _pred_ta_pct_label(adj["over19_adj"]), f"base {_pred_ta_pct_label(base.get('over19',0))}")
+            with m5: st.metric("Over 20.5", _pred_ta_pct_label(adj["over20_adj"]), f"base {_pred_ta_pct_label(base.get('over20',0))}")
+
+            if adj.get("set1_signal") is not None or adj.get("set2_signal") is not None:
+                s1, s2 = st.columns(2)
+                with s1:
+                    if adj.get("set1_signal") is not None:
+                        st.metric(f"{p1_name} gana set", _pred_ta_pct_label(adj.get("set1_signal")))
+                with s2:
+                    if adj.get("set2_signal") is not None:
+                        st.metric(f"{p2_name} gana set", _pred_ta_pct_label(adj.get("set2_signal")))
+
+            best = adj["markets"][0] if adj.get("markets") else None
+            if best:
+                prob, label, typ = best
+                if prob >= 0.80:
+                    st.success(f"Mejor mercado TA: **{label}** · {prob:.1%}")
+                elif prob >= 0.70:
+                    st.warning(f"Mejor mercado TA: **{label}** · {prob:.1%} · mejor como simple/observación, no forzar combinada.")
+                else:
+                    st.info(f"TA no deja mercado premium claro. Mejor mercado: **{label}** · {prob:.1%}")
+
+            with st.expander("Ver ranking de mercados TA", expanded=False):
+                dfm = pd.DataFrame([{"Mercado": x[1], "Prob TA ajustada": f"{x[0]:.1%}", "Tipo": x[2]} for x in adj.get("markets", [])])
+                st.dataframe(dfm, use_container_width=True)
+            for n in adj.get("notes", []):
+                st.caption("• " + str(n))
+
+
+
+# =========================================================
 # UI
 # =========================================================
 
@@ -14363,6 +14621,24 @@ elif modo == "Predictor":
         sim["market_over20"] = over20
         sim["market_over22"] = over22
         sim["market_cap_notes"] = market_caps.get("notes", [])
+
+        # v23.44.0: guardar último Predictor para poder afinar con fichas TA sin repetir simulación.
+        st.session_state["predictor_last_payload_v23440"] = {
+            "p1_name": d1.get("Player", p1_name),
+            "p2_name": d2.get("Player", p2_name),
+            "surface": surface,
+            "circuito": circuito,
+            "best_of": best_of,
+            "base": {
+                "p1": float(sim.get("p1_cal", sim.get("p1", 0.5))),
+                "p2": float(sim.get("p2_cal", sim.get("p2", 0.5))),
+                "over17": float(over17),
+                "over18": float(over18),
+                "over19": float(over19),
+                "over20": float(over20),
+                "over22": float(over22),
+            }
+        }
 
         elo_ref = elo_prob(d1[surface], d2[surface])
 
@@ -14790,6 +15066,9 @@ elif modo == "Predictor":
 
         st.caption(f"Tennis IA v23.25 Fix Países + Watchlist Label · {sims:,} simulaciones Monte Carlo")
 
+
+    # Mostrar afinador TA aunque el botón de simulación ya no esté pulsado.
+    render_predictor_ta_finetune_panel()
 
 elif modo == "Analizador por lista":
     st.subheader("📋 Analizador por lista pegada")
