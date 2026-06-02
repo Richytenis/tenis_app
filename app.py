@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.44.3-predictor-excel-fix"
+APP_VERSION = "v23.45.0-deep-match-analyzer"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -14616,6 +14616,205 @@ def render_predictor_ta_finetune_panel():
 
 
 # =========================================================
+# v23.45.0 PREDICTOR · DEEP MATCH ANALYZER
+# Solo añade lectura profunda en Predictor individual. No toca Analista,
+# motor Over, simulación ni selector por lista.
+# =========================================================
+
+def _deep_pct(v):
+    try:
+        return f"{float(v):.1%}"
+    except Exception:
+        return "N/A"
+
+
+def _deep_float(payload, section, key, default=0.0):
+    try:
+        sec = payload.get(section, {}) if isinstance(payload, dict) else {}
+        return float(sec.get(key, default) or default)
+    except Exception:
+        return default
+
+
+def _deep_level(prob):
+    try:
+        p = float(prob)
+    except Exception:
+        return ""
+    if p >= 0.82: return "🔥 Muy alta"
+    if p >= 0.74: return "✅ Alta"
+    if p >= 0.64: return "🟡 Media-alta"
+    if p >= 0.55: return "⚖️ Ajustada"
+    return "⚠️ Baja"
+
+
+def _deep_build_markets(payload, ta_adj=None):
+    base = payload.get("base", {}) if isinstance(payload, dict) else {}
+    deep = payload.get("deep", {}) if isinstance(payload, dict) else {}
+    p1 = payload.get("p1_name", "Jugador 1")
+    p2 = payload.get("p2_name", "Jugador 2")
+    dog = deep.get("model_dog_name", "Underdog")
+    fav = deep.get("model_fav_name", "Favorito")
+    rows = []
+    def add(grupo, mercado, prob, lectura="", nota=""):
+        try:
+            probf = float(prob)
+        except Exception:
+            return
+        rows.append({
+            "Grupo": grupo,
+            "Mercado / lectura": mercado,
+            "Probabilidad": probf,
+            "Nivel": _deep_level(probf),
+            "Lectura": lectura,
+            "Nota": nota,
+        })
+
+    add("Ganador", f"{p1} gana partido", base.get("p1", 0), "ML calibrado")
+    add("Ganador", f"{p2} gana partido", base.get("p2", 0), "ML calibrado")
+    add("Primer set", f"{p1} gana 1er set", base.get("p1_fs", 0), "Inicio de partido")
+    add("Primer set", f"{p2} gana 1er set", base.get("p2_fs", 0), "Inicio de partido")
+    if payload.get("circuito") == "WTA":
+        add("Juegos totales", "Over 17.5 WTA", base.get("over17", 0), "Línea baja WTA")
+    add("Juegos totales", "Over 18.5", base.get("over18", 0), "Línea base")
+    add("Juegos totales", "Over 19.5", base.get("over19", 0), "Línea superior")
+    add("Juegos totales", "Over 20.5", base.get("over20", 0), "Línea superior")
+    add("Juegos totales", "Over 22.5", base.get("over22", 0), "Línea alta")
+    add("Juegos totales", "Under 22.5", 1 - float(base.get("over22", 0) or 0), "Línea defensiva")
+    add("Sets", "Más de 2.5 sets" if int(payload.get("best_of", 3) or 3) == 3 else "Partido largo / 4+ sets", base.get("set3", 0), "Resistencia / set extra")
+    add("Sets", f"{dog} gana al menos 1 set", base.get("dog_wins_set", 0), "Mercado de resistencia")
+    add("Sets", f"{fav} gana 2-0", base.get("fav_2_0", 0), "Dominio del favorito")
+    add("Especiales", "Tie-break en el partido", base.get("tb", 0), "Saque/hold alto")
+    add("Especiales", "Partido largo", base.get("long_match", 0), "Lectura global")
+    add("Especiales", "Favorito + Under 22.5", base.get("fav_under22", 0), "Favorito controla sin guerra")
+    add("Especiales", "Dog + Over 20.5", base.get("dog_over20", 0), "Underdog compite")
+
+    # Juegos por jugador aproximados desde Monte Carlo.
+    avg_g1 = float(deep.get("avg_g1", 0) or 0)
+    avg_g2 = float(deep.get("avg_g2", 0) or 0)
+    if avg_g1 > 0 and avg_g2 > 0:
+        for player, avg in [(p1, avg_g1), (p2, avg_g2)]:
+            # Probabilidades aproximadas visuales, derivadas de media esperada; no sustituyen al motor.
+            add("Juegos jugador", f"{player} supera {max(6.5, np.floor(avg-1)+0.5):.1f} juegos", min(0.86, max(0.40, 0.58 + (avg-9.5)*0.055)), f"Media esperada {avg:.1f}")
+            add("Juegos jugador", f"{player} supera {max(7.5, np.floor(avg)+0.5):.1f} juegos", min(0.80, max(0.30, 0.50 + (avg-10.0)*0.050)), f"Media esperada {avg:.1f}")
+
+    # Si hay TA afinado, añadir mercados TA como bloque aparte.
+    if isinstance(ta_adj, dict):
+        add("TA ajustado", f"{p1} gana partido · TA", ta_adj.get("p1_adj"), "Capa TennisAbstract")
+        add("TA ajustado", f"{p2} gana partido · TA", ta_adj.get("p2_adj"), "Capa TennisAbstract")
+        add("TA ajustado", "Over 18.5 · TA", ta_adj.get("over18_adj"), "Capa TennisAbstract")
+        add("TA ajustado", "Over 19.5 · TA", ta_adj.get("over19_adj"), "Capa TennisAbstract")
+        add("TA ajustado", "Over 20.5 · TA", ta_adj.get("over20_adj"), "Capa TennisAbstract")
+        if ta_adj.get("set1_signal") is not None:
+            add("TA ajustado", f"{p1} gana al menos 1 set · TA", ta_adj.get("set1_signal"), "Capa TennisAbstract")
+        if ta_adj.get("set2_signal") is not None:
+            add("TA ajustado", f"{p2} gana al menos 1 set · TA", ta_adj.get("set2_signal"), "Capa TennisAbstract")
+
+    df = pd.DataFrame(rows)
+    if not df.empty:
+        df = df.sort_values(["Probabilidad"], ascending=False).reset_index(drop=True)
+        df["Probabilidad"] = df["Probabilidad"].map(lambda x: f"{x:.1%}")
+    return df
+
+
+def _deep_conclusions(payload, ta_adj=None):
+    base = payload.get("base", {}) if isinstance(payload, dict) else {}
+    deep = payload.get("deep", {}) if isinstance(payload, dict) else {}
+    p1 = payload.get("p1_name", "Jugador 1")
+    p2 = payload.get("p2_name", "Jugador 2")
+    avg_games = float(deep.get("avg_games", 0) or 0)
+    med_games = float(deep.get("med_games", 0) or 0)
+    over18 = float(base.get("over18", 0) or 0)
+    over19 = float(base.get("over19", 0) or 0)
+    over20 = float(base.get("over20", 0) or 0)
+    set3 = float(base.get("set3", 0) or 0)
+    tb = float(base.get("tb", 0) or 0)
+    dog_set = float(base.get("dog_wins_set", 0) or 0)
+    fav20 = float(base.get("fav_2_0", 0) or 0)
+    mlmax = max(float(base.get("p1", 0.5) or 0.5), float(base.get("p2", 0.5) or 0.5))
+    hold1 = float(deep.get("hold1", 0) or 0)
+    hold2 = float(deep.get("hold2", 0) or 0)
+    game_diff = float(deep.get("game_diff", 0) or 0)
+    notes = []
+
+    if over18 >= 0.78 and over19 >= 0.68:
+        notes.append("✅ Perfil claro de partido con juegos: Over 18.5 es base, y Over 19.5 merece revisión deportiva.")
+    elif over18 >= 0.74 and over19 < 0.62:
+        notes.append("🟡 Over bajo interesante, pero no hay fuerza suficiente para subir línea sin confirmación TA.")
+    if over20 >= 0.62 and avg_games >= 22.3:
+        notes.append("🔥 El partido permite mirar líneas superiores de juegos: media y probabilidad sostienen Over 20.5.")
+    if set3 >= 0.45:
+        notes.append("⚠️ Alta opción de set extra: mirar Más de 2.5 sets / underdog gana set según mercado disponible.")
+    elif fav20 >= 0.62 and mlmax >= 0.66:
+        notes.append("✅ Guion de favorito dominante: vigilar 2-0 favorito y evitar forzar Overs altos si la media de juegos no acompaña.")
+    if dog_set >= 0.74:
+        notes.append("✅ El underdog compite: mercado 'gana al menos un set' o handicap de juegos puede tener sentido deportivo.")
+    if tb >= 0.34 and min(hold1, hold2) >= 0.72:
+        notes.append("🎯 Entorno de tie-break: ambos holds sostienen sets largos.")
+    if avg_games:
+        notes.append(f"📊 Total esperado: media {avg_games:.1f} juegos, mediana {med_games:.1f}; diferencia media J1-J2 {game_diff:+.1f} juegos.")
+    if isinstance(ta_adj, dict) and ta_adj.get("notes"):
+        notes.append("🧪 TA aporta lectura extra: " + " | ".join([str(x) for x in ta_adj.get("notes", [])[:3]]))
+    if not notes:
+        notes.append("Sin conclusión fuerte: partido mejor para observación o stake mínimo si no aparece mercado muy claro.")
+    return notes
+
+
+def render_predictor_deep_match_analyzer_panel():
+    payload = st.session_state.get("predictor_last_payload_v23440")
+    if not isinstance(payload, dict):
+        return
+    ta_adj = st.session_state.get("predictor_last_ta_adjustment_v23441")
+    p1 = payload.get("p1_name", "Jugador 1")
+    p2 = payload.get("p2_name", "Jugador 2")
+    base = payload.get("base", {}) if isinstance(payload.get("base", {}), dict) else {}
+    deep = payload.get("deep", {}) if isinstance(payload.get("deep", {}), dict) else {}
+
+    st.divider()
+    with st.expander("🔬 Deep Match Analyzer · análisis profundo del partido", expanded=True):
+        st.caption("Laboratorio del Predictor individual. Usa la simulación base, Elo/superficie, hold/return, mercados derivados y, si existe, ficha TA afinada. No modifica el Analista por lista ni el motor Over.")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("Media juegos", f"{float(deep.get('avg_games',0) or 0):.1f}", f"mediana {float(deep.get('med_games',0) or 0):.1f}")
+        with c2:
+            st.metric(f"Juegos {p1}", f"{float(deep.get('avg_g1',0) or 0):.1f}", f"med {float(deep.get('med_g1',0) or 0):.1f}")
+        with c3:
+            st.metric(f"Juegos {p2}", f"{float(deep.get('avg_g2',0) or 0):.1f}", f"med {float(deep.get('med_g2',0) or 0):.1f}")
+        with c4:
+            st.metric("3 sets / set extra", _deep_pct(base.get("set3", 0)), _deep_level(base.get("set3", 0)))
+
+        c5, c6, c7, c8 = st.columns(4)
+        with c5: st.metric("Primer set J1", _deep_pct(base.get("p1_fs", 0)))
+        with c6: st.metric("Primer set J2", _deep_pct(base.get("p2_fs", 0)))
+        with c7: st.metric("Tie-break", _deep_pct(base.get("tb", 0)), _deep_level(base.get("tb", 0)))
+        with c8: st.metric("Dog gana set", _deep_pct(base.get("dog_wins_set", 0)), _deep_level(base.get("dog_wins_set", 0)))
+
+        st.subheader("📌 Conclusiones deportivas")
+        for n in _deep_conclusions(payload, ta_adj if isinstance(ta_adj, dict) else None):
+            st.write("• " + str(n))
+
+        st.subheader("📊 Todos los mercados derivados")
+        dfm = _deep_build_markets(payload, ta_adj if isinstance(ta_adj, dict) else None)
+        if not dfm.empty:
+            st.dataframe(dfm, use_container_width=True, hide_index=True)
+        else:
+            st.info("No hay mercados derivados suficientes para mostrar.")
+
+        with st.expander("🧾 Datos internos usados en esta lectura", expanded=False):
+            st.write({
+                "surface": payload.get("surface"),
+                "circuito": payload.get("circuito"),
+                "best_of": payload.get("best_of"),
+                "rank": {p1: deep.get("p1_rank"), p2: deep.get("p2_rank")},
+                "elo_surface": {p1: deep.get("p1_elo_surface"), p2: deep.get("p2_elo_surface")},
+                "hold": {p1: deep.get("hold1"), p2: deep.get("hold2")},
+                "return": {p1: deep.get("ret1"), p2: deep.get("ret2")},
+                "volatilidad": deep.get("vol"),
+                "notas_caps": deep.get("market_cap_notes", []),
+            })
+
+
+# =========================================================
 # UI
 # =========================================================
 
@@ -14802,6 +15001,39 @@ elif modo == "Predictor":
                 "over19": float(over19),
                 "over20": float(over20),
                 "over22": float(over22),
+                "p1_fs": float(sim.get("p1_fs", 0.5)),
+                "p2_fs": float(sim.get("p2_fs", 0.5)),
+                "set3": float(sim.get("set3", 0.0)),
+                "tb": float(sim.get("tb", 0.0)),
+                "dog_wins_set": float(sim.get("dog_wins_set", 0.0)),
+                "fav_2_0": float(sim.get("fav_2_0", 0.0)),
+                "long_match": float(sim.get("long_match", 0.0)),
+                "fav_under22": float(sim.get("fav_under22", 0.0)),
+                "dog_over20": float(sim.get("dog_over20", 0.0)),
+            },
+            "deep": {
+                "avg_games": float(avg_games),
+                "med_games": float(med_games),
+                "avg_g1": float(avg_g1),
+                "avg_g2": float(avg_g2),
+                "med_g1": float(med_g1),
+                "med_g2": float(med_g2),
+                "game_diff": float(game_diff),
+                "hold1": float(sim.get("hold1", 0.0)),
+                "hold2": float(sim.get("hold2", 0.0)),
+                "ret1": float(sim.get("ret1", 0.0)),
+                "ret2": float(sim.get("ret2", 0.0)),
+                "vol": float(sim.get("vol", 0.0)),
+                "model_fav_name": sim.get("model_fav_name", "Favorito"),
+                "model_dog_name": sim.get("model_dog_name", "Underdog"),
+                "p1_rank": int(d1.get("Rank", 999) or 999),
+                "p2_rank": int(d2.get("Rank", 999) or 999),
+                "p1_elo_surface": float(d1.get(surface, 1500) or 1500),
+                "p2_elo_surface": float(d2.get(surface, 1500) or 1500),
+                "p1_profile": sim.get("p1_profile", "normal"),
+                "p2_profile": sim.get("p2_profile", "normal"),
+                "rating_sanity": sim.get("rating_sanity", {}),
+                "market_cap_notes": sim.get("market_cap_notes", []),
             }
         }
 
@@ -15234,6 +15466,7 @@ elif modo == "Predictor":
 
     # Mostrar afinador TA aunque el botón de simulación ya no esté pulsado.
     render_predictor_ta_finetune_panel()
+    render_predictor_deep_match_analyzer_panel()
     render_predictor_excel_download_panel()
 
 elif modo == "Analizador por lista":
