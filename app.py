@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.44.2-predictor-excel-una-hoja"
+APP_VERSION = "v23.44.3-predictor-excel-fix"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -14462,7 +14462,7 @@ def _predictor_excel_bytes(payload, ta_adj=None):
         sheet = "PREDICTOR"
         df.to_excel(writer, index=False, sheet_name=sheet)
         wb = writer.book
-        ws = writer[sheet]
+        ws = writer.sheets[sheet]
         ws.freeze_panes = "A2"
         for cell in ws[1]:
             cell.font = cell.font.copy(bold=True)
@@ -14516,7 +14516,7 @@ def render_predictor_excel_download_panel():
                 file_name=f"predictor_{p1}_vs_{p2}_{APP_VERSION}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                key="download_predictor_excel_v23442"
+                key="download_predictor_excel_v23443"
             )
         except Exception as e:
             st.warning(f"No se pudo preparar el Excel del Predictor: {type(e).__name__}: {e}")
