@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.44.1-predictor-excel-download"
+APP_VERSION = "v23.44.2-predictor-excel-una-hoja"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -14374,87 +14374,129 @@ def _predictor_excel_safe_pct(v):
 
 
 def _predictor_excel_bytes(payload, ta_adj=None):
+    """Exporta el Predictor en UNA sola hoja, más cómodo para revisar/imprimir.
+    No modifica cálculos: solo junta resumen, mercados base, ajuste TA, notas y señales.
+    """
     output = io.BytesIO()
     payload = payload or {}
     base = payload.get("base", {}) if isinstance(payload.get("base", {}), dict) else {}
 
-    resumen_rows = [
-        {"Campo": "Versión app", "Valor": APP_VERSION},
-        {"Campo": "Jugador 1", "Valor": payload.get("p1_name", "")},
-        {"Campo": "Jugador 2", "Valor": payload.get("p2_name", "")},
-        {"Campo": "Partido", "Valor": f"{payload.get('p1_name','')} vs {payload.get('p2_name','')}"},
-        {"Campo": "Circuito", "Valor": payload.get("circuito", "")},
-        {"Campo": "Superficie", "Valor": payload.get("surface", "")},
-        {"Campo": "Formato", "Valor": "5 sets" if int(payload.get("best_of", 3) or 3) == 5 else "3 sets"},
-        {"Campo": "Nota", "Valor": "Exportación del Predictor individual. No modifica cálculos; refleja lectura base y ajuste TA si existe."},
-    ]
-    resumen_df = pd.DataFrame(resumen_rows)
+    rows = []
 
+    def add_section(title):
+        rows.append({"Sección": title, "Campo/Mercado": "", "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": ""})
+
+    def pct(v):
+        try:
+            if v is None or v == "":
+                return ""
+            return f"{float(v):.1%}"
+        except Exception:
+            return ""
+
+    def add_info(campo, valor):
+        rows.append({"Sección": "RESUMEN", "Campo/Mercado": campo, "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": valor})
+
+    add_section("RESUMEN")
+    add_info("Versión app", APP_VERSION)
+    add_info("Jugador 1", payload.get("p1_name", ""))
+    add_info("Jugador 2", payload.get("p2_name", ""))
+    add_info("Partido", f"{payload.get('p1_name','')} vs {payload.get('p2_name','')}")
+    add_info("Circuito", payload.get("circuito", ""))
+    add_info("Superficie", payload.get("surface", ""))
+    add_info("Formato", "5 sets" if int(payload.get("best_of", 3) or 3) == 5 else "3 sets")
+    add_info("Nota", "Exportación del Predictor individual en una sola hoja. No modifica cálculos.")
+
+    add_section("MERCADOS BASE")
     mercados = [
-        {"Mercado": f"{payload.get('p1_name','Jugador 1')} gana", "Probabilidad base": _predictor_excel_safe_pct(base.get("p1")), "Tipo": "ML"},
-        {"Mercado": f"{payload.get('p2_name','Jugador 2')} gana", "Probabilidad base": _predictor_excel_safe_pct(base.get("p2")), "Tipo": "ML"},
-        {"Mercado": "Over 17.5 WTA", "Probabilidad base": _predictor_excel_safe_pct(base.get("over17")), "Tipo": "Over"},
-        {"Mercado": "Over 18.5", "Probabilidad base": _predictor_excel_safe_pct(base.get("over18")), "Tipo": "Over"},
-        {"Mercado": "Over 19.5", "Probabilidad base": _predictor_excel_safe_pct(base.get("over19")), "Tipo": "Over"},
-        {"Mercado": "Over 20.5", "Probabilidad base": _predictor_excel_safe_pct(base.get("over20")), "Tipo": "Over"},
-        {"Mercado": "Over 22.5", "Probabilidad base": _predictor_excel_safe_pct(base.get("over22")), "Tipo": "Over"},
+        (f"{payload.get('p1_name','Jugador 1')} gana", base.get("p1"), "ML"),
+        (f"{payload.get('p2_name','Jugador 2')} gana", base.get("p2"), "ML"),
+        ("Over 17.5 WTA", base.get("over17"), "Over"),
+        ("Over 18.5", base.get("over18"), "Over"),
+        ("Over 19.5", base.get("over19"), "Over"),
+        ("Over 20.5", base.get("over20"), "Over"),
+        ("Over 22.5", base.get("over22"), "Over"),
     ]
-    mercados_df = pd.DataFrame(mercados)
-    mercados_df = mercados_df[mercados_df["Probabilidad base"].notna()].copy()
-    mercados_df["Probabilidad base %"] = mercados_df["Probabilidad base"].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "")
+    for mercado, prob, tipo in mercados:
+        if _predictor_excel_safe_pct(prob) is not None:
+            rows.append({"Sección": "MERCADOS BASE", "Campo/Mercado": mercado, "Tipo": tipo, "Base %": pct(prob), "TA ajustada %": "", "Valor/Nota": ""})
 
-    ta_rows = []
-    notas_rows = []
-    signals_rows = []
+    add_section("AJUSTE TENNIS ABSTRACT")
     if isinstance(ta_adj, dict):
-        ta_rows = [
-            {"Mercado": payload.get("p1_name", "Jugador 1") + " gana", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("p1_adj")), "Base": _predictor_excel_safe_pct(base.get("p1")), "Tipo": "ML"},
-            {"Mercado": payload.get("p2_name", "Jugador 2") + " gana", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("p2_adj")), "Base": _predictor_excel_safe_pct(base.get("p2")), "Tipo": "ML"},
-            {"Mercado": "Over 18.5", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("over18_adj")), "Base": _predictor_excel_safe_pct(base.get("over18")), "Tipo": "Over"},
-            {"Mercado": "Over 19.5", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("over19_adj")), "Base": _predictor_excel_safe_pct(base.get("over19")), "Tipo": "Over"},
-            {"Mercado": "Over 20.5", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("over20_adj")), "Base": _predictor_excel_safe_pct(base.get("over20")), "Tipo": "Over"},
+        ta_markets = [
+            (payload.get("p1_name", "Jugador 1") + " gana", base.get("p1"), ta_adj.get("p1_adj"), "ML"),
+            (payload.get("p2_name", "Jugador 2") + " gana", base.get("p2"), ta_adj.get("p2_adj"), "ML"),
+            ("Over 18.5", base.get("over18"), ta_adj.get("over18_adj"), "Over"),
+            ("Over 19.5", base.get("over19"), ta_adj.get("over19_adj"), "Over"),
+            ("Over 20.5", base.get("over20"), ta_adj.get("over20_adj"), "Over"),
         ]
+        for mercado, base_prob, adj_prob, tipo in ta_markets:
+            if _predictor_excel_safe_pct(adj_prob) is not None:
+                rows.append({"Sección": "AJUSTE TENNIS ABSTRACT", "Campo/Mercado": mercado, "Tipo": tipo, "Base %": pct(base_prob), "TA ajustada %": pct(adj_prob), "Valor/Nota": ""})
         if ta_adj.get("set1_signal") is not None:
-            ta_rows.append({"Mercado": payload.get("p1_name", "Jugador 1") + " gana al menos 1 set", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("set1_signal")), "Base": None, "Tipo": "Gana set"})
+            rows.append({"Sección": "AJUSTE TENNIS ABSTRACT", "Campo/Mercado": payload.get("p1_name", "Jugador 1") + " gana al menos 1 set", "Tipo": "Gana set", "Base %": "", "TA ajustada %": pct(ta_adj.get("set1_signal")), "Valor/Nota": ""})
         if ta_adj.get("set2_signal") is not None:
-            ta_rows.append({"Mercado": payload.get("p2_name", "Jugador 2") + " gana al menos 1 set", "Probabilidad TA ajustada": _predictor_excel_safe_pct(ta_adj.get("set2_signal")), "Base": None, "Tipo": "Gana set"})
-        for i, n in enumerate(ta_adj.get("notes", []) or [], 1):
-            notas_rows.append({"Nº": i, "Nota TA": str(n)})
-        raw = ta_adj.get("raw_signals", {}) or {}
-        for k, v in raw.items():
-            signals_rows.append({"Señal": k, "Valor": v})
+            rows.append({"Sección": "AJUSTE TENNIS ABSTRACT", "Campo/Mercado": payload.get("p2_name", "Jugador 2") + " gana al menos 1 set", "Tipo": "Gana set", "Base %": "", "TA ajustada %": pct(ta_adj.get("set2_signal")), "Valor/Nota": ""})
 
-    ta_df = pd.DataFrame(ta_rows)
-    if not ta_df.empty:
-        ta_df["Probabilidad TA ajustada %"] = ta_df["Probabilidad TA ajustada"].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "")
-        ta_df["Base %"] = ta_df["Base"].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "")
-    notas_df = pd.DataFrame(notas_rows) if notas_rows else pd.DataFrame([{"Nº": "", "Nota TA": "Sin ajuste TA guardado todavía."}])
-    signals_df = pd.DataFrame(signals_rows) if signals_rows else pd.DataFrame([{"Señal": "", "Valor": ""}])
+        add_section("NOTAS TA")
+        notes = ta_adj.get("notes", []) or []
+        if notes:
+            for i, n in enumerate(notes, 1):
+                rows.append({"Sección": "NOTAS TA", "Campo/Mercado": f"Nota {i}", "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": str(n)})
+        else:
+            rows.append({"Sección": "NOTAS TA", "Campo/Mercado": "", "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": "Sin notas TA."})
+
+        add_section("SEÑALES TA")
+        raw = ta_adj.get("raw_signals", {}) or {}
+        if raw:
+            for k, v in raw.items():
+                rows.append({"Sección": "SEÑALES TA", "Campo/Mercado": str(k), "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": v})
+        else:
+            rows.append({"Sección": "SEÑALES TA", "Campo/Mercado": "", "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": "Sin señales TA."})
+    else:
+        rows.append({"Sección": "AJUSTE TENNIS ABSTRACT", "Campo/Mercado": "", "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": "Sin ajuste TA calculado todavía."})
+
+    df = pd.DataFrame(rows)
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        resumen_df.to_excel(writer, index=False, sheet_name="RESUMEN")
-        mercados_df.to_excel(writer, index=False, sheet_name="MERCADOS BASE")
-        ta_df.to_excel(writer, index=False, sheet_name="TA AJUSTE")
-        notas_df.to_excel(writer, index=False, sheet_name="NOTAS")
-        signals_df.to_excel(writer, index=False, sheet_name="SENALES TA")
-
+        sheet = "PREDICTOR"
+        df.to_excel(writer, index=False, sheet_name=sheet)
         wb = writer.book
-        for ws in wb.worksheets:
-            ws.freeze_panes = "A2"
-            for cell in ws[1]:
-                cell.font = cell.font.copy(bold=True)
-            for col in ws.columns:
-                max_len = 0
-                col_letter = col[0].column_letter
-                for cell in col:
-                    try:
-                        max_len = max(max_len, len(str(cell.value)) if cell.value is not None else 0)
-                    except Exception:
-                        pass
-                ws.column_dimensions[col_letter].width = min(max(max_len + 2, 12), 42)
+        ws = writer[sheet]
+        ws.freeze_panes = "A2"
+        for cell in ws[1]:
+            cell.font = cell.font.copy(bold=True)
+
+        # Resaltar filas de sección.
+        try:
+            from openpyxl.styles import PatternFill, Font
+            fill = PatternFill(start_color="D9EAF7", end_color="D9EAF7", fill_type="solid")
+            bold = Font(bold=True)
+            for row in range(2, ws.max_row + 1):
+                campo = ws.cell(row=row, column=2).value
+                tipo = ws.cell(row=row, column=3).value
+                base_val = ws.cell(row=row, column=4).value
+                ta_val = ws.cell(row=row, column=5).value
+                nota = ws.cell(row=row, column=6).value
+                if not any([campo, tipo, base_val, ta_val, nota]):
+                    for col in range(1, ws.max_column + 1):
+                        ws.cell(row=row, column=col).fill = fill
+                        ws.cell(row=row, column=col).font = bold
+        except Exception:
+            pass
+
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                try:
+                    max_len = max(max_len, len(str(cell.value)) if cell.value is not None else 0)
+                except Exception:
+                    pass
+            ws.column_dimensions[col_letter].width = min(max(max_len + 2, 12), 55)
+
     output.seek(0)
     return output.getvalue()
-
 
 def render_predictor_excel_download_panel():
     payload = st.session_state.get("predictor_last_payload_v23440")
@@ -14463,7 +14505,7 @@ def render_predictor_excel_download_panel():
     ta_adj = st.session_state.get("predictor_last_ta_adjustment_v23441")
     st.divider()
     with st.expander("📥 Descargar Excel del Predictor", expanded=False):
-        st.caption("Descarga un Excel con resumen del partido, mercados base y ajuste TennisAbstract si lo has calculado. No modifica ningún cálculo.")
+        st.caption("Descarga un Excel del Predictor en una sola hoja, con resumen, mercados base y ajuste TennisAbstract si lo has calculado. No modifica ningún cálculo.")
         try:
             data = _predictor_excel_bytes(payload, ta_adj if isinstance(ta_adj, dict) else None)
             p1 = limpiar(payload.get("p1_name", "jugador1"))[:18] or "jugador1"
@@ -14474,7 +14516,7 @@ def render_predictor_excel_download_panel():
                 file_name=f"predictor_{p1}_vs_{p2}_{APP_VERSION}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                key="download_predictor_excel_v23441"
+                key="download_predictor_excel_v23442"
             )
         except Exception as e:
             st.warning(f"No se pudo preparar el Excel del Predictor: {type(e).__name__}: {e}")
