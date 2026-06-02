@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.45.1-deep-excel-export"
+APP_VERSION = "v23.46.0-challenger-predictor-intelligence"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -14274,19 +14274,33 @@ def _pred_ta_compute_adjustments(base, ta1, ta2, p1_name="Jugador 1", p2_name="J
     form1 = wins1 / n1 if ta1 else 0.50
     form2 = wins2 / n2 if ta2 else 0.50
 
-    # Señales TA prudentes.
+    # v23.46: Señales TA más prudentes.
+    # La ficha TA NO debe convertir una señal aislada en conclusión fuerte.
+    # El histórico Challenger mostró que three_rate por sí solo apenas predice 3 sets,
+    # y que easy_rate alto debe frenar Overs altos y lecturas de partido largo.
     over18_signal = None
     if over_rate > 0 or avg_games > 0 or three_rate > 0:
-        over18_signal = 0.50 + (over_rate - 0.50) * 0.55 + (three_rate - 0.30) * 0.13 + ((avg_games or 21.0) - 21.0) * 0.012 - easy_rate * 0.08
-        over18_signal = float(np.clip(over18_signal, 0.42, 0.88))
+        easy_cut = 0.18 * easy_rate
+        if easy_rate >= 0.55:
+            easy_cut += 0.08
+        elif easy_rate >= 0.45:
+            easy_cut += 0.04
+        over18_signal = 0.50 + (over_rate - 0.50) * 0.50 + ((avg_games or 21.0) - 21.0) * 0.010 + (three_rate - 0.30) * 0.04 - easy_cut
+        over18_signal = float(np.clip(over18_signal, 0.34, 0.84))
     over19_signal = None
-    if over19_rate > 0 or three_rate > 0:
-        over19_signal = 0.45 + (over19_rate - 0.45) * 0.55 + (three_rate - 0.30) * 0.10 - easy_rate * 0.10
-        over19_signal = float(np.clip(over19_signal, 0.35, 0.82))
+    if over19_rate > 0 or three_rate > 0 or avg_games > 0:
+        easy_cut = 0.22 * easy_rate
+        if easy_rate >= 0.55:
+            easy_cut += 0.08
+        over19_signal = 0.45 + (over19_rate - 0.45) * 0.50 + ((avg_games or 21.0) - 21.5) * 0.008 + (three_rate - 0.30) * 0.035 - easy_cut
+        over19_signal = float(np.clip(over19_signal, 0.28, 0.78))
     over20_signal = None
     if over19_rate > 0 or avg_games > 0:
-        over20_signal = 0.40 + (over19_rate - 0.45) * 0.38 + ((avg_games or 21.0) - 22.0) * 0.012 - easy_rate * 0.08
-        over20_signal = float(np.clip(over20_signal, 0.25, 0.74))
+        easy_cut = 0.24 * easy_rate
+        if easy_rate >= 0.50:
+            easy_cut += 0.08
+        over20_signal = 0.40 + (over19_rate - 0.45) * 0.34 + ((avg_games or 21.0) - 22.0) * 0.010 - easy_cut
+        over20_signal = float(np.clip(over20_signal, 0.18, 0.68))
 
     ml1_base = float(base.get("p1", 0.50) or 0.50)
     ml1_signal = None
@@ -14302,13 +14316,14 @@ def _pred_ta_compute_adjustments(base, ta1, ta2, p1_name="Jugador 1", p2_name="J
     over19_adj = _pred_blend(base.get("over19", 0.0), over19_signal, w, 0.05, 0.90)
     over20_adj = _pred_blend(base.get("over20", 0.0), over20_signal, w * 0.85, 0.03, 0.85)
 
-    # Gana al menos un set desde TA. Es orientativo; no sustituye al motor.
+    # Gana al menos un set desde TA. v23.46: capado y con penalización fuerte si pierde 0-2 o easy_rate es alto.
+    # En el backtest y en los ejemplos reales estaba inflado en zona media.
     set1_signal = None
     set2_signal = None
     if set1:
-        set1_signal = float(np.clip(0.50 + set1 * 0.42 - lost1 * 0.18, 0.40, 0.94))
+        set1_signal = float(np.clip(0.45 + set1 * 0.34 - lost1 * 0.25 - easy_rate * 0.08, 0.32, 0.88))
     if set2:
-        set2_signal = float(np.clip(0.50 + set2 * 0.42 - lost2 * 0.18, 0.40, 0.94))
+        set2_signal = float(np.clip(0.45 + set2 * 0.34 - lost2 * 0.25 - easy_rate * 0.08, 0.32, 0.88))
 
     notes = []
     if over_rate >= 0.70:
@@ -14449,6 +14464,15 @@ def _predictor_excel_bytes(payload, ta_adj=None):
     else:
         rows.append({"Sección": "DEEP MATCH ANALYZER · RESUMEN", "Campo/Mercado": "", "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": "Sin datos profundos calculados."})
 
+    add_section("DEEP MATCH ANALYZER · INTELLIGENCE")
+    try:
+        intel = _deep_intelligence_report(payload, ta_adj if isinstance(ta_adj, dict) else None)
+        rows.append({"Sección": "DEEP MATCH ANALYZER · INTELLIGENCE", "Campo/Mercado": "Historia final", "Tipo": "Lectura", "Base %": "", "TA ajustada %": "", "Valor/Nota": f"{intel.get('story','')} · {intel.get('story_detail','')}"})
+        for r in intel.get("rows", []):
+            rows.append({"Sección": "DEEP MATCH ANALYZER · INTELLIGENCE", "Campo/Mercado": r.get("Área", ""), "Tipo": r.get("Estado", ""), "Base %": "", "TA ajustada %": "", "Valor/Nota": f"{r.get('Lectura','')} · {r.get('Motivo','')}"})
+    except Exception as e:
+        rows.append({"Sección": "DEEP MATCH ANALYZER · INTELLIGENCE", "Campo/Mercado": "", "Tipo": "", "Base %": "", "TA ajustada %": "", "Valor/Nota": f"No se pudo exportar intelligence: {type(e).__name__}: {e}"})
+
     add_section("DEEP MATCH ANALYZER · MERCADOS")
     try:
         df_deep = _deep_build_markets(payload, ta_adj if isinstance(ta_adj, dict) else None)
@@ -14559,7 +14583,7 @@ def render_predictor_excel_download_panel():
     ta_adj = st.session_state.get("predictor_last_ta_adjustment_v23441")
     st.divider()
     with st.expander("📥 Descargar Excel del Predictor", expanded=False):
-        st.caption("Descarga un Excel del Predictor en una sola hoja, incluyendo el Deep Match Analyzer, mercados derivados, conclusiones y ajuste TennisAbstract si lo has calculado. No modifica ningún cálculo.")
+        st.caption("Descarga un Excel del Predictor en una sola hoja, incluyendo Deep Match Analyzer, Intelligence Challenger/TA, mercados derivados, conclusiones y ajuste TennisAbstract si lo has calculado. No modifica ningún cálculo.")
         try:
             data = _predictor_excel_bytes(payload, ta_adj if isinstance(ta_adj, dict) else None)
             p1 = limpiar(payload.get("p1_name", "jugador1"))[:18] or "jugador1"
@@ -14771,6 +14795,205 @@ def _deep_build_markets(payload, ta_adj=None):
     return df
 
 
+
+
+def _di_float(v, default=0.0):
+    try:
+        if v in [None, "", "nan"]:
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+
+def _di_pct(v):
+    try:
+        return f"{float(v):.1%}"
+    except Exception:
+        return "N/A"
+
+
+def _deep_is_challenger_clay(payload):
+    """Predictor profundo: aplicar inteligencia específica Challenger Clay.
+    En la app a veces Challenger se calcula como ATP; por eso aceptamos ATP/CHALLENGER
+    siempre que la superficie sea Clay y el formato sea BO3.
+    """
+    try:
+        surface = str((payload or {}).get("surface", "")).strip().lower()
+        circuito = str((payload or {}).get("circuito", "")).strip().upper()
+        best_of = int((payload or {}).get("best_of", 3) or 3)
+        return surface == "clay" and best_of == 3 and circuito in {"ATP", "CHALLENGER"}
+    except Exception:
+        return False
+
+
+def _deep_ta_raw(ta_adj):
+    if isinstance(ta_adj, dict):
+        raw = ta_adj.get("raw_signals", {})
+        return raw if isinstance(raw, dict) else {}
+    return {}
+
+
+def _deep_intelligence_report(payload, ta_adj=None):
+    """v23.46 · Capa de razonamiento del Predictor.
+    No cambia el motor. Interpreta conjuntamente Monte Carlo + TA + superficie.
+    Basado en el backtest Challenger Clay:
+      - Model3Sets apenas predice Real3Sets.
+      - Over18 mejora cuando ModelOver18 alto + HoldAvg decente + favorito no ultra dominante.
+      - easy_rate alto debe frenar Overs altos y lecturas de set extra.
+      - dog gana set solo es fiable en rangos altos.
+    """
+    payload = payload or {}
+    base = payload.get("base", {}) if isinstance(payload.get("base", {}), dict) else {}
+    deep = payload.get("deep", {}) if isinstance(payload.get("deep", {}), dict) else {}
+    raw = _deep_ta_raw(ta_adj)
+    p1 = payload.get("p1_name", "Jugador 1")
+    p2 = payload.get("p2_name", "Jugador 2")
+    fav = deep.get("model_fav_name", "Favorito")
+    dog = deep.get("model_dog_name", "Underdog")
+
+    over18 = _di_float(base.get("over18"), 0.0)
+    over19 = _di_float(base.get("over19"), 0.0)
+    over20 = _di_float(base.get("over20"), 0.0)
+    set3 = _di_float(base.get("set3"), 0.0)
+    dog_set = _di_float(base.get("dog_wins_set"), 0.0)
+    fav20 = _di_float(base.get("fav_2_0"), 0.0)
+    mlmax = max(_di_float(base.get("p1"), 0.5), _di_float(base.get("p2"), 0.5))
+    avg_games = _di_float(deep.get("avg_games"), 0.0)
+    med_games = _di_float(deep.get("med_games"), 0.0)
+    hold1 = _di_float(deep.get("hold1"), 0.0)
+    hold2 = _di_float(deep.get("hold2"), 0.0)
+    ret1 = _di_float(deep.get("ret1"), 0.0)
+    ret2 = _di_float(deep.get("ret2"), 0.0)
+    hold_avg = (hold1 + hold2) / 2 if hold1 and hold2 else 0.0
+    hold_diff = abs(hold1 - hold2) if hold1 and hold2 else 0.0
+    ret_avg = (ret1 + ret2) / 2 if ret1 and ret2 else 0.0
+    elo1 = _di_float(deep.get("p1_elo_surface"), 0.0)
+    elo2 = _di_float(deep.get("p2_elo_surface"), 0.0)
+    elo_diff = abs(elo1 - elo2) if elo1 and elo2 else 0.0
+    rank1 = _di_float(deep.get("p1_rank"), 999)
+    rank2 = _di_float(deep.get("p2_rank"), 999)
+    rank_gap = abs(rank1 - rank2) if rank1 < 900 and rank2 < 900 else 0.0
+
+    ta_over = _di_float(raw.get("over_rate"), 0.0)
+    ta_over19 = _di_float(raw.get("over19_rate"), 0.0)
+    ta_three = _di_float(raw.get("three_rate"), 0.0)
+    ta_easy = _di_float(raw.get("easy_rate"), 0.0)
+    ta_avg_games = _di_float(raw.get("avg_games"), 0.0)
+    ta_set1 = _di_float(raw.get("set1"), 0.0)
+    ta_set2 = _di_float(raw.get("set2"), 0.0)
+    ta_lost1 = _di_float(raw.get("lost1"), 0.0)
+    ta_lost2 = _di_float(raw.get("lost2"), 0.0)
+
+    surface = str(payload.get("surface", "")).strip()
+    rows = []
+    notes = []
+    contradictions = []
+
+    def add(area, estado, lectura, motivo):
+        rows.append({"Área": area, "Estado": estado, "Lectura": lectura, "Motivo": motivo})
+
+    is_ch_clay = _deep_is_challenger_clay(payload)
+
+    # Perfil base de datos utilizados.
+    add("Base datos", "Info", "Datos usados", f"Superficie {surface}; HoldAvg {hold_avg:.1%}; HoldDiff {hold_diff:.1%}; ML favorito {mlmax:.1%}; media {avg_games:.1f}; TA easy {ta_easy:.0%}; TA 3 sets {ta_three:.0%}; TA media {ta_avg_games:.1f}")
+
+    # Contradicciones fuertes.
+    if over18 >= 0.76 and ta_easy >= 0.50:
+        contradictions.append("Over alto del motor pero TA muestra mucho partido corto/paliza.")
+    if fav20 >= 0.60 and dog_set >= 0.65:
+        contradictions.append("Favorito 2-0 alto pero el dog gana set también sale alto.")
+    if set3 >= 0.45 and ta_easy >= 0.50:
+        contradictions.append("Set extra alto pero TA muestra easy_rate alto.")
+    if mlmax >= 0.80 and max(ta_set1, ta_set2) >= 0.75:
+        contradictions.append("Favorito muy claro pero TA sugiere resistencia alta de al menos un jugador.")
+
+    # Over 18.5 / 19.5.
+    if is_ch_clay:
+        if over18 >= 0.78 and hold_avg >= 0.60 and mlmax < 0.90 and ta_easy < 0.50:
+            add("Over 18.5", "✅ Sólido", "Over bajo fuerte para Challenger Clay", f"Backtest: ModelOver18 >=78% y HoldAvg >=60% funcionan mejor; favorito no ultra dominante ({mlmax:.0%}) y easy_rate controlado ({ta_easy:.0%}).")
+        elif ta_easy >= 0.55 or mlmax >= 0.90 or hold_avg < 0.60 or hold_diff >= 0.18:
+            add("Over 18.5", "⚠️ Cautela", "No tratar como Over fuerte", f"Riesgo corto: easy_rate {ta_easy:.0%}, ML fav {mlmax:.0%}, HoldAvg {hold_avg:.0%}, HoldDiff {hold_diff:.0%}. En Clay esto debe frenar la conclusión.")
+        elif over18 >= 0.74:
+            add("Over 18.5", "🟡 Apto", "Over bajo posible, no subir línea sin más", f"Over18 {over18:.0%}; no hay confirmación suficiente de línea superior.")
+        else:
+            add("Over 18.5", "❌ Débil", "Over bajo no tiene señal clara", f"Over18 {over18:.0%}; por debajo del corte útil Challenger Clay.")
+
+        if over19 >= 0.68 and ta_easy < 0.45 and hold_avg >= 0.62 and mlmax < 0.85:
+            add("Over 19.5/20.5", "✅ Revisable", "Línea superior con lógica deportiva", f"Over19 {over19:.0%}, HoldAvg {hold_avg:.0%}, easy_rate {ta_easy:.0%}.")
+        elif over20 >= 0.60 or over19 >= 0.65:
+            add("Over 19.5/20.5", "⚠️ Fina", "Cuidado con subir línea", f"Over19 {over19:.0%}, Over20 {over20:.0%}; si easy_rate/ML/hold no acompañan, no convertirlo en conclusión fuerte.")
+        else:
+            add("Over 19.5/20.5", "❌ No prioritaria", "No hay fuerza para línea alta", f"Over19 {over19:.0%}, Over20 {over20:.0%}.")
+    else:
+        # Fallback general; no toca reglas específicas ATP/WTA.
+        if over18 >= 0.78 and ta_easy < 0.50:
+            add("Over 18.5", "✅ Bueno", "Over bajo coherente", f"Over18 {over18:.0%}, easy_rate {ta_easy:.0%}.")
+        elif ta_easy >= 0.50:
+            add("Over 18.5", "⚠️ Cautela", "TA avisa de partido corto", f"easy_rate {ta_easy:.0%}; no convertir Over en lectura fuerte sin más.")
+        else:
+            add("Over 18.5", "🟡 Neutral", "Lectura no concluyente", f"Over18 {over18:.0%}.")
+
+    # 3 sets.
+    if is_ch_clay:
+        if set3 >= 0.50 and dog_set >= 0.65 and ta_easy < 0.40:
+            add("3 sets", "🟡 Posible", "Set extra posible, no seguro", f"En el backtest Model3Sets no predice bien por sí solo; aquí solo se acepta por set3 {set3:.0%} + dog_set {dog_set:.0%} + easy bajo {ta_easy:.0%}.")
+        else:
+            add("3 sets", "⚠️ No fiable", "No usar como conclusión fuerte", f"Model3Sets {set3:.0%}; backtest Challenger Clay casi nulo. Solo considerar si otras señales lo confirman.")
+    else:
+        if set3 >= 0.50 and ta_easy < 0.45:
+            add("3 sets", "🟡 Posible", "Set extra posible", f"Set3 {set3:.0%}, easy_rate {ta_easy:.0%}.")
+        else:
+            add("3 sets", "⚠️ Débil", "No convertir partido largo en 3 sets", f"Set3 {set3:.0%}, easy_rate {ta_easy:.0%}.")
+
+    # Dog gana set / favorito 2-0.
+    if dog_set >= 0.70 and ta_easy < 0.55:
+        add("Dog gana set", "✅ Fuerte", f"{dog} puede ganar set", f"ModelDogWinsSet {dog_set:.0%}; en backtest solo es útil en rango alto.")
+    elif dog_set >= 0.55:
+        add("Dog gana set", "🟡 Media", "Resistencia posible, no concluyente", f"DogWinsSet {dog_set:.0%}; zona media históricamente ruidosa.")
+    else:
+        add("Dog gana set", "⚠️ Baja", "No apoyar mercado de set del dog", f"DogWinsSet {dog_set:.0%}.")
+
+    if fav20 >= 0.70 and dog_set < 0.45 and (ta_easy >= 0.45 or hold_diff >= 0.16 or mlmax >= 0.82):
+        add("Favorito 2-0", "✅ Coherente", f"{fav} 2-0 encaja", f"Fav2-0 {fav20:.0%}, dog_set {dog_set:.0%}, easy {ta_easy:.0%}, HoldDiff {hold_diff:.0%}.")
+    elif fav20 >= 0.60 and dog_set >= 0.55:
+        add("Favorito 2-0", "⚠️ Contradictorio", "No vender como dominio claro", f"Fav2-0 {fav20:.0%} pero dog_set {dog_set:.0%}. Esto debe frenar el guion dominante.")
+    else:
+        add("Favorito 2-0", "🟡 No central", "No es la lectura principal", f"Fav2-0 {fav20:.0%}.")
+
+    # Historia final.
+    if contradictions:
+        story = "⚠️ SEÑALES CONTRADICTORIAS"
+        story_detail = " | ".join(contradictions[:4])
+    elif ta_easy >= 0.55 and (over18 >= 0.74 or set3 >= 0.40):
+        story = "⚠️ RIESGO DE PARTIDO CORTO"
+        story_detail = "TA easy_rate alto debe mandar sobre lecturas de Over/3 sets."
+    elif is_ch_clay and over18 >= 0.78 and hold_avg >= 0.60 and ta_easy < 0.45 and mlmax < 0.85:
+        story = "✅ CHALLENGER CLAY · OVER BAJO COHERENTE"
+        story_detail = "Over18 alto, HoldAvg útil y sin favorito ultra dominante ni easy_rate alto."
+    elif mlmax >= 0.80 and dog_set < 0.45:
+        story = "✅ FAVORITO CON CONTROL"
+        story_detail = "ML alto y dog_set bajo; revisar 2-0/Under antes que partido largo."
+    elif dog_set >= 0.70:
+        story = "✅ FAVORITO/DOG COMPETIDO"
+        story_detail = "El dog tiene señal alta de ganar set; no vender 2-0 cómodo."
+    elif over18 >= 0.74:
+        story = "🟡 PARTIDO CON JUEGOS, NO NECESARIAMENTE 3 SETS"
+        story_detail = "Over bajo posible; no convertir automáticamente en set extra."
+    else:
+        story = "🟡 SIN HISTORIA FUERTE"
+        story_detail = "Mejor lectura prudente; no forzar mercados derivados."
+
+    # Notas resumen para conclusiones.
+    notes.append(f"🎭 Historia final: {story}. {story_detail}")
+    if contradictions:
+        for c in contradictions[:3]:
+            notes.append(f"🔴 Contradicción: {c}")
+    if is_ch_clay:
+        notes.append("📌 Regla Challenger Clay activa: prioriza HoldAvg + Over18 alto + easy_rate bajo; rebaja 3 sets como señal fuerte.")
+
+    return {"story": story, "story_detail": story_detail, "rows": rows, "notes": notes, "contradictions": contradictions}
+
 def _deep_conclusions(payload, ta_adj=None):
     base = payload.get("base", {}) if isinstance(payload, dict) else {}
     deep = payload.get("deep", {}) if isinstance(payload, dict) else {}
@@ -14791,14 +15014,22 @@ def _deep_conclusions(payload, ta_adj=None):
     game_diff = float(deep.get("game_diff", 0) or 0)
     notes = []
 
-    if over18 >= 0.78 and over19 >= 0.68:
+    # v23.46: conclusiones basadas primero en la capa de razonamiento conjunto.
+    try:
+        intel = _deep_intelligence_report(payload, ta_adj if isinstance(ta_adj, dict) else None)
+        notes.extend(intel.get("notes", []))
+    except Exception:
+        intel = None
+
+    # Conclusiones antiguas quedan como apoyo, pero ahora son más prudentes.
+    if over18 >= 0.78 and over19 >= 0.68 and not (isinstance(intel, dict) and intel.get("contradictions")):
         notes.append("✅ Perfil claro de partido con juegos: Over 18.5 es base, y Over 19.5 merece revisión deportiva.")
     elif over18 >= 0.74 and over19 < 0.62:
         notes.append("🟡 Over bajo interesante, pero no hay fuerza suficiente para subir línea sin confirmación TA.")
-    if over20 >= 0.62 and avg_games >= 22.3:
-        notes.append("🔥 El partido permite mirar líneas superiores de juegos: media y probabilidad sostienen Over 20.5.")
+    if over20 >= 0.62 and avg_games >= 22.3 and not (isinstance(intel, dict) and intel.get("contradictions")):
+        notes.append("🟡 Línea superior de juegos revisable, pero solo si la historia del partido no muestra contradicción ni easy_rate alto.")
     if set3 >= 0.45:
-        notes.append("⚠️ Alta opción de set extra: mirar Más de 2.5 sets / underdog gana set según mercado disponible.")
+        notes.append("⚠️ Set extra posible, pero v23.46 no lo trata como señal fuerte sin apoyo de dog_set/easy_rate/superficie.")
     elif fav20 >= 0.62 and mlmax >= 0.66:
         notes.append("✅ Guion de favorito dominante: vigilar 2-0 favorito y evitar forzar Overs altos si la media de juegos no acompaña.")
     if dog_set >= 0.74:
@@ -14846,6 +15077,17 @@ def render_predictor_deep_match_analyzer_panel():
         st.subheader("📌 Conclusiones deportivas")
         for n in _deep_conclusions(payload, ta_adj if isinstance(ta_adj, dict) else None):
             st.write("• " + str(n))
+
+        # v23.46: lectura conjunta basada en backtest Challenger Clay + TA.
+        try:
+            intel = _deep_intelligence_report(payload, ta_adj if isinstance(ta_adj, dict) else None)
+            st.subheader("🧠 Challenger / TA Intelligence")
+            st.info(f"{intel.get('story','')} · {intel.get('story_detail','')}")
+            dfi = pd.DataFrame(intel.get("rows", []))
+            if not dfi.empty:
+                st.dataframe(dfi, use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.caption(f"No se pudo pintar Intelligence: {type(e).__name__}: {e}")
 
         st.subheader("📊 Todos los mercados derivados")
         dfm = _deep_build_markets(payload, ta_adj if isinstance(ta_adj, dict) else None)
