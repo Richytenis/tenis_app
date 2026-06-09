@@ -4525,6 +4525,10 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
 
         model_fav_is_winner = p_cal >= 0.50
         real_fav_wins_set = True if model_fav_is_winner else (l_sets >= 1)
+        # Si el favorito del modelo era el ganador histórico, el dog histórico fue el perdedor
+        # y solo gana set si el perdedor hizo algún set. Si el favorito del modelo era el
+        # perdedor histórico, el dog fue el ganador real y por tanto ganó al menos un set.
+        real_dog_wins_set = (l_sets >= 1) if model_fav_is_winner else True
         model_fav_wins_set = sim.get("p1_wins_set_any", 0.0) if model_fav_is_winner else sim.get("p2_wins_set_any", 0.0)
 
         fav_under22_real = (p_raw >= 0.50 and games_real < 22.5)
@@ -4556,10 +4560,10 @@ def validar_historico(db, hist_df, circuito, surface_filter, max_matches, sims_b
             "RealOver20": games_real > 20.5, "ModelOver20": sum(x > 20.5 for x in games_model)/sims_bt,
             "RealOver22": games_real > 22.5, "ModelOver22": sum(x > 22.5 for x in games_model)/sims_bt,
             "RealFavWinsSet": real_fav_wins_set, "ModelFavWinsSet": model_fav_wins_set,
+            "RealDogWinsSet": real_dog_wins_set, "ModelDogWinsSet": sim.get("dog_wins_set", 0),
             "RealFavUnder22": fav_under22_real, "ModelFavUnder22": sim["fav_under22"],
             "RealDogOver20": dog_over20_real, "ModelDogOver20": sim["dog_over20"],
             "ModelFav2_0": sim.get("fav_2_0", 0),
-            "ModelDogWinsSet": sim.get("dog_wins_set", 0),
             "ModelLongMatch": sim.get("long_match", 0),
             "WinnerFatigueScore": sim.get("fatigue1", {}).get("fatigue_score", 0),
             "LoserFatigueScore": sim.get("fatigue2", {}).get("fatigue_score", 0),
@@ -4604,7 +4608,7 @@ def crear_analyzer_tables(val, min_casos=20):
         ("Dog + Over 20.5","ModelDogOver20","RealDogOver20"),
         ("Favorito gana al menos 1 set","ModelFavWinsSet","RealFavWinsSet"),
         ("Favorito 2-0","ModelFav2_0","CalFavWasWinner"),
-        ("Underdog gana set","ModelDogWinsSet","Real3Sets"),
+        ("Underdog gana set","ModelDogWinsSet","RealDogWinsSet"),
         ("Partido largo","ModelLongMatch","RealOver22"),
     ]:
         for th in [0.40,0.45,0.50,0.55,0.60,0.65,0.70]:
@@ -4676,7 +4680,7 @@ def crear_analyzer_tables(val, min_casos=20):
 
 
 # =========================================================
-# v23.46.3 Backtest Oficial / Observar sobre históricos
+# v23.46.4 Backtest Oficial / Observar + Dog gana set sobre históricos
 # No toca motor Over ni simulaciones. Solo clasifica las filas ya validadas
 # para medir qué habría pasado con señales tipo OFICIAL y OBSERVAR.
 # =========================================================
@@ -4701,6 +4705,7 @@ def _bt_signal_rows_from_val_row(row, circuito):
     over19 = _bt_safe_float(row.get("ModelOver19", 0.0), 0.0)
     over20 = _bt_safe_float(row.get("ModelOver20", 0.0), 0.0)
     fav_set = _bt_safe_float(row.get("ModelFavWinsSet", 0.0), 0.0)
+    dog_set = _bt_safe_float(row.get("ModelDogWinsSet", 0.0), 0.0)
     three_sets = _bt_safe_float(row.get("Model3Sets", 0.0), 0.0)
 
     def add(tipo, mercado, prob, real_hit, motivo):
@@ -4742,9 +4747,16 @@ def _bt_signal_rows_from_val_row(row, circuito):
         add("OBSERVAR", "Over 20.5", over20, row.get("RealOver20", False), "Over20 >=74% secundario")
 
     if 0.84 <= fav_set < 0.94:
-        add("OBSERVAR", "Favorito gana al menos 1 set", fav_set, row.get("RealFavWinsSet", False), "Gana-set 84%-93.9%")
+        add("OBSERVAR", "Favorito gana al menos 1 set", fav_set, row.get("RealFavWinsSet", False), "Gana-set favorito 84%-93.9%")
     elif fav_set >= 0.94 and fav_prob >= 0.68:
-        add("OFICIAL", "Favorito gana al menos 1 set", fav_set, row.get("RealFavWinsSet", False), "Gana-set elite >=94% + ML >=68%")
+        add("OFICIAL", "Favorito gana al menos 1 set", fav_set, row.get("RealFavWinsSet", False), "Gana-set favorito elite >=94% + ML >=68%")
+
+    # Mercado que queríamos medir: underdog gana al menos 1 set.
+    # En zona alta se marca como OFICIAL; la zona media queda como OBSERVAR.
+    if 0.55 <= dog_set < 0.70:
+        add("OBSERVAR", "Dog gana al menos 1 set", dog_set, row.get("RealDogWinsSet", False), "Dog gana set 55%-69.9%")
+    elif dog_set >= 0.70:
+        add("OFICIAL", "Dog gana al menos 1 set", dog_set, row.get("RealDogWinsSet", False), "Dog gana set fuerte >=70%")
 
     if three_sets >= 0.55:
         add("OBSERVAR", "3 sets", three_sets, row.get("Real3Sets", False), "3 sets >=55% solo observar")
