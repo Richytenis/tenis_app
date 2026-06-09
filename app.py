@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.46.7-excel-valor-apuesta"
+APP_VERSION = "v23.46.8-excel-score-apuesta-pro"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -13531,32 +13531,106 @@ def _clasificar_estrategia_apuesta_v23467(row):
     return "— Sin prioridad", 0
 
 
+def _modificadores_score_apuesta_v23468(row, estrategia, base):
+    """v23.46.8: desempate inteligente para que el TOP sea más parecido a una selección humana.
+    No cambia predicciones: solo ordena el Excel.
+    """
+    mercado = str(row.get("Mercado", row.get("🎯 Mercado más probable", ""))).lower()
+    accion = str(row.get("Acción", row.get("🎯 Acción final", ""))).upper()
+    confianza = str(row.get("Confianza", row.get("🎯 Confianza acierto", ""))).upper()
+    motivo = str(row.get("Motivo", row.get("🎯 Motivo acierto", ""))).lower()
+    superficie = str(row.get("Superficie", "")).lower()
+    torneo = str(row.get("Torneo", "")).lower()
+    partido = str(row.get("Partido", "")).lower()
+    txt = " ".join([mercado, accion, confianza, motivo, superficie, torneo, partido])
+
+    mod = 0.0
+    notas = []
+
+    # 1) Confianza visual de la app.
+    if "MUY" in confianza and "ALTA" in confianza:
+        mod += 9; notas.append("confianza muy alta")
+    elif "ALTA" in confianza:
+        mod += 7; notas.append("confianza alta")
+    elif "MEDIA" in confianza:
+        mod += 3; notas.append("confianza media")
+    elif "BAJA" in confianza or "DUD" in confianza:
+        mod -= 10; notas.append("confianza baja")
+
+    # 2) Señales del propio motivo.
+    if "muy alto" in txt or "muy alta" in txt:
+        mod += 7; notas.append("señal muy alta")
+    elif "alto" in txt or "alta" in txt:
+        mod += 4; notas.append("señal alta")
+
+    # 3) Superficie: en estos días de hierba hemos visto Overs fuertes, pero sin tocar fórmula.
+    if "over" in mercado and "18" in mercado:
+        if "hierba" in superficie or "grass" in superficie:
+            mod += 6; notas.append("over en hierba")
+        elif "tierra" in superficie or "clay" in superficie:
+            mod += 2; notas.append("over en tierra")
+    if "set" in mercado and ("gana" in mercado or "al menos" in mercado):
+        mod += 3; notas.append("mercado set estable")
+
+    # 4) Penalización por palabras de peligro. Esto solo baja ranking, no elimina picks.
+    danger_words = [
+        "riesgo", "paliza", "dudoso", "baja", "datos bajos", "sin datos", "no encontrado",
+        "inflada", "retirada", "retirado", "cancel", "inestable", "volatil", "varianza"
+    ]
+    if any(w in txt for w in danger_words):
+        mod -= 12; notas.append("riesgo detectado")
+
+    # 5) Preferencia práctica: si es OBSERVAR, que no se cuele por encima de JUGAR salvo score real muy alto.
+    if "OBSERVAR" in accion:
+        mod -= 18; notas.append("solo observar")
+
+    # 6) Ligero ajuste por circuito/torneo para separar empates.
+    if "challenger" in torneo and "over" in mercado:
+        mod += 1; notas.append("challenger over")
+    if "wta" in torneo and "over" in mercado and "17" not in mercado:
+        mod -= 3; notas.append("wta over prudente")
+
+    return round(mod, 2), "; ".join(notas)
+
+
 def aplicar_ranking_valor_apuesta_v23467(picks):
-    """Añade Prioridad/Score y ordena el Excel por valor práctico para apostar."""
+    """Añade Prioridad/Score y ordena el Excel por valor práctico para apostar.
+    v23.46.8: usa score compuesto: mercado + probabilidad + confianza + superficie + avisos.
+    """
     if picks is None or picks.empty:
         return picks
     out = picks.copy()
-    estrategias, bases, probs, scores = [], [], [], []
+    estrategias, bases, probs, mods, scores, razones = [], [], [], [], [], []
     for _, row in out.iterrows():
         estrategia, base = _clasificar_estrategia_apuesta_v23467(row)
         prob = _prob_to_float_v23467(row.get("Prob.", row.get("🎯 Prob máxima", 0)))
-        # La probabilidad suma, pero no manda más que el tipo de mercado.
-        score = float(base) + float(prob * 20.0)
+        mod, razon = _modificadores_score_apuesta_v23468(row, estrategia, base)
+        # La probabilidad suma, pero no manda más que el tipo de mercado y la estabilidad.
+        score = float(base) + float(prob * 25.0) + float(mod)
         estrategias.append(estrategia)
         bases.append(base)
         probs.append(prob)
+        mods.append(mod)
+        razones.append(razon)
         scores.append(round(score, 2))
     out["Prioridad apuesta"] = estrategias
     out["Score apuesta"] = scores
+    out["Ajuste ranking"] = mods
+    out["Motivo ranking"] = razones
     out["Ranking apuesta"] = range(1, len(out) + 1)
     try:
-        out = out.sort_values(["Score apuesta"], ascending=False).reset_index(drop=True)
+        sort_cols = ["Score apuesta"]
+        if "Prob." in out.columns:
+            out["__prob_sort"] = out["Prob."].apply(_prob_to_float_v23467)
+            sort_cols.append("__prob_sort")
+        out = out.sort_values(sort_cols, ascending=[False] * len(sort_cols)).reset_index(drop=True)
         out["Ranking apuesta"] = [f"#{i}" for i in range(1, len(out) + 1)]
+        out = out.drop(columns=["__prob_sort"], errors="ignore")
     except Exception:
         pass
 
     # Columnas nuevas al principio.
-    first = ["Ranking apuesta", "Prioridad apuesta", "Score apuesta"]
+    first = ["Ranking apuesta", "Prioridad apuesta", "Score apuesta", "Ajuste ranking", "Motivo ranking"]
     cols = first + [c for c in out.columns if c not in first]
     return out[cols]
 
