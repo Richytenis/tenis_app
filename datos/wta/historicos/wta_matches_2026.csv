@@ -1145,6 +1145,133 @@ tourney_id,tourney_name,surface,draw_size,tourney_level,tourney_date,match_num,w
 2026-1005,Rabat,Clay,32,I,20260518,272,245077,,WC,Yelyzaveta Kotliar,U,,UKR,19.2,215936,,,Francesca Jones,R,,GBR,25.6,2-6 6-3 6-4,3,R32,140,2,8,100,60,37,13,14,8,15,1,8,89,58,32,10,13,6,13,528,100,105,736
 2026-1005,Rabat,Clay,32,I,20260518,271,211539,,Q,Fiona Ferro,R,170,FRA,29.1,203575,,,Danka Kovinic,R,169,MNE,31.4,6-2 6-3,3,R32,75,0,0,55,49,27,4,8,4,7,0,9,54,29,13,7,9,0,7,200,370,,
 2026-1005,Rabat,Clay,32,I,20260518,270,222601,2,,Jessica Bouzas Maneiro,R,,ESP,23.6,221369,,Q,Lisa Zaar,U,,SWE,26.0,6-0 7-5,3,R32,82,2,1,64,47,31,9,9,4,6,0,3,70,52,25,6,9,7,13,51,1200,335,195
+2026-520,Roland Garros,Clay,128,G,20260525,100,214544,1,,Aryna Sabalenka,R,182,BLR,28.0,222601,,,Jessica Bouzas Maneiro,R,,ESP,23.6,6-4 6-2,3,R128,75,,,,,,,,,,,,,,,,,,,1,9960,50,1200
+2026-520,Roland Garros,Clay,128,G,20260525,101,221039,,,Elsa Jacquemot,R,,FRA,23.0,222258,,Q,Linda Fruhvirtova,R,,CZE,21.0,6-4 6-3,3,R128,112,,,,,,,,,,,,,,,,,,,67,984,149,506
+2026-520,Roland Garros,Clay,128,G,20260525,102,214082,,,Daria Kasatkina,R,170,AUS,29.0,220309,,,Zeynep Sonmez,R,,TUR,24.0,6-4 6-4,3,R128,99,,,,,,,,,,,,,,,,,,,53,1119,66,1003
+2026-520,Roland Garros,Clay,128,G,20260525,103,214826,,Q,Susan Bandecchi,R,,SUI,27.8,213710,31,,Cristina Bucsa,R,,ESP,28.3,6-4 2-6 6-4,3,R128,128,,,,,,,,,,,,,,,,,,,215,337,33,1406
+2026-520,Roland Garros,Clay,128,G,20260525,104,260300,17,,Iva Jovic,R,,USA,18.4,223253,,,Alexandra Eala,L,173,PHI,21.0,6-4 6-2,3,R128,100,,,,,,,,,,,,,,,,,,,17,2306,37,1340
+2026-520,Roland Garros,Clay,128,G,20260525,105,215613,,,Emma Navarro,R,,USA,25.0,222145,,,Janice Tjen,R,,INA,24.0,6-4 6-3,3,R128,103,,,,,,,,,,,,,,,,,,,25,1719,40,1292
+2026-520,Roland Garros,Clay,128,G,20260525,106,202499,,,Donna Vekic,R,179,CRO,29.9,220554,,WC,Alice Tubello,R,,FRA,25.3,6-3 6-2,3,R128,77,,,,,,,,,,,,,,,,,,,72,933,226,317
+2026-520,Roland Garros,Clay,128,G,20260525,107,211768,16,,Naomi Osaka,R,180,JPN,28.6,201696,,,Laura Siegemund,R,168,GER,38.2,6-3 7-6(3),3,R128,115,,,,,,,,,,,,,,,,,,,16,2341,47,1230
+2026-520,Roland Garros,Clay,128,G,20260525,108,239475,9,,Victoria Mboko,R,,CAN,19.7,223360,,,Nikola Bartunkova,R,,CZE,20.2,6-1 6-2,3,R128,69,,,,,,,,,,,,,,,,,,,9,3710,69,970
+2026-520,Roland Garros,Clay,128,G,20260525,109,211701,,,Katerina Siniakova,R,174,CZE,30.0,215899,,,Simona Waltert,R,,SUI,25.4,6-4 7-6(4),3,R128,132,,,,,,,,,,,,,,,,,,,36,1362,91,856
+2026-520,Roland Garros,Clay,128,G,20260525,110,222045,,,Antonia Ruzic,R,,CRO,23.3,221909,,Q,Ashlyn Krueger,R,185,USA,22.0,3-6 6-2 6-2,3,R128,128,,,,,,,,,,,,,,,,,,,64,1011,120,663
+2026-520,Roland Garros,Clay,128,G,20260525,111,201619,19,,Madison Keys,R,178,USA,31.2,243420,,,Hanne Vandewinkel,U,,BEL,22.0,6-3 6-0,3,R128,70,,,,,,,,,,,,,,,,,,,19,1962,99,790
+2026-520,Roland Garros,Clay,128,G,20260525,112,223670,25,,Diana Shnaider,L,,RUS,22.1,213887,,,Renata Zarazua,R,,MEX,28.6,6-4 6-1,3,R128,84,,,,,,,,,,,,,,,,,,,23,1796,74,925
+2026-520,Roland Garros,Clay,128,G,20260525,113,220520,,,Mccartney Kessler,R,,USA,26.8,215250,,Q,Hanyu Guo,R,,CHN,28.0,4-6 7-6(1) 7-5,3,R128,168,,,,,,,,,,,,,,,,,,,48,1229,166,454
+2026-520,Roland Garros,Clay,128,G,20260525,114,220716,,,Oleksandra Oliynykova,R,,UKR,25.3,239389,,Q,Elena Pridankina,R,,RUS,20.7,6-1 6-2,3,R128,95,,,,,,,,,,,,,,,,,,,65,1005,218,330
+2026-520,Roland Garros,Clay,128,G,20260525,115,214040,,,Kimberly Birrell,R,170,AUS,28.0,202468,5,,Jessica Pegula,R,170,USA,32.2,1-6 6-3 6-3,3,R128,105,,,,,,,,,,,,,,,,,,,83,880,5,6286
+2026-520,Roland Garros,Clay,128,G,20260525,116,221103,4,,Coco Gauff,R,175,USA,22.1,203501,,,Taylor Townsend,L,170,USA,30.1,6-4 6-0,3,R128,81,,,,,,,,,,,,,,,,,,,4,6749,75,919
+2026-520,Roland Garros,Clay,128,G,20260525,117,210886,,Q,Mayar Sherif,R,180,EGY,30.0,213646,,,Dalma Galfi,R,178,HUN,27.7,7-5 6-4,3,R128,110,,,,,,,,,,,,,,,,,,,129,593,115,691
+2026-520,Roland Garros,Clay,128,G,20260525,118,211107,,,Katie Boulter,R,180,GBR,29.8,259857,,WC,Akasha Urhobo,R,,USA,19.3,6-4 4-6 6-4,3,R128,140,,,,,,,,,,,,,,,,,,,71,941,185,403
+2026-520,Roland Garros,Clay,128,G,20260525,119,215713,28,,Anastasia Potapova,R,175,RUS,25.1,233741,,,Maya Joint,R,,AUS,20.1,6-1 6-2,3,R128,69,,,,,,,,,,,,,,,,,,,30,1470,52,1130
+2026-520,Roland Garros,Clay,128,G,20260525,120,214939,22,,Anna Kalinskaya,R,175,RUS,27.4,222391,,,Lois Boisson,R,,FRA,23.0,6-2 6-2,3,R128,79,,,,,,,,,,,,,,,,,,,24,1792,43,1264
+2026-520,Roland Garros,Clay,128,G,20260525,121,252499,,Q,Alina Korneeva,U,,RUS,18.9,220714,,,Elisabetta Cocciaretto,R,,ITA,25.3,6-3 6-3,3,R128,83,,,,,,,,,,,,,,,,,,,117,685,38,1320
+2026-520,Roland Garros,Clay,128,G,20260525,122,201709,,,Yulia Putintseva,R,163,KAZ,31.3,221883,,,Talia Gibson,R,,AUS,21.9,4-6 6-4 6-1,3,R128,138,,,,,,,,,,,,,,,,,,,76,918,58,1040
+2026-520,Roland Garros,Clay,128,G,20260525,123,215785,,,Camila Osorio,R,162,COL,24.4,206420,14,,Ekaterina Alexandrova,R,175,RUS,31.5,6-2 6-4,3,R128,85,,,,,,,,,,,,,,,,,,,86,868,14,2679
+2026-520,Roland Garros,Clay,128,G,20260525,124,206289,,,Maria Sakkari,R,172,GRE,30.8,222328,12,,Linda Noskova,R,,CZE,21.5,7-5 7-6(3),3,R128,113,,,,,,,,,,,,,,,,,,,49,1208,12,3054
+2026-520,Roland Garros,Clay,128,G,20260525,125,214906,,Q,Claire Liu,R,170,USA,25.9,220416,,,Moyuka Uchijima,R,171,JPN,24.7,3-6 6-0 4-1 RET,3,R128,117,,,,,,,,,,,,,,,,,,,182,417,107,707
+2026-520,Roland Garros,Clay,128,G,20260525,126,216081,,Q,Maja Chwalinska,L,,POL,24.6,221012,,,Qinwen Zheng,R,,CHN,23.6,6-4 6-0,3,R128,90,,,,,,,,,,,,,,,,,,,114,693,56,1080
+2026-520,Roland Garros,Clay,128,G,20260525,127,210722,23,,Elise Mertens,R,179,BEL,30.5,213583,,,Tatjana Maria,R,172,GER,38.7,7-5 6-0,3,R128,77,,,,,,,,,,,,,,,,,,,21,1858,54,1111
+2026-520,Roland Garros,Clay,128,G,20260525,128,215983,30,,Ann Li,R,170,USA,25.9,201533,,,Shuai Zhang,R,177,CHN,37.3,6-4 6-2,3,R128,64,,,,,,,,,,,,,,,,,,,29,1601,61,1025
+2026-520,Roland Garros,Clay,128,G,20260525,129,220348,,,Diane Parry,R,170,FRA,23.7,211843,,,Anhelina Kalinina,R,179,UKR,29.2,0-6 6-2 6-4,3,R128,145,,,,,,,,,,,,,,,,,,,92,853,60,1026
+2026-520,Roland Garros,Clay,128,G,20260525,130,211814,,,Julia Grabher,R,170,AUT,29.8,211685,,Q,Rebecca Sramkova,R,,SVK,29.5,6-2 6-2,3,R128,71,,,,,,,,,,,,,,,,,,,121,661,125,640
+2026-520,Roland Garros,Clay,128,G,20260525,131,216153,6,,Amanda Anisimova,R,180,USA,24.7,239456,,WC,Tiantsoa Sarah Rakotomanga Rajaonah,L,,FRA,20.4,6-3 6-1,3,R128,69,,,,,,,,,,,,,,,,,,,6,5958,153,494
+2026-520,Roland Garros,Clay,128,G,20260525,132,202494,7,,Elina Svitolina,R,174,UKR,31.6,214388,,,Anna Bondar,R,,HUN,28.9,3-6 6-1 7-6(3),3,R128,146,,,,,,,,,,,,,,,,,,,7,4315,57,1047
+2026-520,Roland Garros,Clay,128,G,20260525,133,259733,,Q,Kaitlin Quevedo,R,,ESP,20.2,206417,,WC,Leolia Jeanjean,R,,FRA,30.7,7-6(5) 7-6(2),3,R128,123,,,,,,,,,,,,,,,,,,,126,622,122,653
+2026-520,Roland Garros,Clay,128,G,20260525,134,211337,,,Tamara Korpatsch,R,170,GER,31.0,204427,,,Sara Sorribes Tormo,R,176,ESP,29.6,6-4 6-2,3,R128,110,,,,,,,,,,,,,,,,,,,95,829,304,226
+2026-520,Roland Garros,Clay,128,G,20260525,135,216133,32,,Xin Yu Wang,R,182,CHN,24.6,260172,,,Lilli Tagger,U,,AUT,18.2,6-3 3-6 6-4,3,R128,128,,,,,,,,,,,,,,,,,,,34,1371,90,857
+2026-520,Roland Garros,Clay,128,G,20260525,136,220750,,,Daria Snigur,R,,UKR,24.1,220704,21,,Clara Tauson,R,182,DEN,23.4,3-6 7-5 6-2,3,R128,126,,,,,,,,,,,,,,,,,,,93,839,20,1920
+2026-520,Roland Garros,Clay,128,G,20260525,137,220548,,,Peyton Stearns,R,,USA,24.6,213550,,,Sofia Kenin,R,170,USA,27.5,6-3 6-3,3,R128,78,,,,,,,,,,,,,,,,,,,78,915,87,867
+2026-520,Roland Garros,Clay,128,G,20260525,138,216083,,,Caty Mcnally,R,,USA,24.5,201548,,,Ajla Tomljanovic,R,180,AUS,33.0,3-6 7-6(5) 6-3,3,R128,160,,,,,,,,,,,,,,,,,,,63,1018,100,784
+2026-520,Roland Garros,Clay,128,G,20260525,139,202505,11,,Belinda Bencic,R,175,SUI,29.2,221257,,Q,Sinja Kraus,R,,AUT,24.0,6-2 6-3,3,R128,90,,,,,,,,,,,,,,,,,,,11,3145,98,795
+2026-520,Roland Garros,Clay,128,G,20260525,140,216146,15,,Marta Kostyuk,R,175,UKR,23.9,221407,,,Oksana Selekhmeteva,L,,RUS,23.3,6-2 6-3,3,R128,78,,,,,,,,,,,,,,,,,,,15,2387,88,865
+2026-520,Roland Garros,Clay,128,G,20260525,141,220465,,,Katie Volynets,R,,USA,24.3,216262,,WC,Clara Burel,R,176,FRA,25.1,6-3 6-1,3,R128,88,,,,,,,,,,,,,,,,,,,108,705,1486,3
+2026-520,Roland Garros,Clay,128,G,20260525,142,203530,,,Viktorija Golubic,R,169,SUI,33.6,215910,,,Panna Udvardy,R,170,HUN,27.6,6-0 6-2,3,R128,64,,,,,,,,,,,,,,,,,,,82,901,59,1029
+2026-520,Roland Garros,Clay,128,G,20260525,143,219917,,,Alycia Parks,R,185,USA,25.3,220367,24,,Leylah Fernandez,L,168,CAN,23.7,6-4 6-4,3,R128,92,,,,,,,,,,,,,,,,,,,79,905,22,1844
+2026-520,Roland Garros,Clay,128,G,20260525,144,211533,29,,Jelena Ostapenko,R,177,LAT,28.9,230870,,,Ella Seidel,R,,GER,21.2,6-4 6-4,3,R128,108,,,,,,,,,,,,,,,,,,,31,1464,96,818
+2026-520,Roland Garros,Clay,128,G,20260525,145,202663,,,Magda Linette,R,171,POL,34.2,238184,,,Tereza Valentova,U,,CZE,19.2,5-7 6-4 7-6(9),3,R128,178,,,,,,,,,,,,,,,,,,,73,931,42,1265
+2026-520,Roland Garros,Clay,128,G,20260525,146,239383,,,Sara Bejlek,L,,CZE,20.3,201585,,Q,Sloane Stephens,R,170,USA,33.1,6-3 6-2,3,R128,82,,,,,,,,,,,,,,,,,,,35,1369,363,173
+2026-520,Roland Garros,Clay,128,G,20260525,147,216347,3,,Iga Swiatek,R,176,POL,24.9,263644,,WC,Emerson Jones,R,,AUS,17.8,6-1 6-2,3,R128,60,,,,,,,,,,,,,,,,,,,3,7273,136,557
+2026-520,Roland Garros,Clay,128,G,20260525,148,259799,8,,Mirra Andreeva,R,,RUS,19.0,211539,,WC,Fiona Ferro,R,170,FRA,29.2,6-3 6-3,3,R128,71,,,,,,,,,,,,,,,,,,,8,4181,181,418
+2026-520,Roland Garros,Clay,128,G,20260525,149,215453,,Q,Marina Bassols Ribera,R,165,ESP,26.4,215306,,,Emiliana Arango,R,,COL,25.4,6-3 6-4,3,R128,92,,,,,,,,,,,,,,,,,,,175,438,94,833
+2026-520,Roland Garros,Clay,128,G,20260525,150,215936,,,Francesca Jones,R,,GBR,25.6,206242,,,Beatriz Haddad Maia,L,185,BRA,29.9,1-6 7-6(4) 6-2,3,R128,159,,,,,,,,,,,,,,,,,,,102,736,105,724
+2026-520,Roland Garros,Clay,128,G,20260525,151,213631,27,,Marie Bouzkova,R,180,CZE,27.8,214459,,Q,Lucia Bronzetti,R,,ITA,27.4,6-3 6-1,3,R128,69,,,,,,,,,,,,,,,,,,,28,1631,172,448
+2026-520,Roland Garros,Clay,128,G,20260525,152,213525,,,Jil Teichmann,L,170,SUI,28.8,214643,20,,Liudmila Samsonova,R,180,RUS,27.5,6-4 6-4,3,R128,96,,,,,,,,,,,,,,,,,,,170,449,27,1635
+2026-520,Roland Garros,Clay,128,G,20260525,153,211684,,,Magdalena Frech,R,171,POL,28.4,211817,,,Elena Gabriela Ruse,R,,ROU,28.5,7-6(5) 2-1 RET,3,R128,92,,,,,,,,,,,,,,,,,,,46,1238,77,918
+2026-520,Roland Garros,Clay,128,G,20260525,154,215872,,,Kamilla Rakhimova,R,,UZB,24.7,211713,,,Jaqueline Cristian,R,180,ROU,27.9,6-3 4-6 6-4,3,R128,174,,,,,,,,,,,,,,,,,,,89,860,32,1414
+2026-520,Roland Garros,Clay,128,G,20260525,155,214096,10,,Karolina Muchova,R,178,CZE,29.7,220435,,,Anastasia Zakharova,R,,RUS,24.3,7-5 6-2,3,R128,86,,,,,,,,,,,,,,,,,,,10,3318,80,903
+2026-520,Roland Garros,Clay,128,G,20260525,156,211148,13,,Jasmine Paolini,R,160,ITA,30.3,215035,,,Dayana Yastremska,R,175,UKR,26.0,7-5 6-3,3,R128,100,,,,,,,,,,,,,,,,,,,13,2787,45,1246
+2026-520,Roland Garros,Clay,128,G,20260525,157,221333,,,Solana Sierra,R,,ARG,21.9,221054,,,Emma Raducanu,R,175,GBR,23.5,6-0 7-6(4),3,R128,105,,,,,,,,,,,,,,,,,,,68,974,39,1301
+2026-520,Roland Garros,Clay,128,G,20260525,158,220332,,,Eva Lys,R,165,GER,24.3,238075,,,Petra Marcinko,U,,CRO,20.4,6-3 6-0,3,R128,66,,,,,,,,,,,,,,,,,,,81,901,51,1140
+2026-520,Roland Garros,Clay,128,G,20260525,159,201514,18,,Sorana Cirstea,R,176,ROU,36.1,266469,,WC,Ksenia Efremova,R,,FRA,17.0,6-3 6-1,3,R128,70,,,,,,,,,,,,,,,,,,,18,1985,623,75
+2026-520,Roland Garros,Clay,128,G,20260525,160,221024,26,,Hailey Baptiste,R,,USA,24.5,206252,,,Barbora Krejcikova,R,178,CZE,30.4,6-7(7) 7-6(6) 6-2,3,R128,173,,,,,,,,,,,,,,,,,,,26,1683,41,1271
+2026-520,Roland Garros,Clay,128,G,20260525,161,216016,,Q,Xiyu Wang,L,,CHN,25.1,203575,,,Danka Kovinic,R,169,MNE,31.5,6-3 6-1,3,R128,78,,,,,,,,,,,,,,,,,,,148,516,,
+2026-520,Roland Garros,Clay,128,G,20260525,162,263857,,,Yuliia Starodubtseva,R,,UKR,26.2,215020,,,Anna Blinkova,R,179,RUS,27.7,6-3 6-1,3,R128,92,,,,,,,,,,,,,,,,,,,55,1093,103,733
+2026-520,Roland Garros,Clay,128,G,20260525,163,214981,2,,Elena Rybakina,R,184,KAZ,26.9,220662,,,Veronika Erjavec,R,,SLO,26.4,6-2 6-2,3,R128,75,,,,,,,,,,,,,,,,,,,2,8313,84,873
+2026-520,Roland Garros,Clay,128,G,20260525,164,214544,1,,Aryna Sabalenka,R,182,BLR,28.0,221039,,,Elsa Jacquemot,R,,FRA,23.0,7-5 6-2,3,R64,95,,,,,,,,,,,,,,,,,,,1,9960,67,984
+2026-520,Roland Garros,Clay,128,G,20260525,165,214082,,,Daria Kasatkina,R,170,AUS,29.0,214826,,,Susan Bandecchi,R,,SUI,27.8,7-5 7-6(11),3,R64,120,,,,,,,,,,,,,,,,,,,53,1119,215,337
+2026-520,Roland Garros,Clay,128,G,20260525,166,260300,17,,Iva Jovic,R,,USA,18.4,215613,,,Emma Navarro,R,,USA,25.0,6-0 6-3,3,R64,78,,,,,,,,,,,,,,,,,,,17,2306,25,1719
+2026-520,Roland Garros,Clay,128,G,20260525,167,211768,16,,Naomi Osaka,R,180,JPN,28.6,202499,,,Donna Vekic,R,179,CRO,29.9,7-6(1) 6-4,3,R64,110,,,,,,,,,,,,,,,,,,,16,2341,72,933
+2026-520,Roland Garros,Clay,128,G,20260525,168,239475,9,,Victoria Mboko,R,,CAN,19.7,211701,,,Katerina Siniakova,R,174,CZE,30.0,5-7 6-4 6-2,3,R64,159,,,,,,,,,,,,,,,,,,,9,3710,36,1362
+2026-520,Roland Garros,Clay,128,G,20260525,169,201619,19,,Madison Keys,R,178,USA,31.2,222045,,,Antonia Ruzic,R,,CRO,23.3,6-4 6-4,3,R64,96,,,,,,,,,,,,,,,,,,,19,1962,64,1011
+2026-520,Roland Garros,Clay,128,G,20260525,170,223670,25,,Diana Shnaider,L,,RUS,22.1,220520,,,Mccartney Kessler,R,,USA,26.8,7-6(3) 6-1,3,R64,96,,,,,,,,,,,,,,,,,,,23,1796,48,1229
+2026-520,Roland Garros,Clay,128,G,20260525,171,220716,,,Oleksandra Oliynykova,R,,UKR,25.3,214040,,,Kimberly Birrell,R,170,AUS,28.0,6-3 0-6 7-6(5),3,R64,133,,,,,,,,,,,,,,,,,,,65,1005,83,880
+2026-520,Roland Garros,Clay,128,G,20260525,172,221103,4,,Coco Gauff,R,175,USA,22.1,210886,,,Mayar Sherif,R,180,EGY,30.0,6-3 6-2,3,R64,110,,,,,,,,,,,,,,,,,,,4,6749,129,593
+2026-520,Roland Garros,Clay,128,G,20260525,173,215713,28,,Anastasia Potapova,R,175,RUS,25.1,211107,,,Katie Boulter,R,180,GBR,29.8,5-7 6-4 6-2,3,R64,126,,,,,,,,,,,,,,,,,,,30,1470,71,941
+2026-520,Roland Garros,Clay,128,G,20260525,174,214939,22,,Anna Kalinskaya,R,175,RUS,27.4,252499,,,Alina Korneeva,U,,RUS,18.9,7-6(2) 6-4,3,R64,94,,,,,,,,,,,,,,,,,,,24,1792,117,685
+2026-520,Roland Garros,Clay,128,G,20260525,175,215785,,,Camila Osorio,R,162,COL,24.4,201709,,,Yulia Putintseva,R,163,KAZ,31.3,7-5 6-7(6) 7-5,3,R64,210,,,,,,,,,,,,,,,,,,,86,868,76,918
+2026-520,Roland Garros,Clay,128,G,20260525,176,206289,,,Maria Sakkari,R,172,GRE,30.8,214906,,,Claire Liu,R,170,USA,25.9,6-7(7) 6-3 6-3,3,R64,158,,,,,,,,,,,,,,,,,,,49,1208,182,417
+2026-520,Roland Garros,Clay,128,G,20260525,177,216081,,,Maja Chwalinska,L,,POL,24.6,210722,23,,Elise Mertens,R,179,BEL,30.5,6-4 6-0,3,R64,98,,,,,,,,,,,,,,,,,,,114,693,21,1858
+2026-520,Roland Garros,Clay,128,G,20260525,178,220348,,,Diane Parry,R,170,FRA,23.7,215983,30,,Ann Li,R,170,USA,25.9,6-3 6-4,3,R64,94,,,,,,,,,,,,,,,,,,,92,853,29,1601
+2026-520,Roland Garros,Clay,128,G,20260525,179,216153,6,,Amanda Anisimova,R,180,USA,24.7,211814,,,Julia Grabher,R,170,AUT,29.8,6-0 RET,3,R64,25,,,,,,,,,,,,,,,,,,,6,5958,121,661
+2026-520,Roland Garros,Clay,128,G,20260525,180,202494,7,,Elina Svitolina,R,174,UKR,31.6,259733,,,Kaitlin Quevedo,R,,ESP,20.2,6-0 6-4,3,R64,78,,,,,,,,,,,,,,,,,,,7,4315,126,622
+2026-520,Roland Garros,Clay,128,G,20260525,181,211337,,,Tamara Korpatsch,R,170,GER,31.0,216133,32,,Xin Yu Wang,R,182,CHN,24.6,6-2 2-6 6-3,3,R64,145,,,,,,,,,,,,,,,,,,,95,829,34,1371
+2026-520,Roland Garros,Clay,128,G,20260525,182,220548,,,Peyton Stearns,R,,USA,24.6,220750,,,Daria Snigur,R,,UKR,24.1,6-4 6-0,3,R64,68,,,,,,,,,,,,,,,,,,,78,915,93,839
+2026-520,Roland Garros,Clay,128,G,20260525,183,202505,11,,Belinda Bencic,R,175,SUI,29.2,216083,,,Caty Mcnally,R,,USA,24.5,6-4 6-0,3,R64,84,,,,,,,,,,,,,,,,,,,11,3145,63,1018
+2026-520,Roland Garros,Clay,128,G,20260525,184,216146,15,,Marta Kostyuk,R,175,UKR,23.9,220465,,,Katie Volynets,R,,USA,24.3,6-7(4) 6-3 6-3,3,R64,163,,,,,,,,,,,,,,,,,,,15,2387,108,705
+2026-520,Roland Garros,Clay,128,G,20260525,185,203530,,,Viktorija Golubic,R,169,SUI,33.6,219917,,,Alycia Parks,R,185,USA,25.3,6-2 6-2,3,R64,63,,,,,,,,,,,,,,,,,,,82,901,79,905
+2026-520,Roland Garros,Clay,128,G,20260525,186,202663,,,Magda Linette,R,171,POL,34.2,211533,29,,Jelena Ostapenko,R,177,LAT,28.9,6-2 2-6 6-2,3,R64,118,,,,,,,,,,,,,,,,,,,73,931,31,1464
+2026-520,Roland Garros,Clay,128,G,20260525,187,216347,3,,Iga Swiatek,R,176,POL,24.9,239383,,,Sara Bejlek,L,,CZE,20.3,6-2 6-3,3,R64,93,,,,,,,,,,,,,,,,,,,3,7273,35,1369
+2026-520,Roland Garros,Clay,128,G,20260525,188,259799,8,,Mirra Andreeva,R,,RUS,19.0,215453,,,Marina Bassols Ribera,R,165,ESP,26.4,3-6 6-1 6-1,3,R64,111,,,,,,,,,,,,,,,,,,,8,4181,175,438
+2026-520,Roland Garros,Clay,128,G,20260525,189,213631,27,,Marie Bouzkova,R,180,CZE,27.8,215936,,,Francesca Jones,R,,GBR,25.6,6-0 7-6(3),3,R64,96,,,,,,,,,,,,,,,,,,,28,1631,102,736
+2026-520,Roland Garros,Clay,128,G,20260525,190,213525,,,Jil Teichmann,L,170,SUI,28.8,211684,,,Magdalena Frech,R,171,POL,28.4,7-5 6-4,3,R64,109,,,,,,,,,,,,,,,,,,,170,449,46,1238
+2026-520,Roland Garros,Clay,128,G,20260525,191,214096,10,,Karolina Muchova,R,178,CZE,29.7,215872,,,Kamilla Rakhimova,R,,UZB,24.7,6-2 6-2,3,R64,80,,,,,,,,,,,,,,,,,,,10,3318,89,860
+2026-520,Roland Garros,Clay,128,G,20260525,192,221333,,,Solana Sierra,R,,ARG,21.9,211148,13,,Jasmine Paolini,R,160,ITA,30.3,3-6 6-4 6-3,3,R64,130,,,,,,,,,,,,,,,,,,,68,974,13,2787
+2026-520,Roland Garros,Clay,128,G,20260525,193,201514,18,,Sorana Cirstea,R,176,ROU,36.1,220332,,,Eva Lys,R,165,GER,24.3,6-3 6-0,3,R64,63,,,,,,,,,,,,,,,,,,,18,1985,81,901
+2026-520,Roland Garros,Clay,128,G,20260525,194,216016,,,Xiyu Wang,L,,CHN,25.1,221024,26,,Hailey Baptiste,R,,USA,24.5,5-4 RET,3,R64,51,,,,,,,,,,,,,,,,,,,148,516,26,1683
+2026-520,Roland Garros,Clay,128,G,20260525,195,263857,,,Yuliia Starodubtseva,R,,UKR,26.2,214981,2,,Elena Rybakina,R,184,KAZ,26.9,3-6 6-1 7-6(4),3,R64,148,,,,,,,,,,,,,,,,,,,55,1093,2,8313
+2026-520,Roland Garros,Clay,128,G,20260525,196,214544,1,,Aryna Sabalenka,R,182,BLR,28.0,214082,,,Daria Kasatkina,R,170,AUS,29.0,6-0 7-5,3,R32,76,,,,,,,,,,,,,,,,,,,1,9960,53,1119
+2026-520,Roland Garros,Clay,128,G,20260525,197,211768,16,,Naomi Osaka,R,180,JPN,28.6,260300,17,,Iva Jovic,R,,USA,18.4,7-6(5) 6-7(3) 6-4,3,R32,178,,,,,,,,,,,,,,,,,,,16,2341,17,2306
+2026-520,Roland Garros,Clay,128,G,20260525,198,201619,19,,Madison Keys,R,178,USA,31.2,239475,9,,Victoria Mboko,R,,CAN,19.7,6-3 5-7 7-5,3,R32,150,,,,,,,,,,,,,,,,,,,19,1962,9,3710
+2026-520,Roland Garros,Clay,128,G,20260525,199,223670,25,,Diana Shnaider,L,,RUS,22.1,220716,,,Oleksandra Oliynykova,R,,UKR,25.3,7-5 6-1,3,R32,103,,,,,,,,,,,,,,,,,,,23,1796,65,1005
+2026-520,Roland Garros,Clay,128,G,20260525,200,215713,28,,Anastasia Potapova,R,175,RUS,25.1,221103,4,,Coco Gauff,R,175,USA,22.1,4-6 7-6(1) 6-4,3,R32,157,,,,,,,,,,,,,,,,,,,30,1470,4,6749
+2026-520,Roland Garros,Clay,128,G,20260525,201,214939,22,,Anna Kalinskaya,R,175,RUS,27.4,215785,,,Camila Osorio,R,162,COL,24.4,6-3 0-6 6-2,3,R32,125,,,,,,,,,,,,,,,,,,,24,1792,86,868
+2026-520,Roland Garros,Clay,128,G,20260525,202,216081,,,Maja Chwalinska,L,,POL,24.6,206289,,,Maria Sakkari,R,172,GRE,30.8,1-6 6-3 6-2,3,R32,127,,,,,,,,,,,,,,,,,,,114,693,49,1208
+2026-520,Roland Garros,Clay,128,G,20260525,203,220348,,,Diane Parry,R,170,FRA,23.7,216153,6,,Amanda Anisimova,R,180,USA,24.7,6-3 4-6 7-6(3),3,R32,164,,,,,,,,,,,,,,,,,,,92,853,6,5958
+2026-520,Roland Garros,Clay,128,G,20260525,204,202494,7,,Elina Svitolina,R,174,UKR,31.6,211337,,,Tamara Korpatsch,R,170,GER,31.0,6-2 6-3,3,R32,91,,,,,,,,,,,,,,,,,,,7,4315,95,829
+2026-520,Roland Garros,Clay,128,G,20260525,205,202505,11,,Belinda Bencic,R,175,SUI,29.2,220548,,,Peyton Stearns,R,,USA,24.6,6-3 6-3,3,R32,81,,,,,,,,,,,,,,,,,,,11,3145,78,915
+2026-520,Roland Garros,Clay,128,G,20260525,206,216146,15,,Marta Kostyuk,R,175,UKR,23.9,203530,,,Viktorija Golubic,R,169,SUI,33.6,6-4 6-3,3,R32,99,,,,,,,,,,,,,,,,,,,15,2387,82,901
+2026-520,Roland Garros,Clay,128,G,20260525,207,216347,3,,Iga Swiatek,R,176,POL,24.9,202663,,,Magda Linette,R,171,POL,34.2,6-4 6-4,3,R32,85,,,,,,,,,,,,,,,,,,,3,7273,73,931
+2026-520,Roland Garros,Clay,128,G,20260525,208,259799,8,,Mirra Andreeva,R,,RUS,19.0,213631,27,,Marie Bouzkova,R,180,CZE,27.8,6-4 6-2,3,R32,95,,,,,,,,,,,,,,,,,,,8,4181,28,1631
+2026-520,Roland Garros,Clay,128,G,20260525,209,213525,,,Jil Teichmann,L,170,SUI,28.8,214096,10,,Karolina Muchova,R,178,CZE,29.7,6-1 7-5,3,R32,112,,,,,,,,,,,,,,,,,,,170,449,10,3318
+2026-520,Roland Garros,Clay,128,G,20260525,210,201514,18,,Sorana Cirstea,R,176,ROU,36.1,221333,,,Solana Sierra,R,,ARG,21.9,6-0 6-0,3,R32,56,,,,,,,,,,,,,,,,,,,18,1985,68,974
+2026-520,Roland Garros,Clay,128,G,20260525,211,216016,,,Xiyu Wang,L,,CHN,25.1,263857,,,Yuliia Starodubtseva,R,,UKR,26.2,6-3 7-5,3,R32,109,,,,,,,,,,,,,,,,,,,148,516,55,1093
+2026-520,Roland Garros,Clay,128,G,20260525,212,214544,1,,Aryna Sabalenka,R,182,BLR,28.0,211768,16,,Naomi Osaka,R,180,JPN,28.6,7-5 6-3,3,R16,87,,,,,,,,,,,,,,,,,,,1,9960,16,2341
+2026-520,Roland Garros,Clay,128,G,20260525,213,223670,25,,Diana Shnaider,L,,RUS,22.1,201619,19,,Madison Keys,R,178,USA,31.2,6-3 3-6 6-0,3,R16,104,,,,,,,,,,,,,,,,,,,23,1796,19,1962
+2026-520,Roland Garros,Clay,128,G,20260525,214,214939,22,,Anna Kalinskaya,R,175,RUS,27.4,215713,28,,Anastasia Potapova,R,175,RUS,25.1,6-4 2-6 7-6(7),3,R16,169,,,,,,,,,,,,,,,,,,,24,1792,30,1470
+2026-520,Roland Garros,Clay,128,G,20260525,215,216081,,,Maja Chwalinska,L,,POL,24.6,220348,,,Diane Parry,R,170,FRA,23.7,6-3 6-2,3,R16,93,,,,,,,,,,,,,,,,,,,114,693,92,853
+2026-520,Roland Garros,Clay,128,G,20260525,216,202494,7,,Elina Svitolina,R,174,UKR,31.6,202505,11,,Belinda Bencic,R,175,SUI,29.2,4-6 6-4 6-0,3,R16,123,,,,,,,,,,,,,,,,,,,7,4315,11,3145
+2026-520,Roland Garros,Clay,128,G,20260525,217,216146,15,,Marta Kostyuk,R,175,UKR,23.9,216347,3,,Iga Swiatek,R,176,POL,24.9,7-5 6-1,3,R16,99,,,,,,,,,,,,,,,,,,,15,2387,3,7273
+2026-520,Roland Garros,Clay,128,G,20260525,218,259799,8,,Mirra Andreeva,R,,RUS,19.0,213525,,,Jil Teichmann,L,170,SUI,28.8,6-3 6-2,3,R16,85,,,,,,,,,,,,,,,,,,,8,4181,170,449
+2026-520,Roland Garros,Clay,128,G,20260525,219,201514,18,,Sorana Cirstea,R,176,ROU,36.1,216016,,,Xiyu Wang,L,,CHN,25.1,6-3 7-6(4),3,R16,115,,,,,,,,,,,,,,,,,,,18,1985,148,516
+2026-520,Roland Garros,Clay,128,G,20260525,220,223670,25,,Diana Shnaider,L,,RUS,22.1,214544,1,,Aryna Sabalenka,R,182,BLR,28.0,3-6 7-5 6-0,3,QF,132,,,,,,,,,,,,,,,,,,,23,1796,1,9960
+2026-520,Roland Garros,Clay,128,G,20260525,221,216081,,,Maja Chwalinska,L,,POL,24.6,214939,22,,Anna Kalinskaya,R,175,RUS,27.4,7-6(3) 6-3,3,QF,114,,,,,,,,,,,,,,,,,,,114,693,24,1792
+2026-520,Roland Garros,Clay,128,G,20260525,222,216146,15,,Marta Kostyuk,R,175,UKR,23.9,202494,7,,Elina Svitolina,R,174,UKR,31.6,6-3 2-6 6-2,3,QF,109,,,,,,,,,,,,,,,,,,,15,2387,7,4315
+2026-520,Roland Garros,Clay,128,G,20260525,223,259799,8,,Mirra Andreeva,R,,RUS,19.0,201514,18,,Sorana Cirstea,R,176,ROU,36.1,6-0 6-3,3,QF,56,,,,,,,,,,,,,,,,,,,8,4181,18,1985
+2026-520,Roland Garros,Clay,128,G,20260525,224,216081,,,Maja Chwalinska,L,,POL,24.6,223670,25,,Diana Shnaider,L,,RUS,22.1,7-6(4) 6-4,3,SF,130,,,,,,,,,,,,,,,,,,,114,693,23,1796
+2026-520,Roland Garros,Clay,128,G,20260525,225,259799,8,,Mirra Andreeva,R,,RUS,19.0,216146,15,,Marta Kostyuk,R,175,UKR,23.9,6-1 6-3,3,SF,76,,,,,,,,,,,,,,,,,,,8,4181,15,2387
+2026-520,Roland Garros,Clay,128,G,20260525,226,259799,8,,Mirra Andreeva,R,,RUS,19.0,216081,,,Maja Chwalinska,L,,POL,24.6,6-3 6-2,3,F,82,,,,,,,,,,,,,,,,,,,8,4181,114,693
 2026-W-FC-2026-QUA,BJK Cup Qualifiers,,36,D,20260410,101,213631,,,Marie Bouzkova,R,180,CZE,27.7,203530,,,Viktorija Golubic,R,169,SUI,33.4,7-6(4) 6-3,3,RR,,,,,,,,,,,,,,,,,,,,24,1676,79,881
 2026-W-FC-2026-QUA,BJK Cup Qualifiers,,36,D,20260410,102,213889,,,Greet Minnen,R,,BEL,28.6,260300,,,Iva Jovic,R,,USA,18.3,7-5 6-3,3,RR,,,,,,,,,,,,,,,,,,,,149,510,16,2270
 2026-W-FC-2026-QUA,BJK Cup Qualifiers,,36,D,20260410,103,222328,,,Linda Noskova,R,,CZE,21.3,202505,,,Belinda Bencic,R,175,SUI,29.0,6-3 3-6 7-6(9),3,RR,,,,,,,,,,,,,,,,,,,,14,2801,11,3090
