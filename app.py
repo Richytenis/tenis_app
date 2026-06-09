@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.46.5-analyzer-challenger-oficial-observar"
+APP_VERSION = "v23.46.7-excel-valor-apuesta"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -13481,6 +13481,154 @@ def _limpiar_texto_excel_cell(v):
     return str(v).replace("OBSERVAR ", "").replace("JUGAR ", "").strip()
 
 
+# =========================================================
+# v23.46.7 EXCEL VALUE RANKING
+# Solo ordena y presenta picks por utilidad operativa para apostar.
+# No toca fórmulas, probabilidades, simulaciones ni motor Over.
+# =========================================================
+
+def _prob_to_float_v23467(v):
+    try:
+        return float(leer_porcentaje(v, 0) or 0)
+    except Exception:
+        return 0.0
+
+
+def _clasificar_estrategia_apuesta_v23467(row):
+    mercado = str(row.get("Mercado", row.get("🎯 Mercado más probable", ""))).lower()
+    accion = str(row.get("Acción", row.get("🎯 Acción final", ""))).upper()
+    confianza = str(row.get("Confianza", row.get("🎯 Confianza acierto", ""))).upper()
+    motivo = str(row.get("Motivo", row.get("🎯 Motivo acierto", ""))).lower()
+
+    is_jugar = "JUGAR" in accion
+    is_obs = "OBSERVAR" in accion
+    is_gana_set = ("set" in mercado and ("gana" in mercado or "al menos" in mercado))
+    is_over18 = ("over" in mercado and "18" in mercado)
+    is_over19 = ("over" in mercado and "19" in mercado)
+    is_ml = ("ganador" in mercado or "ml" in mercado or "gana partido" in mercado)
+
+    # Priorización basada en el backtest que hemos visto: ganar 1 set > Over 18.5 > ML fuerte.
+    if is_jugar and is_gana_set:
+        return "🥇 Gana 1 set JUGAR", 100
+    if is_jugar and is_over18:
+        return "🥈 Over 18.5 JUGAR", 92
+    if is_jugar and is_ml:
+        return "🥉 ML favorito JUGAR", 84
+    if is_jugar and is_over19:
+        return "⚡ Over 19.5 JUGAR", 78
+    if is_jugar:
+        return "✅ Otro JUGAR", 70
+
+    if is_obs and is_gana_set:
+        return "👀 Gana 1 set OBSERVAR", 56
+    if is_obs and is_over18:
+        return "👀 Over 18.5 OBSERVAR", 52
+    if is_obs and is_ml:
+        return "👀 ML OBSERVAR", 46
+    if is_obs:
+        return "👀 Otro OBSERVAR", 35
+
+    return "— Sin prioridad", 0
+
+
+def aplicar_ranking_valor_apuesta_v23467(picks):
+    """Añade Prioridad/Score y ordena el Excel por valor práctico para apostar."""
+    if picks is None or picks.empty:
+        return picks
+    out = picks.copy()
+    estrategias, bases, probs, scores = [], [], [], []
+    for _, row in out.iterrows():
+        estrategia, base = _clasificar_estrategia_apuesta_v23467(row)
+        prob = _prob_to_float_v23467(row.get("Prob.", row.get("🎯 Prob máxima", 0)))
+        # La probabilidad suma, pero no manda más que el tipo de mercado.
+        score = float(base) + float(prob * 20.0)
+        estrategias.append(estrategia)
+        bases.append(base)
+        probs.append(prob)
+        scores.append(round(score, 2))
+    out["Prioridad apuesta"] = estrategias
+    out["Score apuesta"] = scores
+    out["Ranking apuesta"] = range(1, len(out) + 1)
+    try:
+        out = out.sort_values(["Score apuesta"], ascending=False).reset_index(drop=True)
+        out["Ranking apuesta"] = [f"#{i}" for i in range(1, len(out) + 1)]
+    except Exception:
+        pass
+
+    # Columnas nuevas al principio.
+    first = ["Ranking apuesta", "Prioridad apuesta", "Score apuesta"]
+    cols = first + [c for c in out.columns if c not in first]
+    return out[cols]
+
+
+def crear_top_apuestas_df_v23467(picks_df, n=10):
+    if picks_df is None or picks_df.empty:
+        return pd.DataFrame()
+    df = picks_df.copy()
+    if "Score apuesta" not in df.columns:
+        df = aplicar_ranking_valor_apuesta_v23467(df)
+    keep = [c for c in ["Ranking apuesta", "Prioridad apuesta", "Score apuesta", "Hora", "Fecha", "Torneo", "Superficie", "Partido", "Acción", "Mercado", "Prob.", "Confianza", "Motivo"] if c in df.columns]
+    return df.head(int(n))[keep].copy()
+
+
+def crear_combinada_recomendada_df_v23467(picks_df):
+    """Propone una combinada de 2 siguiendo la jerarquía acordada.
+    1) Dos gana-set JUGAR.
+    2) Un gana-set JUGAR + mejor Over 18.5 JUGAR.
+    3) Dos Over 18.5 JUGAR.
+    Si no hay 2 selecciones fuertes, devuelve aviso de NO APOSTAR.
+    """
+    if picks_df is None or picks_df.empty:
+        return pd.DataFrame([{"Estado": "NO APOSTAR", "Motivo": "No hay picks suficientes"}])
+    df = picks_df.copy()
+    if "Score apuesta" not in df.columns:
+        df = aplicar_ranking_valor_apuesta_v23467(df)
+    accion = df.get("Acción", pd.Series([""]*len(df))).astype(str).str.upper()
+    mercado = df.get("Mercado", pd.Series([""]*len(df))).astype(str).str.lower()
+    jugar = df[accion.str.contains("JUGAR", na=False)].copy()
+    if jugar.empty:
+        return pd.DataFrame([{"Estado": "NO APOSTAR", "Motivo": "No hay picks JUGAR"}])
+
+    def _sin_repetir_partido(cands):
+        rows, seen = [], set()
+        for _, r in cands.sort_values("Score apuesta", ascending=False).iterrows():
+            partido = str(r.get("Partido", ""))
+            if partido and partido in seen:
+                continue
+            rows.append(r)
+            if partido:
+                seen.add(partido)
+            if len(rows) >= 2:
+                break
+        return pd.DataFrame(rows)
+
+    gana_set = jugar[mercado.loc[jugar.index].str.contains("set", na=False) & (mercado.loc[jugar.index].str.contains("gana|al menos", regex=True, na=False))]
+    over18 = jugar[mercado.loc[jugar.index].str.contains("over", na=False) & mercado.loc[jugar.index].str.contains("18", na=False)]
+
+    seleccion = _sin_repetir_partido(gana_set)
+    estrategia = "A: 2 x Gana 1 set JUGAR"
+    if len(seleccion) < 2:
+        seleccion = _sin_repetir_partido(pd.concat([gana_set, over18], ignore_index=False))
+        estrategia = "B: Gana 1 set JUGAR + mejor Over 18.5 JUGAR"
+    if len(seleccion) < 2:
+        seleccion = _sin_repetir_partido(over18)
+        estrategia = "C: 2 x Over 18.5 JUGAR"
+
+    if len(seleccion) < 2:
+        return pd.DataFrame([{
+            "Estado": "NO APOSTAR",
+            "Estrategia": "Disciplina",
+            "Motivo": "No hay 2 selecciones JUGAR suficientemente fuertes. Mejor no forzar.",
+        }])
+
+    keep = [c for c in ["Ranking apuesta", "Prioridad apuesta", "Score apuesta", "Hora", "Torneo", "Superficie", "Partido", "Acción", "Mercado", "Prob.", "Confianza"] if c in seleccion.columns]
+    out = seleccion[keep].copy().reset_index(drop=True)
+    out.insert(0, "Selección", ["Pick 1", "Pick 2"][:len(out)])
+    out.insert(1, "Estrategia", estrategia)
+    out.insert(2, "Estado", "COMBINADA RECOMENDADA")
+    return out
+
+
 def crear_picks_limpios_df(df):
     """Hoja simple para decidir: una fila por partido y solo columnas útiles."""
     if df is None or df.empty:
@@ -13525,6 +13673,10 @@ def crear_picks_limpios_df(df):
     try:
         picks["_orden"] = picks.apply(_score, axis=1)
         picks = picks.sort_values("_orden", ascending=False).drop(columns=["_orden"], errors="ignore")
+    except Exception:
+        pass
+    try:
+        picks = aplicar_ranking_valor_apuesta_v23467(picks)
     except Exception:
         pass
     return picks
@@ -13596,6 +13748,11 @@ def batch_excel_bytes(df):
     detalle_df = crear_detalle_tecnico_df(df)
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         picks_df.to_excel(writer, index=False, sheet_name="PICKS LIMPIOS")
+        try:
+            crear_top_apuestas_df_v23467(picks_df, n=10).to_excel(writer, index=False, sheet_name="TOP APUESTAS")
+            crear_combinada_recomendada_df_v23467(picks_df).to_excel(writer, index=False, sheet_name="COMBINADA RECOMENDADA")
+        except Exception:
+            pass
         detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
         try:
             wm_df = picks_df[picks_df.get("Datos extra", "").astype(str).str.upper().str.contains("SÍ", na=False)].copy()
@@ -13618,6 +13775,11 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
         picks_df = crear_picks_limpios_df(ok_sheet)
         detalle_df = crear_detalle_tecnico_df(ok_sheet)
         picks_df.to_excel(writer, index=False, sheet_name="PICKS LIMPIOS")
+        try:
+            crear_top_apuestas_df_v23467(picks_df, n=10).to_excel(writer, index=False, sheet_name="TOP APUESTAS")
+            crear_combinada_recomendada_df_v23467(picks_df).to_excel(writer, index=False, sheet_name="COMBINADA RECOMENDADA")
+        except Exception:
+            pass
         detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
         if not ko_sheet.empty:
             ko_sheet.to_excel(writer, index=False, sheet_name="NO ENCONTRADOS")
