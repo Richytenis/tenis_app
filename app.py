@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.46.0-challenger-predictor-intelligence"
+APP_VERSION = "v23.46.5-analyzer-challenger-oficial-observar"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -15240,7 +15240,7 @@ with st.sidebar:
     if st.button("🧹 Limpiar caché"):
         st.cache_data.clear()
         st.success("Caché limpiada")
-    circuito = st.radio("Circuito", ["ATP", "WTA"])
+    circuito = st.radio("Circuito", ["ATP", "Challenger", "WTA"])
     modo = st.radio("Modo", ["Panel de control", "Predictor", "Analizador por lista", "Validador histórico", "Analyzer"])
     mostrar_debug = st.toggle("🔧 Mostrar diagnóstico técnico", value=False)
 
@@ -15266,6 +15266,11 @@ with load_status:
     st.caption("✅ Datos preparados. Las siguientes cargas deberían ir más rápido por caché.")
 
 load_status.update(label=f"✅ Datos listos · {len(db)} jugadores cargados", state="complete", expanded=False)
+
+# v23.46.5: Challenger visible como circuito independiente.
+# Para validar/simular se usa motor ATP, pero leyendo datos/históricos de Challenger.
+circuito_sim_bt = "ATP" if str(circuito).upper().strip() == "CHALLENGER" else circuito
+
 
 if not db:
     st.error("No se encontraron jugadores. Revisa carpetas y archivos.")
@@ -16375,10 +16380,10 @@ elif modo == "Validador histórico":
         surface_filter = st.selectbox("Superficie histórica", ["Todas","Hard","Clay","Grass"])
         max_matches = st.number_input("Máx partidos a validar", 10, 5000, 500, 50)
         sims_bt = st.select_slider("Simulaciones por partido", [300,500,1000,2000], value=500)
-    st.info(f"Históricos cargados: {len(hist_df):,} partidos.")
+    st.info(f"Históricos cargados ({circuito}): {len(hist_df):,} partidos.")
     if st.button("🚀 EJECUTAR VALIDACIÓN", width='stretch'):
         with st.spinner("Validando partidos históricos..."):
-            val = validar_historico(db,hist_df,circuito,surface_filter,int(max_matches),int(sims_bt))
+            val = validar_historico(db,hist_df,circuito_sim_bt,surface_filter,int(max_matches),int(sims_bt))
         if val.empty:
             st.error("No se pudieron emparejar partidos.")
             st.stop()
@@ -16417,10 +16422,10 @@ else:
         max_matches = st.number_input("Máx partidos", 50, 5000, 1000, 100)
         sims_bt = st.select_slider("Simulaciones por partido", [300,500,1000], value=500)
         min_casos = st.number_input("Mínimo casos por segmento", 5, 200, 25, 5)
-    st.info("Este modo busca patrones históricos por mercado, superficie, ranking gap y perfiles.")
+    st.info(f"Este modo busca patrones históricos por mercado, superficie, ranking gap y perfiles. Circuito activo: {circuito}")
     if st.button("🚀 EJECUTAR ANALYZER", width='stretch'):
         with st.spinner("Generando validación base para Analyzer..."):
-            val = validar_historico(db,hist_df,circuito,surface_filter,int(max_matches),int(sims_bt))
+            val = validar_historico(db,hist_df,circuito_sim_bt,surface_filter,int(max_matches),int(sims_bt))
         if val.empty:
             st.error("No se pudieron emparejar partidos.")
             st.stop()
