@@ -4676,6 +4676,112 @@ def crear_analyzer_tables(val, min_casos=20):
 
 
 # =========================================================
+# v23.46.3 Backtest Oficial / Observar sobre históricos
+# No toca motor Over ni simulaciones. Solo clasifica las filas ya validadas
+# para medir qué habría pasado con señales tipo OFICIAL y OBSERVAR.
+# =========================================================
+def _bt_safe_float(x, default=0.0):
+    try:
+        if x is None or pd.isna(x):
+            return default
+        return float(x)
+    except Exception:
+        return default
+
+
+def _bt_signal_rows_from_val_row(row, circuito):
+    signals = []
+
+    fav_prob = max(
+        _bt_safe_float(row.get("ModelWinnerProbCal", 0.5), 0.5),
+        1.0 - _bt_safe_float(row.get("ModelWinnerProbCal", 0.5), 0.5),
+    )
+    over17 = _bt_safe_float(row.get("ModelOver17", 0.0), 0.0)
+    over18 = _bt_safe_float(row.get("ModelOver18", 0.0), 0.0)
+    over19 = _bt_safe_float(row.get("ModelOver19", 0.0), 0.0)
+    over20 = _bt_safe_float(row.get("ModelOver20", 0.0), 0.0)
+    fav_set = _bt_safe_float(row.get("ModelFavWinsSet", 0.0), 0.0)
+    three_sets = _bt_safe_float(row.get("Model3Sets", 0.0), 0.0)
+
+    def add(tipo, mercado, prob, real_hit, motivo):
+        signals.append({
+            "Tipo seguimiento": tipo,
+            "Mercado": mercado,
+            "Probabilidad modelo": float(prob),
+            "Acierto": bool(real_hit),
+            "Motivo regla": motivo,
+            "Date": row.get("Date", ""),
+            "Surface": row.get("Surface", ""),
+            "Partido histórico": f"{row.get('WinnerHist','')} vs {row.get('LoserHist','')}",
+            "ResultadoScore": row.get("ResultadoScore", ""),
+            "RealGames": row.get("RealGames", np.nan),
+            "WinnerHist": row.get("WinnerHist", ""),
+            "LoserHist": row.get("LoserHist", ""),
+            "RankGap": row.get("RankGap", np.nan),
+        })
+
+    # OFICIAL: zona jugable estricta usada por el selector/analyzer actual.
+    if fav_prob >= 0.70:
+        add("OFICIAL", "ML favorito", fav_prob, row.get("CalFavWasWinner", False), "ML favorito >=70%")
+
+    if over18 >= 0.80:
+        add("OFICIAL", "Over 18.5", over18, row.get("RealOver18", False), "Over 18.5 >=80%")
+
+    # WTA Over17 en la app queda como watch/premium watch, no oficial duro.
+    if str(circuito).upper() == "WTA" and over17 >= 0.80:
+        add("OBSERVAR", "WTA Over 17.5", over17, row.get("RealOver17", False), "WTA Over17 >=80% watch")
+
+    # OBSERVAR: señales interesantes que no pasan a oficial sin confirmación extra.
+    if 0.76 <= over18 < 0.80:
+        add("OBSERVAR", "Over 18.5", over18, row.get("RealOver18", False), "Over18 76%-79.9%")
+
+    if over19 >= 0.74:
+        add("OBSERVAR", "Over 19.5", over19, row.get("RealOver19", False), "Over19 >=74% secundario")
+
+    if over20 >= 0.74:
+        add("OBSERVAR", "Over 20.5", over20, row.get("RealOver20", False), "Over20 >=74% secundario")
+
+    if 0.84 <= fav_set < 0.94:
+        add("OBSERVAR", "Favorito gana al menos 1 set", fav_set, row.get("RealFavWinsSet", False), "Gana-set 84%-93.9%")
+    elif fav_set >= 0.94 and fav_prob >= 0.68:
+        add("OFICIAL", "Favorito gana al menos 1 set", fav_set, row.get("RealFavWinsSet", False), "Gana-set elite >=94% + ML >=68%")
+
+    if three_sets >= 0.55:
+        add("OBSERVAR", "3 sets", three_sets, row.get("Real3Sets", False), "3 sets >=55% solo observar")
+
+    return signals
+
+
+def crear_backtest_oficial_observar(val, circuito, min_casos=10):
+    if val is None or val.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    rows = []
+    for _, r in val.iterrows():
+        rows.extend(_bt_signal_rows_from_val_row(r, circuito))
+
+    detail = pd.DataFrame(rows)
+    if detail.empty:
+        return pd.DataFrame(), detail
+
+    summary = (
+        detail.groupby(["Tipo seguimiento", "Mercado"], dropna=False)
+        .agg(
+            Casos=("Acierto", "count"),
+            Aciertos=("Acierto", "sum"),
+            Porcentaje_acierto=("Acierto", "mean"),
+            Prob_media_modelo=("Probabilidad modelo", "mean"),
+            Games_media_real=("RealGames", "mean"),
+        )
+        .reset_index()
+    )
+    summary = summary[summary["Casos"] >= int(min_casos)].copy()
+    if not summary.empty:
+        summary = summary.sort_values(["Tipo seguimiento", "Porcentaje_acierto", "Casos"], ascending=[True, False, False])
+    return summary, detail
+
+
+# =========================================================
 # v22.2 MARKET SANITY CAPS
 # =========================================================
 
@@ -16307,6 +16413,25 @@ else:
             st.error("No se pudieron emparejar partidos.")
             st.stop()
         tables = crear_analyzer_tables(val, int(min_casos))
+        bt_summary, bt_detail = crear_backtest_oficial_observar(val, circuito, int(min_casos))
+        st.divider()
+        st.subheader("🎯 Backtest OFICIAL vs OBSERVAR")
+        if bt_summary.empty:
+            st.warning("No hay suficientes señales OFICIAL/OBSERVAR con el mínimo de casos seleccionado.")
+        else:
+            bt_show = bt_summary.copy()
+            for _c in ["Porcentaje_acierto", "Prob_media_modelo"]:
+                if _c in bt_show.columns:
+                    bt_show[_c] = bt_show[_c].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "")
+            if "Games_media_real" in bt_show.columns:
+                bt_show["Games_media_real"] = bt_show["Games_media_real"].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
+            st.dataframe(bt_show, width='stretch', hide_index=True)
+            st.download_button(
+                "⬇️ Descargar backtest Oficial/Observar CSV",
+                data=bt_detail.to_csv(index=False).encode("utf-8"),
+                file_name="backtest_oficial_observar_tennis_ia.csv",
+                mime="text/csv"
+            )
         st.divider()
         st.subheader("🏆 Resumen general")
         g1,g2,g3,g4 = st.columns(4)
