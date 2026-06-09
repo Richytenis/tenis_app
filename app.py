@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.46.8-excel-score-apuesta-pro"
+APP_VERSION = "v23.46.9-ta-cache-overwrite-fix"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11589,8 +11589,53 @@ def _ta_profile_cache_find(player_name):
     return None
 
 
+def _ta_profile_cache_num_matches(item):
+    """Extrae nº de partidos de un perfil guardado/parseado de forma robusta."""
+    try:
+        if not isinstance(item, dict):
+            return 0
+        for k in ["matches", "n"]:
+            v = item.get(k, "")
+            if isinstance(v, (int, float)) and not pd.isna(v):
+                return int(v)
+            m = re.search(r"\d+", str(v or ""))
+            if m:
+                return int(m.group(0))
+        summary = str(item.get("summary", "") or "")
+        m = re.search(r"n\s*=\s*(\d+)", summary, flags=re.I) or re.search(r"(\d+)\s+partidos", summary, flags=re.I)
+        return int(m.group(1)) if m else 0
+    except Exception:
+        return 0
+
+
+def _ta_profile_cache_should_replace(old_item, new_item, force_manual=True):
+    """Decide si una ficha nueva debe pisar la guardada.
+    v23.46.9: si el usuario pega una ficha mejor, debe reemplazar perfiles parciales n=0.
+    """
+    if not isinstance(old_item, dict):
+        return True
+    old_n = _ta_profile_cache_num_matches(old_item)
+    new_n = _ta_profile_cache_num_matches(new_item)
+    old_raw_len = len(str(old_item.get("raw_text", "") or ""))
+    new_raw_len = len(str(new_item.get("raw_text", "") or ""))
+
+    # Regla principal: una ficha con más partidos siempre mejora una ficha parcial.
+    if new_n > old_n:
+        return True
+    # Si la guardada no tenía partidos, permite reemplazar con texto más completo aunque el parser dé igual.
+    if old_n <= 0 and new_raw_len >= old_raw_len:
+        return True
+    # Si el usuario pega ficha manual, permitimos actualizar el texto mientras no sea claramente peor.
+    if force_manual and new_n >= old_n and new_raw_len >= max(80, int(old_raw_len * 0.75)):
+        return True
+    return False
+
+
 def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
-    """Guarda ficha válida con fecha. No guarda si no coincide con el jugador esperado."""
+    """Guarda ficha válida con fecha y sobrescribe perfiles parciales con fichas mejores.
+    v23.46.9: antes podía quedar guardado un perfil n=0 y no pisarse al pegar una ficha completa.
+    Ahora guarda también bajo la clave del jugador esperado, para que la búsqueda exacta recupere la ficha buena.
+    """
     raw_text = str(raw_text or "").strip()
     if len(raw_text) < 80:
         return False, "sin texto suficiente"
@@ -11603,14 +11648,23 @@ def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
     ok, msg = _ficha_corresponde_jugador(d, expected_player)
     if not ok:
         return False, msg
+
     parsed_obj = d.get("tennisabstract") or d.get("flashscore") or {}
     player = str(parsed_obj.get("player") or expected_player or "").strip()
-    key = _ta_profile_cache_key(player or expected_player)
-    if not key:
+    expected_player = str(expected_player or player or "").strip()
+
+    # Claves donde guardamos: nombre esperado del partido y nombre detectado de la ficha.
+    # Esto evita que quede una entrada antigua exacta (n=0) tapando una nueva buena con país/formato distinto.
+    keys = []
+    for nm in [expected_player, player]:
+        k = _ta_profile_cache_key(nm)
+        if k and k not in keys:
+            keys.append(k)
+    if not keys:
         return False, "sin nombre"
-    cache = _ta_profile_cache_load()
-    cache[key] = {
-        "player": player,
+
+    new_item = {
+        "player": player or expected_player,
         "expected_player": expected_player,
         "source": parsed_obj.get("source", "Tennis Abstract/Flashscore"),
         "uploaded_at": _ta_profile_cache_today(),
@@ -11622,10 +11676,27 @@ def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
         "three_rate": parsed_obj.get("three_rate", ""),
         "elo": parsed_obj.get("elo", ""),
     }
+
+    cache = _ta_profile_cache_load()
+    replaced = 0
+    skipped = 0
+    for key in keys:
+        old_item = cache.get(key)
+        if _ta_profile_cache_should_replace(old_item, new_item, force_manual=True):
+            cache[key] = new_item.copy()
+            replaced += 1
+        else:
+            skipped += 1
+
     ok_save, info = _ta_profile_cache_save(cache)
     if not ok_save:
         return False, f"no guardado: {info}"
-    return True, f"perfil guardado para {player} ({cache[key]['uploaded_at']})"
+
+    n = _ta_profile_cache_num_matches(new_item)
+    extra = f" · n={n}" if n else " · perfil parcial"
+    if skipped and not replaced:
+        return True, f"perfil ya era igual/mejor para {player or expected_player}{extra} ({new_item['uploaded_at']})"
+    return True, f"perfil guardado/actualizado para {player or expected_player}{extra} ({new_item['uploaded_at']})"
 
 
 def _ta_profile_cache_status_text(player_name):
