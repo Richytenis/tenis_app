@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.47.0-over-explosivo-ranking"
+APP_VERSION = "v23.47.1-manual-ta-profile-search"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -1846,6 +1846,87 @@ def render_auto_profile_finder_v23420(current_df=None, global_df=None):
             if not_found:
                 st.markdown("##### ⚠️ No encontrados con suficiente seguridad")
                 st.dataframe(pd.DataFrame(not_found), width='stretch', hide_index=True)
+            # =========================================================
+            # v23.47.1 MANUAL TA PROFILE SEARCH / SAVE
+            # Permite corregir a mano jugadores no encontrados o mal emparejados.
+            # No toca motor Over: solo guarda un perfil en cache bajo el nombre solicitado.
+            # =========================================================
+            st.markdown("##### ✍️ Buscar/guardar ficha manual")
+            st.caption("Úsalo para casos como 'R. Lawlor', 'Y. Bu' o nombres abreviados. Escribe el nombre correcto de TennisAbstract, elige candidato y guarda. Quedará asociado al jugador solicitado.")
+
+            manual_options = [x.get("Jugador", "") for x in (not_found or []) if x.get("Jugador", "")]
+            if not manual_options:
+                manual_options = list(missing)
+            cm1, cm2 = st.columns([1, 1.4])
+            with cm1:
+                manual_requested = st.selectbox("Jugador de tu lista", manual_options, key="manual_ta_requested_v23471")
+            with cm2:
+                manual_query = st.text_input("Nombre correcto en TennisAbstract", value=manual_requested, key="manual_ta_query_v23471", placeholder="Ej: Oliver Okonkwo, Felix Balshaw...")
+
+            if manual_query and str(manual_query).strip():
+                try:
+                    ta_manual_df, status_manual = _auto_profile_download_ta_elo_v23420(circuito_busqueda)
+                    if ta_manual_df.empty:
+                        st.warning(f"No pude abrir TennisAbstract para búsqueda manual: {status_manual}")
+                    else:
+                        candidates = []
+                        q = str(manual_query).strip()
+                        for row in ta_manual_df.to_dict("records"):
+                            cand = row.get("Player", "")
+                            sc = similitud_nombre(q, cand)
+                            # Refuerzo si coincide apellido o apellido+inicial; capamos si apellido distinto.
+                            ai_q, ai_c = apellido_inicial_key(q), apellido_inicial_key(cand)
+                            if ai_q and ai_c and ai_q == ai_c:
+                                sc = max(sc, 0.995)
+                            sq, sca = surname_key(q), surname_key(cand)
+                            if sq and sca and sq == sca:
+                                sc = max(sc, 0.92)
+                            elif sq and sca and sq != sca:
+                                sc = min(sc, 0.89)
+                            if sc >= 0.45:
+                                rr = dict(row)
+                                rr["ManualScore"] = round(float(sc), 3)
+                                candidates.append(rr)
+                        candidates = sorted(candidates, key=lambda r: float(r.get("ManualScore", 0)), reverse=True)[:8]
+                        if candidates:
+                            labels = [f"{r.get('Player','')} · score {r.get('ManualScore','')} · Elo {r.get('Elo','N/A')}" for r in candidates]
+                            selected_label = st.selectbox("Candidato TennisAbstract", labels, key="manual_ta_candidate_v23471")
+                            selected_idx = labels.index(selected_label)
+                            selected = dict(candidates[selected_idx])
+                            preview_cols = ["Player", "ManualScore", "Elo", "Hard", "Clay", "Grass", "Rank", "PlayerUrl"]
+                            st.dataframe(pd.DataFrame([selected])[[c for c in preview_cols if c in selected]], width='stretch', hide_index=True)
+                            if st.button("💾 Guardar ficha manual para este jugador", key="manual_ta_save_v23471", use_container_width=True):
+                                row_save = dict(selected)
+                                ta_player = row_save.get("Player", "")
+                                # Clave importante: guardamos bajo el nombre de la lista para que el modelo lo encuentre exacto.
+                                row_save["RequestedName"] = manual_requested
+                                row_save["Player"] = manual_requested
+                                row_save["TAPlayer"] = ta_player
+                                row_save["MatchScore"] = row_save.get("ManualScore", 1.0)
+                                row_save["SourceScore"] = max(float(row_save.get("SourceScore", 0.90) or 0.90), float(row_save.get("ManualScore", 0.90) or 0.90), 0.96)
+                                row_save["Source"] = f"Manual TA confirmado: {ta_player}"
+                                row_save["FichaTA"] = "Manual OK"
+                                # También guardamos el nombre real TA como alias adicional por si aparece con nombre completo en próximas tandas.
+                                alias_save = dict(selected)
+                                alias_save["RequestedName"] = manual_requested
+                                alias_save["TAPlayer"] = ta_player
+                                alias_save["MatchScore"] = 1.0
+                                alias_save["SourceScore"] = max(float(alias_save.get("SourceScore", 0.90) or 0.90), 0.96)
+                                alias_save["Source"] = f"Manual TA alias desde {manual_requested}"
+                                alias_save["FichaTA"] = "Manual OK"
+                                saved_manual = _auto_profile_write_cache_v23420(circuito_busqueda, [row_save, alias_save])
+                                try:
+                                    st.cache_data.clear()
+                                except Exception:
+                                    pass
+                                if saved_manual > 0:
+                                    st.success(f"Guardado manual: {manual_requested} → {ta_player}. Reejecuta el análisis o pulsa Rerun.")
+                                else:
+                                    st.warning("No se pudo guardar la ficha manual.")
+                        else:
+                            st.warning("No encontré candidatos suficientes. Prueba con nombre completo sin abreviar.")
+                except Exception as e:
+                    st.error(f"Error en búsqueda manual: {type(e).__name__}: {e}")
 
     with st.expander("Cómo usarlo", expanded=False):
         st.markdown("""
@@ -13661,22 +13742,6 @@ def _modificadores_score_apuesta_v23468(row, estrategia, base):
     if "wta" in torneo and "over" in mercado and "17" not in mercado:
         mod -= 3; notas.append("wta over prudente")
 
-    # v23.47.0: si el análisis de Excel detecta Over Explosivo, sube ranking.
-    # Solo ordena el Excel; NO cambia fórmula, mercado ni probabilidad del motor Over.
-    try:
-        oe_score = float(row.get("Score Over Explosivo", 0) or 0)
-        oe_label = str(row.get("Over Explosivo", ""))
-        if "over" in mercado and oe_score >= 70:
-            mod += 10; notas.append("over explosivo")
-        elif "over" in mercado and oe_score >= 60:
-            mod += 6; notas.append("over subible")
-        elif "over" in mercado and oe_score >= 50:
-            mod += 3; notas.append("over 19.5 viable")
-        if "EXTREMO" in oe_label.upper():
-            mod += 4; notas.append("perfil extremo")
-    except Exception:
-        pass
-
     return round(mod, 2), "; ".join(notas)
 
 
@@ -13717,7 +13782,7 @@ def aplicar_ranking_valor_apuesta_v23467(picks):
         pass
 
     # Columnas nuevas al principio.
-    first = ["Ranking apuesta", "Prioridad apuesta", "Score apuesta", "Over Explosivo", "Score Over Explosivo", "Línea Over sugerida", "Rango juegos esperado", "Ajuste ranking", "Motivo ranking"]
+    first = ["Ranking apuesta", "Prioridad apuesta", "Score apuesta", "Ajuste ranking", "Motivo ranking"]
     cols = first + [c for c in out.columns if c not in first]
     return out[cols]
 
@@ -13728,7 +13793,7 @@ def crear_top_apuestas_df_v23467(picks_df, n=10):
     df = picks_df.copy()
     if "Score apuesta" not in df.columns:
         df = aplicar_ranking_valor_apuesta_v23467(df)
-    keep = [c for c in ["Ranking apuesta", "Prioridad apuesta", "Score apuesta", "Over Explosivo", "Score Over Explosivo", "Línea Over sugerida", "Rango juegos esperado", "Hora", "Fecha", "Torneo", "Superficie", "Partido", "Acción", "Mercado", "Prob.", "Confianza", "Motivo"] if c in df.columns]
+    keep = [c for c in ["Ranking apuesta", "Prioridad apuesta", "Score apuesta", "Hora", "Fecha", "Torneo", "Superficie", "Partido", "Acción", "Mercado", "Prob.", "Confianza", "Motivo"] if c in df.columns]
     return df.head(int(n))[keep].copy()
 
 
@@ -13782,200 +13847,13 @@ def crear_combinada_recomendada_df_v23467(picks_df):
             "Motivo": "No hay 2 selecciones JUGAR suficientemente fuertes. Mejor no forzar.",
         }])
 
-    keep = [c for c in ["Ranking apuesta", "Prioridad apuesta", "Score apuesta", "Over Explosivo", "Score Over Explosivo", "Línea Over sugerida", "Rango juegos esperado", "Hora", "Torneo", "Superficie", "Partido", "Acción", "Mercado", "Prob.", "Confianza"] if c in seleccion.columns]
+    keep = [c for c in ["Ranking apuesta", "Prioridad apuesta", "Score apuesta", "Hora", "Torneo", "Superficie", "Partido", "Acción", "Mercado", "Prob.", "Confianza"] if c in seleccion.columns]
     out = seleccion[keep].copy().reset_index(drop=True)
     out.insert(0, "Selección", ["Pick 1", "Pick 2"][:len(out)])
     out.insert(1, "Estrategia", estrategia)
     out.insert(2, "Estado", "COMBINADA RECOMENDADA")
     return out
 
-
-
-# =========================================================
-# v23.47.0 OVER EXPLOSIVO RANKING
-# Objetivo: detectar Over 18.5 fuertes que pueden acabar muy por encima
-# para estudiar líneas 19.5 / 20.5 / 21.5 / 22.5.
-# No toca motor Over: solo añade columnas y hojas al Excel.
-# =========================================================
-
-def _leer_prob_col_v23470(row, *cols, default=0.0):
-    for c in cols:
-        try:
-            if c in row.index:
-                v = row.get(c)
-                if v is not None and str(v).strip() != "" and str(v).lower() != "nan":
-                    return _prob_to_float_v23467(v)
-        except Exception:
-            pass
-    return float(default or 0.0)
-
-
-def _over_explosivo_row_v23470(row):
-    mercado = str(row.get("Mercado", row.get("🎯 Mercado más probable", ""))).lower()
-    accion = str(row.get("Acción", row.get("🎯 Acción final", ""))).upper()
-    confianza = str(row.get("Confianza", row.get("🎯 Confianza acierto", ""))).upper()
-    superficie = str(row.get("Superficie", "")).lower()
-    motivo = str(row.get("Motivo", row.get("🎯 Motivo acierto", ""))).lower()
-    txt = " ".join([mercado, accion, confianza, superficie, motivo])
-
-    if "over" not in mercado:
-        return {
-            "Over Explosivo": "",
-            "Score Over Explosivo": "",
-            "Línea Over sugerida": "",
-            "Rango juegos esperado": "",
-            "Motivo Over Explosivo": "",
-        }
-
-    prob18 = _leer_prob_col_v23470(row, "Over 18.5", "Prob mercado recomendado", "Prob.", "🎯 Prob máxima", default=0.0)
-    prob19 = _leer_prob_col_v23470(row, "Over 19.5", default=max(prob18 - 0.10, 0.0))
-    if prob19 <= 0 and prob18 > 0:
-        prob19 = max(prob18 - 0.10, 0.0)
-
-    under22 = _leer_prob_col_v23470(row, "Under 22.5", default=0.50)
-    over22_proxy = max(0.0, min(1.0, 1.0 - under22))
-    ch3 = _leer_prob_col_v23470(row, "🧠 CH 3 sets", "3 sets", "Partido a 3 sets", default=0.0)
-    set1 = _leer_prob_col_v23470(row, "🧠 CH Set J1", default=0.0)
-    set2 = _leer_prob_col_v23470(row, "🧠 CH Set J2", default=0.0)
-    set_balance = max(set1, set2, (set1 + set2) / 2.0)
-    paliza = _leer_prob_col_v23470(row, "🧠 CH Riesgo paliza", default=0.0)
-    ch_over = _leer_prob_col_v23470(row, "🧠 CH Over18 combinado", default=0.0)
-
-    # Score operativo 0-100 aprox. No es probabilidad, solo ranking.
-    score = 0.0
-    score += prob18 * 24.0
-    score += prob19 * 30.0
-    score += over22_proxy * 22.0
-    score += max(ch3, set_balance * 0.75) * 16.0
-    score += ch_over * 8.0
-    score -= paliza * 18.0
-
-    if "JUGAR" in accion:
-        score += 7.0
-    elif "OBSERVAR" in accion:
-        score -= 5.0
-    if "MUY" in confianza and "ALTA" in confianza:
-        score += 5.0
-    elif "ALTA" in confianza:
-        score += 3.0
-    if "grass" in superficie or "hierba" in superficie:
-        score += 4.0
-    if "tierra" in superficie or "clay" in superficie:
-        score += 1.0
-    if any(w in txt for w in ["paliza", "2-0", "riesgo", "dudoso", "baja"]):
-        score -= 5.0
-
-    score = round(float(max(0.0, min(100.0, score))), 1)
-
-    if score >= 78 and prob19 >= 0.70 and over22_proxy >= 0.45:
-        label = "🚀 OVER EXTREMO"
-        linea = "Over 21.5 / mirar 22.5"
-        rango = "26+ juegos"
-    elif score >= 68 and prob19 >= 0.66:
-        label = "🔥 OVER EXPLOSIVO"
-        linea = "Over 20.5 / mirar 21.5"
-        rango = "23-25 juegos"
-    elif score >= 58 and prob19 >= 0.60:
-        label = "✅ OVER SUBIBLE"
-        linea = "Over 19.5 / mirar 20.5"
-        rango = "21-23 juegos"
-    elif score >= 48:
-        label = "🟢 OVER 19.5 VIABLE"
-        linea = "Over 19.5"
-        rango = "20-22 juegos"
-    else:
-        label = "🟡 OVER NORMAL"
-        linea = "Over 18.5 / prudente 19.5"
-        rango = "19-21 juegos"
-
-    motivos = []
-    motivos.append(f"O18 {prob18:.0%}")
-    motivos.append(f"O19 est. {prob19:.0%}")
-    motivos.append(f"O22 proxy {over22_proxy:.0%}")
-    if ch3:
-        motivos.append(f"3 sets {ch3:.0%}")
-    if set_balance:
-        motivos.append(f"set competido {set_balance:.0%}")
-    if paliza:
-        motivos.append(f"paliza {paliza:.0%}")
-    if "grass" in superficie or "hierba" in superficie:
-        motivos.append("hierba")
-
-    return {
-        "Over Explosivo": label,
-        "Score Over Explosivo": score,
-        "Línea Over sugerida": linea,
-        "Rango juegos esperado": rango,
-        "Motivo Over Explosivo": "; ".join(motivos),
-    }
-
-
-def aplicar_over_explosivo_v23470(df):
-    if df is None or df.empty:
-        return df
-    out = df.copy()
-    try:
-        rows = [_over_explosivo_row_v23470(row) for _, row in out.iterrows()]
-        extra = pd.DataFrame(rows, index=out.index)
-        for c in extra.columns:
-            out[c] = extra[c]
-    except Exception:
-        for c in ["Over Explosivo", "Score Over Explosivo", "Línea Over sugerida", "Rango juegos esperado", "Motivo Over Explosivo"]:
-            if c not in out.columns:
-                out[c] = ""
-    return out
-
-
-def crear_over_explosivo_df_v23470(df, n=20):
-    if df is None or df.empty:
-        return pd.DataFrame()
-    out = aplicar_over_explosivo_v23470(df.copy())
-    mercado = out.get("Mercado", out.get("🎯 Mercado más probable", pd.Series([""] * len(out), index=out.index))).astype(str).str.lower()
-    out = out[mercado.str.contains("over", na=False)].copy()
-    if out.empty:
-        return pd.DataFrame()
-    try:
-        out["__oe"] = pd.to_numeric(out["Score Over Explosivo"], errors="coerce").fillna(0)
-        out = out.sort_values("__oe", ascending=False).drop(columns=["__oe"], errors="ignore")
-    except Exception:
-        pass
-    keep = [c for c in [
-        "Ranking apuesta", "Over Explosivo", "Score Over Explosivo", "Línea Over sugerida", "Rango juegos esperado",
-        "Hora", "Fecha", "Torneo", "Superficie", "Partido", "Acción", "Mercado", "Prob.", "Confianza", "Motivo Over Explosivo", "Motivo"
-    ] if c in out.columns]
-    return out.head(int(n))[keep].copy()
-
-
-def crear_combinada_over_explosivo_df_v23470(df):
-    if df is None or df.empty:
-        return pd.DataFrame([{"Estado": "NO APOSTAR", "Motivo": "No hay datos"}])
-    ox = crear_over_explosivo_df_v23470(df, n=10)
-    if ox.empty:
-        return pd.DataFrame([{"Estado": "NO APOSTAR", "Motivo": "No hay Overs candidatos"}])
-    accion = ox.get("Acción", pd.Series([""] * len(ox))).astype(str).str.upper()
-    strong = ox[accion.str.contains("JUGAR", na=False)].copy()
-    if strong.empty:
-        return pd.DataFrame([{"Estado": "NO APOSTAR", "Motivo": "No hay Over Explosivo JUGAR"}])
-    try:
-        strong["__oe"] = pd.to_numeric(strong["Score Over Explosivo"], errors="coerce").fillna(0)
-        strong = strong.sort_values("__oe", ascending=False).drop(columns=["__oe"], errors="ignore")
-    except Exception:
-        pass
-    rows, seen = [], set()
-    for _, r in strong.iterrows():
-        partido = str(r.get("Partido", ""))
-        if partido in seen:
-            continue
-        rows.append(r)
-        seen.add(partido)
-        if len(rows) >= 2:
-            break
-    if len(rows) < 2:
-        return pd.DataFrame([{"Estado": "NO APOSTAR", "Motivo": "Menos de 2 Over Explosivo JUGAR. No forzar."}])
-    out = pd.DataFrame(rows).reset_index(drop=True)
-    out.insert(0, "Selección", ["Pick 1", "Pick 2"][:len(out)])
-    out.insert(1, "Estado", "COMBINADA OVER EXPLOSIVO")
-    return out
 
 def crear_picks_limpios_df(df):
     """Hoja simple para decidir: una fila por partido y solo columnas útiles."""
@@ -14001,23 +13879,6 @@ def crear_picks_limpios_df(df):
     })
     if "Mercado" in picks.columns:
         picks["Mercado"] = picks["Mercado"].apply(_limpiar_texto_excel_cell)
-
-    # v23.47.0: añadir señales de Over Explosivo al Excel limpio usando columnas técnicas si existen.
-    try:
-        tech_cols = [
-            "Over 18.5", "Over 19.5", "Under 22.5", "Prob mercado recomendado",
-            "🧠 CH Over18 combinado", "🧠 CH Set J1", "🧠 CH Set J2", "🧠 CH 3 sets", "🧠 CH Riesgo paliza"
-        ]
-        tmp = picks.copy()
-        for _c in tech_cols:
-            if _c in out.columns and _c not in tmp.columns:
-                tmp[_c] = out[_c].values
-        tmp = aplicar_over_explosivo_v23470(tmp)
-        for _c in ["Over Explosivo", "Score Over Explosivo", "Línea Over sugerida", "Rango juegos esperado", "Motivo Over Explosivo"]:
-            if _c in tmp.columns:
-                picks[_c] = tmp[_c].values
-    except Exception:
-        pass
 
     def _score(row):
         accion = str(row.get("Acción", "")).upper()
@@ -14115,8 +13976,6 @@ def batch_excel_bytes(df):
         picks_df.to_excel(writer, index=False, sheet_name="PICKS LIMPIOS")
         try:
             crear_top_apuestas_df_v23467(picks_df, n=10).to_excel(writer, index=False, sheet_name="TOP APUESTAS")
-            crear_over_explosivo_df_v23470(picks_df, n=20).to_excel(writer, index=False, sheet_name="OVER EXPLOSIVO")
-            crear_combinada_over_explosivo_df_v23470(picks_df).to_excel(writer, index=False, sheet_name="COMBI OVER EXPLOSIVO")
             crear_combinada_recomendada_df_v23467(picks_df).to_excel(writer, index=False, sheet_name="COMBINADA RECOMENDADA")
         except Exception:
             pass
@@ -14144,8 +14003,6 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
         picks_df.to_excel(writer, index=False, sheet_name="PICKS LIMPIOS")
         try:
             crear_top_apuestas_df_v23467(picks_df, n=10).to_excel(writer, index=False, sheet_name="TOP APUESTAS")
-            crear_over_explosivo_df_v23470(picks_df, n=20).to_excel(writer, index=False, sheet_name="OVER EXPLOSIVO")
-            crear_combinada_over_explosivo_df_v23470(picks_df).to_excel(writer, index=False, sheet_name="COMBI OVER EXPLOSIVO")
             crear_combinada_recomendada_df_v23467(picks_df).to_excel(writer, index=False, sheet_name="COMBINADA RECOMENDADA")
         except Exception:
             pass
