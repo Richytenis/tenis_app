@@ -2,14 +2,14 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import random, re, os, glob, unicodedata, time, io, gc
+import random, re, os, glob, unicodedata, time, io, gc, json
 import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.47.1-manual-ta-profile-search"
+APP_VERSION = "v23.47.3-ta-cache-7d-refresh"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -63,6 +63,117 @@ def similitud_nombre(a, b):
             score = max(score, 0.94)
 
     return max(score, SequenceMatcher(None, ac, bc).ratio())
+
+
+# =========================================================
+# v23.47.2 TA ALIAS MANAGER
+# Evita que el mismo jugador aparezca como faltante por variantes:
+#   Y. Bu -> Bu Yunchaokete
+#   T. Kokkinakis -> Thanasi Kokkinakis
+# No toca el motor Over; solo normaliza nombres antes de buscar perfiles.
+# =========================================================
+
+TA_ALIASES_PATH = os.path.join("datos", "ta_aliases.json")
+
+
+def _ta_alias_ensure_dir():
+    try:
+        os.makedirs(os.path.dirname(TA_ALIASES_PATH), exist_ok=True)
+    except Exception:
+        pass
+
+
+def _ta_alias_key(name):
+    return limpiar(name)
+
+
+@st.cache_data(show_spinner=False)
+def _ta_alias_load_cached(cache_version=APP_VERSION):
+    try:
+        if not os.path.exists(TA_ALIASES_PATH):
+            return {}
+        with open(TA_ALIASES_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        out = {}
+        for k, v in data.items():
+            kk = _ta_alias_key(k)
+            vv = normalizar_texto(v)
+            if kk and vv:
+                out[kk] = vv
+        return out
+    except Exception:
+        return {}
+
+
+def _ta_alias_load():
+    return dict(_ta_alias_load_cached())
+
+
+def _ta_alias_save(alias_map):
+    _ta_alias_ensure_dir()
+    try:
+        clean = {}
+        for k, v in (alias_map or {}).items():
+            kk = _ta_alias_key(k)
+            vv = normalizar_texto(v)
+            if kk and vv:
+                clean[kk] = vv
+        with open(TA_ALIASES_PATH, "w", encoding="utf-8") as f:
+            json.dump(clean, f, ensure_ascii=False, indent=2, sort_keys=True)
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+        return True, f"{len(clean)} alias guardados"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def _ta_alias_resolve(name):
+    """Devuelve el nombre canónico si existe alias; si no, devuelve el original."""
+    raw = normalizar_texto(name)
+    if not raw:
+        return raw
+    aliases = _ta_alias_load_cached()
+    seen = set()
+    cur = raw
+    # Permite alias encadenados sin bucles.
+    for _ in range(4):
+        k = _ta_alias_key(cur)
+        if not k or k in seen or k not in aliases:
+            break
+        seen.add(k)
+        cur = aliases[k]
+    return normalizar_texto(cur) or raw
+
+
+def _ta_alias_add(alias_name, canonical_name):
+    alias_name = normalizar_texto(alias_name)
+    canonical_name = normalizar_texto(canonical_name)
+    if not alias_name or not canonical_name:
+        return False, "alias o nombre correcto vacío"
+    if _ta_alias_key(alias_name) == _ta_alias_key(canonical_name):
+        return False, "el alias y el nombre correcto son iguales"
+    m = _ta_alias_load()
+    m[_ta_alias_key(alias_name)] = canonical_name
+    return _ta_alias_save(m)
+
+
+def _ta_alias_debug_rows(names):
+    aliases = _ta_alias_load_cached()
+    rows = []
+    for n in names or []:
+        k = _ta_alias_key(n)
+        canon = aliases.get(k, "")
+        rows.append({
+            "Jugador detectado": n,
+            "Alias guardado": canon,
+            "Nombre usado por la app": canon or n,
+            "Estado alias": "✅ Alias" if canon else "—"
+        })
+    return rows
 
 def buscar_columna(df, posibles):
     cols = {limpiar(c): c for c in df.columns}
@@ -277,11 +388,12 @@ def leer_archivo_stats(path, tipo):
     return stats
 
 def buscar_stats(nombre, stats_map):
-    nid = limpiar(nombre)
+    nombre_alias = _ta_alias_resolve(nombre)
+    nid = limpiar(nombre_alias)
     if nid in stats_map: return stats_map[nid]
     mejor, best = None, 0
     for sid, data in stats_map.items():
-        score = max(similitud_nombre(nombre, sid), similitud_nombre(nombre, data.get("raw_name_stats", sid)))
+        score = max(similitud_nombre(nombre_alias, sid), similitud_nombre(nombre, sid), similitud_nombre(nombre_alias, data.get("raw_name_stats", sid)), similitud_nombre(nombre, data.get("raw_name_stats", sid)))
         if score > best:
             best, mejor = score, data
     if mejor is not None and best >= 0.72:
@@ -1712,12 +1824,13 @@ def _auto_profile_match_names_v23420(missing_names, ta_df, min_score=0.86):
     found, not_found = [], []
     ta_rows = ta_df.to_dict("records")
     for name in missing_names:
+        search_name = _ta_alias_resolve(name)
         best = None
         best_score = 0.0
         for row in ta_rows:
             cand = row.get("Player", "")
-            score = similitud_nombre(name, cand)
-            ai1, ai2 = apellido_inicial_key(name), apellido_inicial_key(cand)
+            score = similitud_nombre(search_name, cand)
+            ai1, ai2 = apellido_inicial_key(search_name, cand)
             if ai1 and ai2 and ai1 == ai2:
                 score = max(score, 0.98)
             if score > best_score:
@@ -1726,7 +1839,9 @@ def _auto_profile_match_names_v23420(missing_names, ta_df, min_score=0.86):
         if best is not None and best_score >= min_score:
             r = dict(best)
             r["RequestedName"] = name
-            r["Player"] = best.get("Player", name)
+            if search_name != name:
+                r["AliasUsado"] = search_name
+            r["Player"] = best.get("Player", search_name or name)
             r["MatchScore"] = round(float(best_score), 3)
             r["SourceScore"] = max(float(r.get("SourceScore", 0.90) or 0.90), float(best_score))
             found.append(r)
@@ -1773,6 +1888,15 @@ def _auto_profile_known_clean_v23420(circuito):
             known.update(cache["Player"].dropna().astype(str).apply(limpiar).tolist())
     except Exception:
         pass
+    # v23.47.2: si Y. Bu -> Bu Yunchaokete y Bu ya existe, Y. Bu también cuenta como OK.
+    try:
+        aliases = _ta_alias_load_cached()
+        known_now = set(known)
+        for alias_key, canonical in aliases.items():
+            if limpiar(canonical) in known_now:
+                known.add(alias_key)
+    except Exception:
+        pass
     return {x for x in known if x}
 
 
@@ -1810,7 +1934,33 @@ def render_auto_profile_finder_v23420(current_df=None, global_df=None):
     m3.metric("Fichas a buscar", len(missing))
 
     with st.expander("Ver fichas que la app intentará buscar", expanded=len(missing) > 0):
-        st.dataframe(pd.DataFrame({"Jugador": missing}), width='stretch', hide_index=True)
+        st.dataframe(pd.DataFrame(_ta_alias_debug_rows(missing)), width='stretch', hide_index=True)
+
+    # v23.47.2: gestor manual de alias para casos tipo Y. Bu -> Bu Yunchaokete.
+    if missing:
+        with st.expander("🔗 Corregir alias manualmente", expanded=False):
+            st.caption("Usa esto cuando la app pide una ficha que ya tienes guardada con otro nombre. Ejemplo: Y. Bu → Bu Yunchaokete.")
+            c_alias1, c_alias2 = st.columns([1, 1.3])
+            with c_alias1:
+                alias_src = st.selectbox("Jugador detectado", missing, key="ta_alias_src_v23472")
+            with c_alias2:
+                alias_dst = st.text_input("Nombre correcto guardado / TennisAbstract", value=_ta_alias_resolve(alias_src) if _ta_alias_resolve(alias_src) != alias_src else "", key="ta_alias_dst_v23472", placeholder="Ej: Bu Yunchaokete")
+            if st.button("💾 Guardar alias", key="ta_alias_save_v23472", use_container_width=True):
+                ok_alias, msg_alias = _ta_alias_add(alias_src, alias_dst)
+                if ok_alias:
+                    st.success(f"Alias guardado: {alias_src} → {alias_dst}. Pulsa Rerun o reanaliza para que cuente como perfil OK.")
+                    try:
+                        st.rerun()
+                    except Exception:
+                        pass
+                else:
+                    st.error(msg_alias)
+
+            current_aliases = _ta_alias_load_cached()
+            if current_aliases:
+                st.caption(f"Alias activos: {len(current_aliases)}")
+                sample = pd.DataFrame([{"Alias": k, "Nombre correcto": v} for k, v in list(current_aliases.items())[:80]])
+                st.dataframe(sample, width='stretch', hide_index=True)
 
     if not missing:
         st.success("No veo perfiles faltantes para este circuito en la tanda/plan actual.")
@@ -1840,93 +1990,12 @@ def render_auto_profile_finder_v23420(current_df=None, global_df=None):
                 st.warning("No se guardó ningún perfil nuevo.")
             if found:
                 show_found = pd.DataFrame(found)
-                cols = ["RequestedName", "Player", "MatchScore", "Elo", "Hard", "Clay", "Grass", "Rank", "FichaTA", "PlayerUrl", "Source"]
+                cols = ["RequestedName", "AliasUsado", "Player", "MatchScore", "Elo", "Hard", "Clay", "Grass", "Rank", "FichaTA", "PlayerUrl", "Source"]
                 st.markdown("##### ✅ Fichas encontradas")
                 st.dataframe(show_found[[c for c in cols if c in show_found.columns]], width='stretch', hide_index=True)
             if not_found:
                 st.markdown("##### ⚠️ No encontrados con suficiente seguridad")
                 st.dataframe(pd.DataFrame(not_found), width='stretch', hide_index=True)
-            # =========================================================
-            # v23.47.1 MANUAL TA PROFILE SEARCH / SAVE
-            # Permite corregir a mano jugadores no encontrados o mal emparejados.
-            # No toca motor Over: solo guarda un perfil en cache bajo el nombre solicitado.
-            # =========================================================
-            st.markdown("##### ✍️ Buscar/guardar ficha manual")
-            st.caption("Úsalo para casos como 'R. Lawlor', 'Y. Bu' o nombres abreviados. Escribe el nombre correcto de TennisAbstract, elige candidato y guarda. Quedará asociado al jugador solicitado.")
-
-            manual_options = [x.get("Jugador", "") for x in (not_found or []) if x.get("Jugador", "")]
-            if not manual_options:
-                manual_options = list(missing)
-            cm1, cm2 = st.columns([1, 1.4])
-            with cm1:
-                manual_requested = st.selectbox("Jugador de tu lista", manual_options, key="manual_ta_requested_v23471")
-            with cm2:
-                manual_query = st.text_input("Nombre correcto en TennisAbstract", value=manual_requested, key="manual_ta_query_v23471", placeholder="Ej: Oliver Okonkwo, Felix Balshaw...")
-
-            if manual_query and str(manual_query).strip():
-                try:
-                    ta_manual_df, status_manual = _auto_profile_download_ta_elo_v23420(circuito_busqueda)
-                    if ta_manual_df.empty:
-                        st.warning(f"No pude abrir TennisAbstract para búsqueda manual: {status_manual}")
-                    else:
-                        candidates = []
-                        q = str(manual_query).strip()
-                        for row in ta_manual_df.to_dict("records"):
-                            cand = row.get("Player", "")
-                            sc = similitud_nombre(q, cand)
-                            # Refuerzo si coincide apellido o apellido+inicial; capamos si apellido distinto.
-                            ai_q, ai_c = apellido_inicial_key(q), apellido_inicial_key(cand)
-                            if ai_q and ai_c and ai_q == ai_c:
-                                sc = max(sc, 0.995)
-                            sq, sca = surname_key(q), surname_key(cand)
-                            if sq and sca and sq == sca:
-                                sc = max(sc, 0.92)
-                            elif sq and sca and sq != sca:
-                                sc = min(sc, 0.89)
-                            if sc >= 0.45:
-                                rr = dict(row)
-                                rr["ManualScore"] = round(float(sc), 3)
-                                candidates.append(rr)
-                        candidates = sorted(candidates, key=lambda r: float(r.get("ManualScore", 0)), reverse=True)[:8]
-                        if candidates:
-                            labels = [f"{r.get('Player','')} · score {r.get('ManualScore','')} · Elo {r.get('Elo','N/A')}" for r in candidates]
-                            selected_label = st.selectbox("Candidato TennisAbstract", labels, key="manual_ta_candidate_v23471")
-                            selected_idx = labels.index(selected_label)
-                            selected = dict(candidates[selected_idx])
-                            preview_cols = ["Player", "ManualScore", "Elo", "Hard", "Clay", "Grass", "Rank", "PlayerUrl"]
-                            st.dataframe(pd.DataFrame([selected])[[c for c in preview_cols if c in selected]], width='stretch', hide_index=True)
-                            if st.button("💾 Guardar ficha manual para este jugador", key="manual_ta_save_v23471", use_container_width=True):
-                                row_save = dict(selected)
-                                ta_player = row_save.get("Player", "")
-                                # Clave importante: guardamos bajo el nombre de la lista para que el modelo lo encuentre exacto.
-                                row_save["RequestedName"] = manual_requested
-                                row_save["Player"] = manual_requested
-                                row_save["TAPlayer"] = ta_player
-                                row_save["MatchScore"] = row_save.get("ManualScore", 1.0)
-                                row_save["SourceScore"] = max(float(row_save.get("SourceScore", 0.90) or 0.90), float(row_save.get("ManualScore", 0.90) or 0.90), 0.96)
-                                row_save["Source"] = f"Manual TA confirmado: {ta_player}"
-                                row_save["FichaTA"] = "Manual OK"
-                                # También guardamos el nombre real TA como alias adicional por si aparece con nombre completo en próximas tandas.
-                                alias_save = dict(selected)
-                                alias_save["RequestedName"] = manual_requested
-                                alias_save["TAPlayer"] = ta_player
-                                alias_save["MatchScore"] = 1.0
-                                alias_save["SourceScore"] = max(float(alias_save.get("SourceScore", 0.90) or 0.90), 0.96)
-                                alias_save["Source"] = f"Manual TA alias desde {manual_requested}"
-                                alias_save["FichaTA"] = "Manual OK"
-                                saved_manual = _auto_profile_write_cache_v23420(circuito_busqueda, [row_save, alias_save])
-                                try:
-                                    st.cache_data.clear()
-                                except Exception:
-                                    pass
-                                if saved_manual > 0:
-                                    st.success(f"Guardado manual: {manual_requested} → {ta_player}. Reejecuta el análisis o pulsa Rerun.")
-                                else:
-                                    st.warning("No se pudo guardar la ficha manual.")
-                        else:
-                            st.warning("No encontré candidatos suficientes. Prueba con nombre completo sin abreviar.")
-                except Exception as e:
-                    st.error(f"Error en búsqueda manual: {type(e).__name__}: {e}")
 
     with st.expander("Cómo usarlo", expanded=False):
         st.markdown("""
@@ -4265,13 +4334,14 @@ def crear_fatigue_map(circuito):
 
 
 def buscar_fatigue(nombre, fatigue_map):
-    nid = limpiar(nombre)
+    nombre_alias = _ta_alias_resolve(nombre)
+    nid = limpiar(nombre_alias)
     if nid in fatigue_map:
         return fatigue_map[nid]
 
     mejor, best = None, 0
     for fid, data in fatigue_map.items():
-        score = similitud_nombre(nombre, fid)
+        score = max(similitud_nombre(nombre_alias, fid), similitud_nombre(nombre, fid))
         if score > best:
             best, mejor = score, data
 
@@ -4418,10 +4488,13 @@ def fatigue_adjustments(f1, f2, surface, circuito="ATP", rank1=999, rank2=999):
 
 
 def encontrar_jugador(nombre_hist, db):
+    # v23.47.2: resuelve alias antes de buscar en DB.
+    nombre_busqueda = _ta_alias_resolve(nombre_hist)
+    if nombre_busqueda in db: return nombre_busqueda
     if nombre_hist in db: return nombre_hist
     mejor, best = None, 0
     for nombre in db:
-        score = similitud_nombre(nombre_hist, nombre)
+        score = max(similitud_nombre(nombre_busqueda, nombre), similitud_nombre(nombre_hist, nombre))
         if score > best:
             best, mejor = score, nombre
     return mejor if mejor is not None and best >= 0.70 else None
@@ -11577,6 +11650,8 @@ def _invalidar_lectura_si_no_coincide(d, jugador_esperado):
 
 
 
+TA_PROFILE_MAX_AGE_DAYS = 7  # v23.47.3: refrescar fichas TA antiguas
+
 # =========================================================
 # v23.37.24 TENNIS ABSTRACT PROFILE CACHE
 # Guarda fichas TA/Flashscore por jugador con fecha de subida para no pegarlas cada día.
@@ -11644,7 +11719,22 @@ def _ta_profile_cache_age_label(uploaded_at):
     return f"subido hace {age} días"
 
 
-def _ta_profile_cache_find(player_name):
+def _ta_profile_cache_is_stale(item, max_age_days=TA_PROFILE_MAX_AGE_DAYS):
+    """v23.47.3: considera caducada una ficha TA si tiene más de max_age_days.
+    Así la app la vuelve a pedir/buscar, pero no la borra: solo la marca para refrescar.
+    """
+    if not isinstance(item, dict):
+        return True
+    age = _ta_profile_cache_age_days(item.get("uploaded_at", ""))
+    if age is None:
+        return True
+    try:
+        return int(age) > int(max_age_days)
+    except Exception:
+        return True
+
+
+def _ta_profile_cache_find(player_name, allow_stale=False):
     """Busca ficha guardada por nombre, usando exacto y fuzzy apellido+inicial."""
     cache = _ta_profile_cache_load()
     if not player_name:
@@ -11652,12 +11742,19 @@ def _ta_profile_cache_find(player_name):
     key = _ta_profile_cache_key(player_name)
     if key and key in cache:
         item = cache[key]
-        item["cache_key"] = key
-        item["match_score"] = 1.0
-        return item
+        if isinstance(item, dict):
+            item = item.copy()
+            item["cache_key"] = key
+            item["match_score"] = 1.0
+            item["stale"] = _ta_profile_cache_is_stale(item)
+            if item["stale"] and not allow_stale:
+                return None
+            return item
 
     best_key, best_item, best_score = "", None, 0.0
     for k, item in cache.items():
+        if isinstance(item, dict) and _ta_profile_cache_is_stale(item) and not allow_stale:
+            continue
         pname = item.get("player", k) if isinstance(item, dict) else k
         sc, _reason = nombre_score_quality_direct(player_name, pname)
         if sc > best_score:
@@ -11666,6 +11763,9 @@ def _ta_profile_cache_find(player_name):
         out = best_item.copy()
         out["cache_key"] = best_key
         out["match_score"] = float(best_score)
+        out["stale"] = _ta_profile_cache_is_stale(out)
+        if out["stale"] and not allow_stale:
+            return None
         return out
     return None
 
@@ -11781,15 +11881,19 @@ def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
 
 
 def _ta_profile_cache_status_text(player_name):
-    item = _ta_profile_cache_find(player_name)
+    item = _ta_profile_cache_find(_ta_alias_resolve(player_name), allow_stale=True) or _ta_profile_cache_find(player_name, allow_stale=True)
     if not item:
         return "", None
     uploaded = item.get("uploaded_at", "")
     src = item.get("source", "perfil")
     player = item.get("player", player_name)
     age = _ta_profile_cache_age_label(uploaded)
+    stale = _ta_profile_cache_is_stale(item)
     summary = str(item.get("summary", ""))[:180]
-    txt = f"💾 Perfil guardado · {player} · {src} · {uploaded or 'sin fecha'} ({age})"
+    icon = "♻️" if stale else "💾"
+    txt = f"{icon} Perfil guardado · {player} · {src} · {uploaded or 'sin fecha'} ({age})"
+    if stale:
+        txt += f" · CADUCADO >{TA_PROFILE_MAX_AGE_DAYS}d: se volverá a pedir/buscar"
     if summary:
         txt += f" · {summary}"
     return txt, item
