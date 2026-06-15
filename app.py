@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.48.0-player-games-challenger-clean"
+APP_VERSION = "v23.48.1-ta-audit-panel"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -12126,12 +12126,76 @@ def _ta_match_players_from_extra_candidates_v23432(cand_df):
 def _ta_match_cache_status_counts_v23432(players):
     ok, missing = [], []
     for n in players or []:
-        item = _ta_profile_cache_find(n)
+        canon = _ta_alias_resolve(n)
+        item = _ta_profile_cache_find(canon) or _ta_profile_cache_find(n)
         if item and str(item.get("raw_text", "")).strip():
             ok.append(n)
         else:
             missing.append(n)
     return ok, missing
+
+
+def _ta_match_cache_audit_rows_v23481(players):
+    """Auditoría visible de caché TA por jugador detectado.
+    No toca el motor Over; solo muestra si la app usa alias/caché, si la ficha está caducada
+    y cuántos partidos contiene.
+    """
+    rows = []
+    for n in players or []:
+        detected = normalizar_texto(n)
+        canon = _ta_alias_resolve(detected)
+        alias_used = canon != detected
+        item = _ta_profile_cache_find(canon, allow_stale=True) or _ta_profile_cache_find(detected, allow_stale=True)
+        if isinstance(item, dict) and str(item.get("raw_text", "")).strip():
+            stale = bool(item.get("stale", _ta_profile_cache_is_stale(item)))
+            matches = _ta_profile_cache_num_matches(item)
+            if stale:
+                status = "♻️ Caducada >7d"
+            elif matches >= 5:
+                status = "✅ OK"
+            elif matches >= 1:
+                status = "⚠️ Parcial"
+            else:
+                status = "⚠️ Sin partidos"
+            rows.append({
+                "Jugador detectado": detected,
+                "Nombre usado": canon,
+                "Alias": "Sí" if alias_used else "No",
+                "Estado ficha": status,
+                "Partidos ficha": matches,
+                "Fecha ficha": item.get("uploaded_at", ""),
+                "Edad": _ta_profile_cache_age_label(item.get("uploaded_at", "")),
+                "Jugador ficha": item.get("player", ""),
+                "Cache key": item.get("cache_key", ""),
+            })
+        else:
+            rows.append({
+                "Jugador detectado": detected,
+                "Nombre usado": canon,
+                "Alias": "Sí" if alias_used else "No",
+                "Estado ficha": "❌ Pendiente",
+                "Partidos ficha": 0,
+                "Fecha ficha": "",
+                "Edad": "",
+                "Jugador ficha": "",
+                "Cache key": "",
+            })
+    return rows
+
+
+def _ta_match_cache_audit_summary_v23481(players):
+    rows = _ta_match_cache_audit_rows_v23481(players)
+    total = len(rows)
+    ok = sum(1 for r in rows if str(r.get("Estado ficha", "")).startswith("✅"))
+    partial = sum(1 for r in rows if str(r.get("Estado ficha", "")).startswith("⚠️"))
+    stale = sum(1 for r in rows if "Caducada" in str(r.get("Estado ficha", "")))
+    missing = sum(1 for r in rows if str(r.get("Estado ficha", "")).startswith("❌"))
+    aliases = sum(1 for r in rows if r.get("Alias") == "Sí")
+    cobertura = (100.0 * (total - missing) / total) if total else 0.0
+    return rows, {
+        "total": total, "ok": ok, "partial": partial, "stale": stale,
+        "missing": missing, "aliases": aliases, "cobertura": cobertura
+    }
 
 
 def _inferir_jugador_mercado(row):
@@ -13192,6 +13256,23 @@ def render_datos_extra_reanalysis_panel(ok_saved):
         cta1.metric("Jugadores a reforzar", len(players_extra))
         cta2.metric("Fichas TA en caché", len(ok_cached))
         cta3.metric("Fichas TA pendientes", len(missing_cached))
+
+        # v23.48.1: panel de auditoría general para saber si las fichas están realmente entrando.
+        try:
+            audit_rows, audit_sum = _ta_match_cache_audit_summary_v23481(players_extra)
+            with st.expander("📦 Estado TennisAbstract / caché de estos picks", expanded=True):
+                a1, a2, a3, a4, a5 = st.columns(5)
+                a1.metric("Detectados", audit_sum.get("total", 0))
+                a2.metric("OK", audit_sum.get("ok", 0))
+                a3.metric("Parciales/caducadas", audit_sum.get("partial", 0) + audit_sum.get("stale", 0))
+                a4.metric("Pendientes", audit_sum.get("missing", 0))
+                a5.metric("Alias usados", audit_sum.get("aliases", 0))
+                st.caption(f"Cobertura TA útil: {audit_sum.get('cobertura', 0):.1f}%. Si ves jugadores repetidos como pendientes, crea alias o pega ficha manual.")
+                if audit_rows:
+                    st.dataframe(pd.DataFrame(audit_rows), width='stretch', hide_index=True)
+        except Exception as e:
+            st.warning(f"No se pudo mostrar auditoría TA: {type(e).__name__}: {e}")
+
         with st.expander("🔎 Auto extraer fichas TennisAbstract para estos picks", expanded=bool(missing_cached)):
             st.caption("Esto intenta leer la ficha TA de los jugadores de estos picks Over y guardarla en caché. Si funciona, no tienes que pegarla a mano.")
             if missing_cached:
