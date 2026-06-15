@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.3-auto-ta-url-full"
+APP_VERSION = "v23.49.4-auto-ta-real-upgrade"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -12212,7 +12212,7 @@ def _ta_match_profile_urls_v23432(name):
     return urls[:14]
 
 
-def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
+def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22, allow_auto_fallback=True):
     """Busca la ficha TA y, si TA no responde/no parsea, crea ficha de refuerzo
     desde histórico local Challenger/WTA/ATP disponible. Esto evita tener que pegar
     20 fichas manuales cuando la web se bloquea o tarda.
@@ -12260,6 +12260,10 @@ def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
 
     # 2) Fallback local: usa los históricos que ya tiene la app para generar una ficha automática.
     # Esto NO toca el motor Over; solo rellena la caja de refuerzo con evidencia local.
+    # v23.49.4: en modo "solo TA Real" NO creamos Auto Recent, para no confundir OK con TennisAbstract real.
+    if not allow_auto_fallback:
+        detail = " | ".join(errors[-5:]) if errors else "sin coincidencia"
+        return False, f"{name}: TA Real no extraída ({detail})"
     try:
         # Intento por superficie genérica; el propio buscador elige últimos partidos.
         st_ch = _ch_recent_stats(name, surface=None, limit=12)
@@ -13910,27 +13914,44 @@ def render_datos_extra_reanalysis_panel(ok_saved):
         except Exception as e:
             st.warning(f"No se pudo mostrar auditoría TA: {type(e).__name__}: {e}")
 
-        with st.expander("🔎 Auto extraer fichas TennisAbstract para estos picks", expanded=bool(missing_cached)):
-            st.caption("Esto intenta leer la ficha TA de los jugadores de estos picks Over y guardarla en caché. Si funciona, no tienes que pegarla a mano.")
-            if missing_cached:
-                st.dataframe(pd.DataFrame({"Jugador pendiente": missing_cached}), width='stretch', hide_index=True)
+        # v23.49.4: no basta con buscar pendientes. Si una ficha es Auto Recent, también debe intentarse
+        # convertir a TA Real completa. Esto NO toca cálculos; solo lectura/caché TennisAbstract.
+        ta_real_targets = []
+        try:
+            audit_rows_for_fetch, _audit_sum_for_fetch = _ta_match_cache_audit_summary_v23481(players_extra)
+            for rr in audit_rows_for_fetch:
+                tipo = str(rr.get("Tipo fuente", ""))
+                if tipo not in ["ta", "manual"]:
+                    nm = rr.get("Nombre usado") or rr.get("Jugador detectado")
+                    if nm and nm not in ta_real_targets:
+                        ta_real_targets.append(nm)
+        except Exception:
+            ta_real_targets = list(missing_cached or [])
+
+        with st.expander("🔎 Auto extraer TA REAL completa para estos picks", expanded=bool(ta_real_targets)):
+            st.caption("Busca TennisAbstract real y completo. Incluye pendientes y también perfiles 🟠 Auto Recent para convertirlos a 🟢 TA Real. No toca el motor Over ni cálculos.")
+            if ta_real_targets:
+                st.dataframe(pd.DataFrame({"Jugador a buscar TA Real": ta_real_targets}), width='stretch', hide_index=True)
             else:
-                st.success("Todas las fichas de estos picks ya están en caché.")
-            timeout_auto = st.slider("Timeout por ficha TA", 12, 35, 22, 1, key="ta_auto_timeout_v23432")
-            max_auto = st.slider("Máximo fichas a intentar ahora", 2, 30, min(20, max(2, len(missing_cached) if missing_cached else 2)), 1, key="ta_auto_max_v23432")
-            if st.button("🔎 Extraer fichas TA pendientes y guardar caché", key="ta_auto_fetch_v23432", use_container_width=True, disabled=not bool(missing_cached)):
+                st.success("Todas las fichas de estos picks ya son TA Real/Manual permanente.")
+            timeout_auto = st.slider("Timeout por ficha TA", 12, 45, 28, 1, key="ta_auto_timeout_v23432")
+            max_auto = st.slider("Máximo fichas a intentar ahora", 2, 30, min(20, max(2, len(ta_real_targets) if ta_real_targets else 2)), 1, key="ta_auto_max_v23432")
+            allow_auto_fallback = st.checkbox("Si TA falla, crear Auto Recent provisional", value=False, key="ta_auto_allow_fallback_v23494")
+            if st.button("🔎 Buscar TA Real completa y guardar permanente", key="ta_auto_fetch_v23432", use_container_width=True, disabled=not bool(ta_real_targets)):
                 results = []
-                with st.spinner("Extrayendo fichas TennisAbstract en bloque..."):
-                    for name in missing_cached[:int(max_auto)]:
-                        ok, msg = _ta_match_auto_cache_one_player_v23432(name, timeout_sec=int(timeout_auto))
-                        results.append({"Jugador": name, "OK": "Sí" if ok else "No", "Detalle": msg})
+                with st.spinner("Buscando fichas TennisAbstract reales en bloque..."):
+                    for name in ta_real_targets[:int(max_auto)]:
+                        ok, msg = _ta_match_auto_cache_one_player_v23432(name, timeout_sec=int(timeout_auto), allow_auto_fallback=bool(allow_auto_fallback))
+                        item_after = _ta_profile_cache_find(name, allow_stale=True)
+                        kind, label = _ta_profile_source_kind_v23485(item_after) if isinstance(item_after, dict) else ("sin", "🔴 Sin ficha")
+                        results.append({"Jugador": name, "OK": "Sí" if ok else "No", "Tipo final": label, "Detalle": msg})
                 if results:
                     st.dataframe(pd.DataFrame(results), width='stretch', hide_index=True)
-                    saved_n = sum(1 for r in results if r.get("OK") == "Sí")
-                    if saved_n:
-                        st.success(f"Guardadas {saved_n} fichas. Pulsa Rerun o vuelve a analizar para que se apliquen al reanálisis.")
+                    ta_n = sum(1 for r in results if "TA Real" in str(r.get("Tipo final", "")) or "Manual" in str(r.get("Tipo final", "")))
+                    if ta_n:
+                        st.success(f"TA Real/Manual completas disponibles: {ta_n}. Pulsa Rerun o vuelve a analizar para ver el auditor actualizado.")
                     else:
-                        st.warning("No se pudo guardar ninguna ficha automática. Puede ser timeout, nombre distinto o página TA sin resultados recientes parseables.")
+                        st.warning("No se ha conseguido TA Real automática. Mira la columna Detalle: si aparece HTTP/timeout/TA descargada sin parsear, el fallo está ahí, no en los cálculos.")
                 try:
                     st.rerun()
                 except Exception:
