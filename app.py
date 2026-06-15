@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.5-ta-real-html-table-parser"
+APP_VERSION = "v23.49.6-ta-upgrade-auto-recent-button"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11969,12 +11969,7 @@ def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
     raw_text = str(raw_text or "").strip()
     if len(raw_text) < 80:
         return False, "sin texto suficiente"
-    # v23.49.5: si venimos de parser HTML full, usamos ese parsed directamente.
-    # Así no dependemos de que el texto HTML convertido conserve todas las tablas/secciones.
-    if isinstance(parsed, dict) and str(parsed.get("source", "")).lower().startswith("tennis abstract"):
-        d = {"tennisabstract": parsed, "largos": parsed.get("largos", ""), "palizas": parsed.get("palizas", ""), "nota": parsed.get("summary", "")}
-    else:
-        d = _extraer_datos_extra_desde_texto(raw_text, None)
+    d = _extraer_datos_extra_desde_texto(raw_text, None)
     if not isinstance(d, dict):
         return False, "no interpretado"
     # Si el texto no es TA ni Flashscore, no lo guardamos como perfil persistente.
@@ -12217,299 +12212,6 @@ def _ta_match_profile_urls_v23432(name):
     return urls[:14]
 
 
-
-# =========================================================
-# v23.49.5 TA REAL HTML TABLE PARSER
-# Lee TennisAbstract directamente desde HTML cuando el texto convertido
-# no conserva bien todas las tablas. No toca cálculos ni motor Over:
-# solo mejora lectura/guardado de la ficha TA real.
-# =========================================================
-
-def _ta_html_clean_percent_v23495(v, default=None):
-    try:
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return default
-        s = str(v).replace('%','').replace(',','.').strip()
-        if s in ['', '-', 'nan', 'None']:
-            return default
-        return float(s)
-    except Exception:
-        return default
-
-
-def _ta_html_int_v23495(v, default=0):
-    try:
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return default
-        m = re.search(r"-?\d+", str(v))
-        return int(m.group(0)) if m else default
-    except Exception:
-        return default
-
-
-def _ta_html_cols_v23495(df):
-    out = []
-    for c in list(getattr(df, 'columns', [])):
-        if isinstance(c, tuple):
-            c = ' '.join([str(x) for x in c if str(x) != 'nan'])
-        out.append(str(c).strip())
-    return out
-
-
-def _ta_html_colmap_v23495(df):
-    cols = _ta_html_cols_v23495(df)
-    mp = {}
-    for c in cols:
-        key = limpiar(c)
-        if key and key not in mp:
-            mp[key] = c
-    return mp
-
-
-def _ta_html_get_v23495(row, cmap, names, default=None):
-    for n in names:
-        k = limpiar(n)
-        c = cmap.get(k)
-        if c is not None:
-            try:
-                return row.get(c, default)
-            except Exception:
-                return default
-    return default
-
-
-def _ta_html_parse_stats_row_v23495(row, cmap):
-    # Devuelve exactamente nombres útiles para auditoría y futuro uso de datos.
-    m = _ta_html_int_v23495(_ta_html_get_v23495(row, cmap, ['M','Matches']), 0)
-    w = _ta_html_int_v23495(_ta_html_get_v23495(row, cmap, ['W']), 0)
-    l = _ta_html_int_v23495(_ta_html_get_v23495(row, cmap, ['L']), 0)
-    return {
-        'matches': m, 'wins': w, 'losses': l,
-        'win_pct': _ta_html_clean_percent_v23495(_ta_html_get_v23495(row, cmap, ['Win%'])),
-        'hold_pct': _ta_html_clean_percent_v23495(_ta_html_get_v23495(row, cmap, ['Hld%','Hold%'])),
-        'break_pct': _ta_html_clean_percent_v23495(_ta_html_get_v23495(row, cmap, ['Brk%','Break%'])),
-        'ace_pct': _ta_html_clean_percent_v23495(_ta_html_get_v23495(row, cmap, ['A%','Ace%'])),
-        'df_pct': _ta_html_clean_percent_v23495(_ta_html_get_v23495(row, cmap, ['DF%'])),
-        'first_in': _ta_html_clean_percent_v23495(_ta_html_get_v23495(row, cmap, ['1stIn','1stIn%'])),
-        'first_won': _ta_html_clean_percent_v23495(_ta_html_get_v23495(row, cmap, ['1st%','1stWon%'])),
-        'second_won': _ta_html_clean_percent_v23495(_ta_html_get_v23495(row, cmap, ['2nd%','2ndWon%'])),
-        'spw': _ta_html_clean_percent_v23495(_ta_html_get_v23495(row, cmap, ['SPW'])),
-        'rpw': _ta_html_clean_percent_v23495(_ta_html_get_v23495(row, cmap, ['RPW'])),
-        'tpw': _ta_html_clean_percent_v23495(_ta_html_get_v23495(row, cmap, ['TPW'])),
-        'dr': _ta_html_clean_percent_v23495(_ta_html_get_v23495(row, cmap, ['DR'])),
-        'tb_record': str(_ta_html_get_v23495(row, cmap, ['TB W-L'], '') or ''),
-        'set_record': str(_ta_html_get_v23495(row, cmap, ['Set W-L'], '') or ''),
-        'game_record': str(_ta_html_get_v23495(row, cmap, ['Game W-L'], '') or ''),
-    }
-
-
-def _ta_parse_html_full_profile_v23495(html_text, expected_player='', source_url=''):
-    """Extrae tablas completas de TennisAbstract desde HTML.
-    Sirve como fallback/primera vía cuando la conversión HTML->texto no conserva secciones.
-    """
-    raw = str(html_text or '')
-    if len(raw) < 200 or 'tennisabstract' not in raw.lower() and 'Recent Results' not in raw:
-        return None
-    try:
-        import html as _html
-        from io import StringIO
-        # Nombre de jugador desde <h1>, title o fallback esperado.
-        player = normalizar_texto(expected_player or '')
-        mh = re.search(r'<h1[^>]*>(.*?)</h1>', raw, flags=re.I|re.S)
-        if not mh:
-            mh = re.search(r'<title[^>]*>(.*?)</title>', raw, flags=re.I|re.S)
-        if mh:
-            tmp = re.sub(r'<[^>]+>', ' ', mh.group(1))
-            tmp = _html.unescape(tmp)
-            tmp = re.sub(r'\s+', ' ', tmp).strip()
-            tmp = re.sub(r'\s+Match Results.*$', '', tmp, flags=re.I)
-            tmp = re.sub(r'\s+Tennis Abstract.*$', '', tmp, flags=re.I)
-            if tmp and len(tmp) >= 3:
-                player = normalizar_texto(tmp)
-        player = re.sub(r"\[[A-Z]{2,3}\].*$", "", player).strip() or normalizar_texto(expected_player or '')
-
-        # Texto plano para Elo cabecera.
-        flat = re.sub(r'<script[^>]*>.*?</script>', ' ', raw, flags=re.I|re.S)
-        flat = re.sub(r'<style[^>]*>.*?</style>', ' ', flat, flags=re.I|re.S)
-        flat = re.sub(r'<[^>]+>', ' ', flat)
-        flat = _html.unescape(flat)
-        flat = re.sub(r'\s+', ' ', flat)
-
-        elo = helo = celo = gelo = None
-        m = re.search(r'Elo rank:\s*\d+\s*\(rating:\s*(\d{3,4})\)', flat, flags=re.I)
-        if m:
-            elo = _ta_valid_elo_rating(m.group(1))
-
-        dfs = []
-        try:
-            dfs = pd.read_html(StringIO(raw))
-        except Exception:
-            dfs = []
-
-        full = {
-            'tour_seasons': {},
-            'challenger_seasons': {},
-            'career_splits': {},
-            'last52_splits': {},
-            'year_end_current': {},
-            'full_score': 0,
-            'html_source_url': source_url,
-        }
-        recent_matches = []
-        season_tables_seen = 0
-        split_tables_seen = 0
-
-        for df in dfs:
-            try:
-                if df is None or df.empty:
-                    continue
-                df = df.copy()
-                df.columns = _ta_html_cols_v23495(df)
-                cmap = _ta_html_colmap_v23495(df)
-                keys = set(cmap.keys())
-
-                # Recent Results: Date/Tournament/Surface/Score
-                if {'DATE','TOURNAMENT','SURFACE'}.issubset(keys) and 'SCORE' in keys:
-                    for _, row in df.iterrows():
-                        score = str(_ta_html_get_v23495(row, cmap, ['Score'], '') or '')
-                        if re.search(r'\d+-\d+', score):
-                            recent_matches.append(score)
-                    continue
-
-                # Year-End Rankings: Current Elo/hElo/cElo/gElo.
-                if 'YEAR' in keys and ('ELO' in keys or 'HELO' in keys or 'CELO' in keys or 'GELO' in keys) and ('ATPRANK' in keys or 'WTARANK' in keys or 'POINTS' in keys):
-                    for _, row in df.iterrows():
-                        year = str(_ta_html_get_v23495(row, cmap, ['Year'], '') or '')
-                        if year.startswith('Current'):
-                            y = {
-                                'atp_rank': _ta_html_int_v23495(_ta_html_get_v23495(row, cmap, ['ATP Rank','WTA Rank']), None),
-                                'elo_rank': _ta_html_int_v23495(_ta_html_get_v23495(row, cmap, ['Elo Rank']), None),
-                                'elo': _ta_html_int_v23495(_ta_html_get_v23495(row, cmap, ['Elo']), None),
-                                'hElo': _ta_html_int_v23495(_ta_html_get_v23495(row, cmap, ['hElo']), None),
-                                'cElo': _ta_html_int_v23495(_ta_html_get_v23495(row, cmap, ['cElo']), None),
-                                'gElo': _ta_html_int_v23495(_ta_html_get_v23495(row, cmap, ['gElo']), None),
-                            }
-                            full['year_end_current'] = {k:v for k,v in y.items() if v is not None}
-                            elo = elo or full['year_end_current'].get('elo')
-                            helo = full['year_end_current'].get('hElo') or helo
-                            celo = full['year_end_current'].get('cElo') or celo
-                            gelo = full['year_end_current'].get('gElo') or gelo
-                            break
-                    continue
-
-                # Seasons: Year + M/W/L + Hld%/Brk%/SPW/RPW + Best.
-                if 'YEAR' in keys and 'M' in keys and 'W' in keys and 'L' in keys and ('HLD' in keys or 'HLD%' in keys or 'BRK' in keys or 'SPW' in keys or 'RPW' in keys):
-                    # Nota: limpiar('Hld%') -> HLD, limpiar('Brk%') -> BRK
-                    season_tables_seen += 1
-                    dest = 'tour_seasons' if season_tables_seen == 1 else 'challenger_seasons'
-                    for _, row in df.iterrows():
-                        label = str(_ta_html_get_v23495(row, cmap, ['Year'], '') or '').strip()
-                        if label == 'Career' or re.fullmatch(r'20\d{2}', label):
-                            parsed = _ta_html_parse_stats_row_v23495(row, cmap)
-                            if parsed.get('matches',0):
-                                full[dest][label] = parsed
-                    continue
-
-                # Splits: Split + M/W/L + Hld%/Brk%/SPW/RPW.
-                if 'SPLIT' in keys and 'M' in keys and ('HLD' in keys or 'BRK' in keys or 'SPW' in keys or 'RPW' in keys):
-                    split_tables_seen += 1
-                    dest = 'last52_splits' if split_tables_seen == 1 else 'career_splits'
-                    for _, row in df.iterrows():
-                        label = str(_ta_html_get_v23495(row, cmap, ['Split'], '') or '').strip()
-                        if not label or label.lower() == 'split':
-                            continue
-                        parsed = _ta_html_parse_stats_row_v23495(row, cmap)
-                        if parsed.get('matches',0):
-                            full[dest][label] = parsed
-                    continue
-            except Exception:
-                continue
-
-        score = 0
-        score += 2 if full.get('tour_seasons') else 0
-        score += 2 if full.get('challenger_seasons') else 0
-        score += 2 if full.get('career_splits') else 0
-        score += 2 if full.get('last52_splits') else 0
-        score += 1 if full.get('year_end_current') else 0
-        full['full_score'] = score
-
-        if score < 3 and not recent_matches and elo is None:
-            return None
-
-        ch2026 = (full.get('challenger_seasons',{}) or {}).get('2026', {})
-        n_recent = min(len(recent_matches), 12)
-        summary = f"TA HTML {player}: full={score}, recientes={n_recent}, Elo={elo or 'N/A'}"
-        if ch2026:
-            summary += f", CH2026={ch2026.get('matches',0)} partidos, Hold={ch2026.get('hold_pct','')}, Brk={ch2026.get('break_pct','')}"
-
-        return {
-            'source': 'Tennis Abstract',
-            'player': player or expected_player,
-            'matches': n_recent,
-            'wins': 0,
-            'overs': 0,
-            'over_rate': 0.0,
-            'overs19': 0,
-            'over19_rate': 0.0,
-            'three_sets': 0,
-            'three_rate': 0.0,
-            'set_won': 0,
-            'set_rate': 0.0,
-            'lost02': 0,
-            'lost02_rate': 0.0,
-            'lost02_easy': 0,
-            'easy_short': 0,
-            'easy_rate': 0.0,
-            'long_sets': 0,
-            'tb_sets': 0,
-            'avg_games': 0.0,
-            'elo': elo,
-            'hElo': helo,
-            'cElo': celo,
-            'gElo': gelo,
-            'challenger_2026': ch2026,
-            'ta_full': full,
-            'ta_full_score': score,
-            'ta_best_hard': _ta_best_surface_stats_v23490(full, 'Hard'),
-            'ta_best_clay': _ta_best_surface_stats_v23490(full, 'Clay'),
-            'ta_best_grass': _ta_best_surface_stats_v23490(full, 'Grass'),
-            'largos': 'TA Real completa: se han leído tablas completas TennisAbstract',
-            'palizas': 'No evaluado desde HTML full parser',
-            'summary': summary,
-        }
-    except Exception:
-        return None
-
-
-def _ta_make_synthetic_text_from_html_v23495(parsed, expected_player='', source_url=''):
-    """Texto persistente legible para que el visor muestre la ficha TA real guardada."""
-    try:
-        p = parsed or {}
-        full = p.get('ta_full', {}) or {}
-        lines = [str(p.get('player') or expected_player or ''), 'Tennis Abstract', f'Source URL: {source_url}', f"Elo rank: 0 (rating: {p.get('elo') or 0})"]
-        yc = full.get('year_end_current', {}) or {}
-        if yc:
-            lines.append('Year-End Rankings')
-            lines.append(f"Current\tElo={yc.get('elo','')}\thElo={yc.get('hElo','')}\tcElo={yc.get('cElo','')}\tgElo={yc.get('gElo','')}")
-        for sec, title in [('tour_seasons','Tour-Level Seasons'),('challenger_seasons','Challenger Seasons')]:
-            data = full.get(sec, {}) or {}
-            if data:
-                lines.append(title)
-                lines.append('Year\tM\tW\tL\tHld%\tBrk%\tA%\tDF%\t1stIn\t1st%\t2nd%\tSPW\tRPW\tTPW\tDR')
-                for label,row in data.items():
-                    lines.append(f"{label}\t{row.get('matches','')}\t{row.get('wins','')}\t{row.get('losses','')}\t{row.get('hold_pct','')}\t{row.get('break_pct','')}\t{row.get('ace_pct','')}\t{row.get('df_pct','')}\t{row.get('first_in','')}\t{row.get('first_won','')}\t{row.get('second_won','')}\t{row.get('spw','')}\t{row.get('rpw','')}\t{row.get('tpw','')}\t{row.get('dr','')}")
-        for sec,title in [('last52_splits','Last 52 Weeks Tour-Level Splits'),('career_splits','Career Challenger-Level Splits')]:
-            data = full.get(sec, {}) or {}
-            if data:
-                lines.append(title)
-                lines.append('Split\tM\tW\tL\tHld%\tBrk%\tA%\tDF%\t1stIn\t1st%\t2nd%\tSPW\tRPW\tTPW\tDR')
-                for label,row in data.items():
-                    lines.append(f"{label}\t{row.get('matches','')}\t{row.get('wins','')}\t{row.get('losses','')}\t{row.get('hold_pct','')}\t{row.get('break_pct','')}\t{row.get('ace_pct','')}\t{row.get('df_pct','')}\t{row.get('first_in','')}\t{row.get('first_won','')}\t{row.get('second_won','')}\t{row.get('spw','')}\t{row.get('rpw','')}\t{row.get('tpw','')}\t{row.get('dr','')}")
-        lines.append('Summary: ' + str(p.get('summary','')))
-        return '\n'.join(lines)
-    except Exception:
-        return f"{expected_player}\nTennis Abstract\nSummary: {str((parsed or {}).get('summary',''))}"
-
 def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
     """Busca la ficha TA y, si TA no responde/no parsea, crea ficha de refuerzo
     desde histórico local Challenger/WTA/ATP disponible. Esto evita tener que pegar
@@ -12537,16 +12239,6 @@ def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
         if "player not found" in low or "no player found" in low:
             errors.append("TA: jugador no encontrado")
             continue
-        # v23.49.5: primero intentamos leer TODAS las tablas TA desde HTML.
-        # Si funciona, guardamos TA Real completa y no caemos a Auto Recent.
-        parsed_html = _ta_parse_html_full_profile_v23495(html_text, expected_player=name, source_url=url)
-        if isinstance(parsed_html, dict) and int(parsed_html.get("ta_full_score", 0) or 0) >= 3:
-            profile_text_html = _ta_make_synthetic_text_from_html_v23495(parsed_html, expected_player=name, source_url=url)
-            ok, msg = _ta_profile_cache_upsert_from_raw(name, profile_text_html, parsed=parsed_html)
-            if ok:
-                return True, f"{name}: TA Real FULL guardada desde HTML ({parsed_html.get('summary','')})"
-            errors.append(f"TA HTML full leída pero no guardada: {msg}")
-
         profile_text = _ta_match_html_to_profile_text_v23432(html_text, name)
         parsed = _parse_tennisabstract_player_profile(profile_text)
         if parsed and (int(parsed.get("matches", 0) or 0) >= 1 or int(parsed.get("ta_full_score", 0) or 0) >= 3):
@@ -14218,27 +13910,60 @@ def render_datos_extra_reanalysis_panel(ok_saved):
         except Exception as e:
             st.warning(f"No se pudo mostrar auditoría TA: {type(e).__name__}: {e}")
 
-        with st.expander("🔎 Auto extraer fichas TennisAbstract para estos picks", expanded=bool(missing_cached)):
-            st.caption("Esto intenta leer la ficha TA de los jugadores de estos picks Over y guardarla en caché. Si funciona, no tienes que pegarla a mano.")
-            if missing_cached:
-                st.dataframe(pd.DataFrame({"Jugador pendiente": missing_cached}), width='stretch', hide_index=True)
+        # v23.49.6: antes solo se intentaban las "pendientes".
+        # Problema detectado: Auto Recent contaba como OK y por eso Zverev/Fritz/Medvedev
+        # nunca volvían a intentar TennisAbstract real. Ahora se intentan también los 🟠 Auto Recent.
+        try:
+            ta_upgrade_candidates = []
+            _seen_up = set()
+            _audit_rows_for_upgrade = audit_rows if 'audit_rows' in locals() and isinstance(audit_rows, list) else []
+            for r in _audit_rows_for_upgrade:
+                src = str(r.get("Fuente perfil", "") or "")
+                estado = str(r.get("Estado ficha", "") or "")
+                name_up = normalizar_texto(r.get("Nombre usado") or r.get("Jugador detectado") or "")
+                # Candidatos: sin ficha, pendientes y Auto Recent. TA Real/Manual se respetan.
+                if name_up and (("Auto Recent" in src) or ("Sin ficha" in src) or ("Pendiente" in estado)):
+                    k_up = limpiar(name_up)
+                    if k_up and k_up not in _seen_up:
+                        ta_upgrade_candidates.append(name_up)
+                        _seen_up.add(k_up)
+            # Fallback si el auditor no se pudo construir.
+            for name_up in (missing_cached or []):
+                k_up = limpiar(name_up)
+                if k_up and k_up not in _seen_up:
+                    ta_upgrade_candidates.append(name_up)
+                    _seen_up.add(k_up)
+        except Exception:
+            ta_upgrade_candidates = list(missing_cached or [])
+
+        with st.expander("🔎 Auto extraer/mejorar fichas TennisAbstract para estos picks", expanded=bool(ta_upgrade_candidates)):
+            st.caption("Esto intenta convertir 🟠 Auto Recent y 🔴 Sin ficha en 🟢 TA Real completa. No toca cálculos ni motor Over; solo lectura/caché TennisAbstract.")
+            if ta_upgrade_candidates:
+                st.dataframe(pd.DataFrame({"Jugador a intentar/mejorar": ta_upgrade_candidates}), width='stretch', hide_index=True)
             else:
-                st.success("Todas las fichas de estos picks ya están en caché.")
+                st.success("No hay fichas pendientes ni Auto Recent que mejorar: las TA Real/Manual se conservan permanentes.")
             timeout_auto = st.slider("Timeout por ficha TA", 12, 35, 22, 1, key="ta_auto_timeout_v23432")
-            max_auto = st.slider("Máximo fichas a intentar ahora", 2, 30, min(20, max(2, len(missing_cached) if missing_cached else 2)), 1, key="ta_auto_max_v23432")
-            if st.button("🔎 Extraer fichas TA pendientes y guardar caché", key="ta_auto_fetch_v23432", use_container_width=True, disabled=not bool(missing_cached)):
+            max_auto = st.slider("Máximo fichas a intentar ahora", 2, 30, min(20, max(2, len(ta_upgrade_candidates) if ta_upgrade_candidates else 2)), 1, key="ta_auto_max_v23432")
+            if st.button("🔎 Intentar TA Real para pendientes y Auto Recent", key="ta_auto_fetch_v23432", use_container_width=True, disabled=not bool(ta_upgrade_candidates)):
                 results = []
-                with st.spinner("Extrayendo fichas TennisAbstract en bloque..."):
-                    for name in missing_cached[:int(max_auto)]:
+                with st.spinner("Extrayendo/mejorando fichas TennisAbstract en bloque..."):
+                    for name in ta_upgrade_candidates[:int(max_auto)]:
                         ok, msg = _ta_match_auto_cache_one_player_v23432(name, timeout_sec=int(timeout_auto))
-                        results.append({"Jugador": name, "OK": "Sí" if ok else "No", "Detalle": msg})
+                        # Relee caché tras el intento para saber si quedó TA Real o Auto Recent.
+                        try:
+                            item_now = _ta_profile_cache_find(name, allow_stale=True)
+                            kind_now, label_now = _ta_profile_source_kind_v23485(item_now) if item_now else ("sin", "🔴 Sin ficha")
+                            full_now = int((item_now or {}).get("ta_full_score", 0) or 0)
+                        except Exception:
+                            label_now, full_now = "?", 0
+                        results.append({"Jugador": name, "OK": "Sí" if ok else "No", "Quedó como": label_now, "Full score": full_now, "Detalle": msg})
                 if results:
                     st.dataframe(pd.DataFrame(results), width='stretch', hide_index=True)
-                    saved_n = sum(1 for r in results if r.get("OK") == "Sí")
-                    if saved_n:
-                        st.success(f"Guardadas {saved_n} fichas. Pulsa Rerun o vuelve a analizar para que se apliquen al reanálisis.")
+                    real_n = sum(1 for r in results if "TA Real" in str(r.get("Quedó como", "")))
+                    if real_n:
+                        st.success(f"Convertidas a TA Real: {real_n}. Pulsa Rerun o vuelve a analizar para ver el auditor actualizado.")
                     else:
-                        st.warning("No se pudo guardar ninguna ficha automática. Puede ser timeout, nombre distinto o página TA sin resultados recientes parseables.")
+                        st.warning("Se intentó la extracción, pero ninguna quedó como TA Real. Revisa la columna Detalle para ver si fue URL/HTTP/parser.")
                 try:
                     st.rerun()
                 except Exception:
