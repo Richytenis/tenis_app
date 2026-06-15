@@ -11760,6 +11760,54 @@ def _ta_profile_cache_age_label(uploaded_at):
     return f"subido hace {age} días"
 
 
+
+
+def _ta_profile_cache_is_ta_real_permanent(item):
+    """v23.49.2: TA Real/Manual queda permanente.
+    Se puede marcar como antigua, pero nunca se elimina ni se sustituye por Auto Recent.
+    """
+    if not isinstance(item, dict):
+        return False
+    src = str(item.get("source", "") or "")
+    raw = str(item.get("raw_text", "") or "")[:1200]
+    low = (src + "\n" + raw).lower()
+    try:
+        if int(item.get("ta_full_score", 0) or 0) >= 3:
+            return True
+    except Exception:
+        pass
+    if item.get("permanent_ta") is True:
+        return True
+    if "manual" in low and ("tennis abstract" in low or "tennisabstract" in low):
+        return True
+    if "tennis abstract" in low and "auto recent" not in low and "auto challenger recent" not in low:
+        return True
+    return False
+
+
+def _ta_profile_cache_source_priority(item):
+    """Mayor = más valiosa. Evita pisar TA real/manual con perfiles automáticos."""
+    if not isinstance(item, dict):
+        return 0
+    src = str(item.get("source", "") or "")
+    raw = str(item.get("raw_text", "") or "")[:1200]
+    low = (src + "\n" + raw).lower()
+    try:
+        full_score = int(item.get("ta_full_score", 0) or 0)
+    except Exception:
+        full_score = 0
+    if _ta_profile_cache_is_ta_real_permanent(item) and full_score >= 3:
+        return 100
+    if _ta_profile_cache_is_ta_real_permanent(item):
+        return 90
+    if "manual" in low and "auto recent" not in low:
+        return 80
+    if "flashscore" in low:
+        return 60
+    if "auto recent" in low or "auto challenger recent" in low or "histórico local" in low or "historico local" in low:
+        return 20
+    return 40
+
 def _ta_profile_cache_is_stale(item, max_age_days=TA_PROFILE_MAX_AGE_DAYS):
     """v23.47.3: considera caducada una ficha TA si tiene más de max_age_days.
     Así la app la vuelve a pedir/buscar, pero no la borra: solo la marca para refrescar.
@@ -11788,7 +11836,7 @@ def _ta_profile_cache_find(player_name, allow_stale=False):
             item["cache_key"] = key
             item["match_score"] = 1.0
             item["stale"] = _ta_profile_cache_is_stale(item)
-            if item["stale"] and not allow_stale:
+            if item["stale"] and not allow_stale and not _ta_profile_cache_is_ta_real_permanent(item):
                 return None
             return item
 
@@ -11805,7 +11853,7 @@ def _ta_profile_cache_find(player_name, allow_stale=False):
         out["cache_key"] = best_key
         out["match_score"] = float(best_score)
         out["stale"] = _ta_profile_cache_is_stale(out)
-        if out["stale"] and not allow_stale:
+        if out["stale"] and not allow_stale and not _ta_profile_cache_is_ta_real_permanent(out):
             return None
         return out
     return None
@@ -11840,6 +11888,12 @@ def _ta_profile_cache_should_replace(old_item, new_item, force_manual=True):
     new_n = _ta_profile_cache_num_matches(new_item)
     old_raw_len = len(str(old_item.get("raw_text", "") or ""))
     new_raw_len = len(str(new_item.get("raw_text", "") or ""))
+
+    # v23.49.2: una TA Real/Manual permanente nunca puede ser pisada por Auto Recent.
+    old_pr = _ta_profile_cache_source_priority(old_item)
+    new_pr = _ta_profile_cache_source_priority(new_item)
+    if old_pr >= 80 and new_pr < old_pr:
+        return False
 
     # v23.49.1: una ficha TennisAbstract completa siempre pisa Auto Recent o fichas antiguas.
     try:
@@ -11920,6 +11974,8 @@ def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
         "career_stats": (parsed_obj.get("ta_full", {}) or {}).get("career_splits", {}),
         "last52_stats": (parsed_obj.get("ta_full", {}) or {}).get("last52_splits", {}),
         "profile_source_type": "TA Real Completo" if int(parsed_obj.get("ta_full_score", 0) or 0) >= 3 else parsed_obj.get("source", ""),
+        "permanent_ta": True if (int(parsed_obj.get("ta_full_score", 0) or 0) >= 3 or "Tennis Abstract" in str(parsed_obj.get("source", ""))) else False,
+        "expires_policy": "permanent_use_stale_only_warning",
     }
 
     cache = _ta_profile_cache_load()
@@ -11957,7 +12013,10 @@ def _ta_profile_cache_status_text(player_name):
     icon = "♻️" if stale else "💾"
     txt = f"{icon} Perfil guardado · {player} · {src} · {uploaded or 'sin fecha'} ({age})"
     if stale:
-        txt += f" · CADUCADO >{TA_PROFILE_MAX_AGE_DAYS}d: se volverá a pedir/buscar"
+        if _ta_profile_cache_is_ta_real_permanent(item):
+            txt += f" · ANTIGUA >{TA_PROFILE_MAX_AGE_DAYS}d: se puede refrescar, pero se sigue usando y NO se borra"
+        else:
+            txt += f" · CADUCADO >{TA_PROFILE_MAX_AGE_DAYS}d: se volverá a pedir/buscar"
     if summary:
         txt += f" · {summary}"
     return txt, item
@@ -12170,7 +12229,7 @@ def _ta_profile_source_kind_v23485(item):
     raw = str(item.get("raw_text", "") or "")
     low = (src + "\n" + raw[:500]).lower()
     if int(item.get("ta_full_score", 0) or 0) >= 3 and ("tennis abstract" in low or "manual" in low):
-        return "ta", "🟢 TA Real Completa"
+        return "ta", "🟢 TA Real Completa 🔒"
     if "manual" in low and ("tennis abstract" in low or "flashscore" in low):
         return "manual", "📋 Manual"
     if "auto recent" in low or "auto challenger recent form" in low or "histórico local" in low or "historico local" in low:
@@ -12200,6 +12259,8 @@ def _ta_profile_cache_upsert_manual_v23485(expected_player, raw_text):
                     if "manual" not in src_old.lower():
                         item["source"] = "Manual " + (src_old or "TennisAbstract")
                 item["manual_saved_at"] = _ta_profile_cache_today()
+                item["permanent_ta"] = True
+                item["expires_policy"] = "manual_permanent"
                 cache[k] = item
         _ta_profile_cache_save(cache)
     except Exception:
@@ -13094,6 +13155,9 @@ def _ta_profile_cache_upsert_auto_recent_v23433(expected_player, stats, raw_text
         if not key:
             return False, "sin nombre"
         cache = _ta_profile_cache_load()
+        old_item = cache.get(key)
+        if _ta_profile_cache_is_ta_real_permanent(old_item):
+            return True, f"TA Real permanente conservada para {player}; no se sustituye por Auto Recent"
         cache[key] = {
             "player": player,
             "expected_player": expected_player,
