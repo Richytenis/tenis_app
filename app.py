@@ -12056,16 +12056,65 @@ def _ta_profile_cache_status_text(player_name):
     player = item.get("player", player_name)
     age = _ta_profile_cache_age_label(uploaded)
     stale = _ta_profile_cache_is_stale(item)
-    summary = str(item.get("summary", ""))[:180]
     icon = "♻️" if stale else "💾"
-    txt = f"{icon} Perfil guardado · {player} · {src} · {uploaded or 'sin fecha'} ({age})"
+
+    def _num(x):
+        try:
+            if x is None or x == "":
+                return ""
+            if isinstance(x, float) and x.is_integer():
+                return str(int(x))
+            return str(x)
+        except Exception:
+            return str(x)
+
+    ta_score = int(item.get("ta_full_score", 0) or 0)
+    ta_full = item.get("ta_full", {}) if isinstance(item.get("ta_full", {}), dict) else {}
+    year_cur = item.get("ta_year_current", {}) if isinstance(item.get("ta_year_current", {}), dict) else {}
+    tour_2026 = item.get("tour_2026", {}) if isinstance(item.get("tour_2026", {}), dict) else {}
+    challenger_2026 = item.get("challenger_2026_full", {}) if isinstance(item.get("challenger_2026_full", {}), dict) else {}
+    recent_used = _num(item.get("recent_used", item.get("matches", "")))
+
+    # v23.49.16: el resumen diferencia claramente TA completa vs forma reciente.
+    if ta_score >= 3 and ("tennis abstract" in str(src).lower() or item.get("permanent_ta")):
+        elo = _num(item.get("elo") or year_cur.get("elo")) or "N/A"
+        helo = _num(year_cur.get("hElo") or item.get("hElo"))
+        celo = _num(year_cur.get("cElo") or item.get("cElo"))
+        gelo = _num(year_cur.get("gElo") or item.get("gElo"))
+        rank = _num(year_cur.get("rank"))
+        parts = [f"{icon} Perfil guardado · {player} · 🟢 TennisAbstract COMPLETO · {uploaded or 'sin fecha'} ({age})"]
+        if rank:
+            parts.append(f"Rank {rank}")
+        parts.append(f"Elo {elo}")
+        surf_elos = " / ".join([x for x in [f"hElo {helo}" if helo else "", f"cElo {celo}" if celo else "", f"gElo {gelo}" if gelo else ""] if x])
+        if surf_elos:
+            parts.append(surf_elos)
+        if tour_2026.get("matches"):
+            hp = _num(tour_2026.get("hold_pct")); bp = _num(tour_2026.get("break_pct"))
+            parts.append(f"Tour 2026: {tour_2026.get('matches')} partidos" + (f" · Hold {hp}% · Break {bp}%" if hp or bp else ""))
+        if challenger_2026.get("matches"):
+            hp = _num(challenger_2026.get("hold_pct")); bp = _num(challenger_2026.get("break_pct"))
+            parts.append(f"Challenger 2026: {challenger_2026.get('matches')} partidos" + (f" · Hold {hp}% · Break {bp}%" if hp or bp else ""))
+        for lbl, key in [("Hard L52", "ta_best_hard"), ("Clay L52", "ta_best_clay"), ("Grass L52", "ta_best_grass")]:
+            d = item.get(key, {}) if isinstance(item.get(key, {}), dict) else {}
+            if d.get("matches"):
+                hp = _num(d.get("hold_pct")); bp = _num(d.get("break_pct")); wr = _num(d.get("win_pct"))
+                parts.append(f"{lbl}: {d.get('matches')} partidos" + (f" · Win {wr}%" if wr else "") + (f" · Hold {hp}% · Break {bp}%" if hp or bp else ""))
+                break
+        if recent_used:
+            parts.append(f"Recent form usado aparte: últimos {recent_used} partidos")
+        txt = " · ".join(parts)
+    else:
+        summary = str(item.get("summary", ""))[:180]
+        txt = f"{icon} Perfil guardado · {player} · {src} · {uploaded or 'sin fecha'} ({age})"
+        if summary:
+            txt += f" · {summary}"
+
     if stale:
         if _ta_profile_cache_is_ta_real_permanent(item):
             txt += f" · ANTIGUA >{TA_PROFILE_MAX_AGE_DAYS}d: se puede refrescar, pero se sigue usando y NO se borra"
         else:
             txt += f" · CADUCADO >{TA_PROFILE_MAX_AGE_DAYS}d: se volverá a pedir/buscar"
-    if summary:
-        txt += f" · {summary}"
     return txt, item
 
 
@@ -13852,7 +13901,23 @@ def _estado_lectura_ficha_datos_extra(d):
         # Para pintar verde exigimos marcadores reales de TA, no solo n=12.
         ta_markers = any(k in ta for k in ["tour_2026", "challenger_2026", "career_challenger", "last52", "hElo", "cElo", "gElo", "helo", "celo", "gelo"]) or any(x in raw for x in ["Tour-Level Seasons", "Challenger Seasons", "Last 52 Weeks", "Career Splits", "Year-End Rankings", "Elo rank:"])
         if n >= 5 and ta_markers:
-            return "✅ Tennis Abstract leído", f"{player}: {n} partidos · Over18 {over}/{n} · Set ganado {setwon}/{n} · 3 sets {threes}/{n} · media {avg:.1f} juegos · Elo {elo}"
+            full = ta.get("ta_full", {}) if isinstance(ta.get("ta_full", {}), dict) else {}
+            yc = full.get("year_end_current", {}) if isinstance(full.get("year_end_current", {}), dict) else {}
+            tour26 = (full.get("tour_seasons", {}) or {}).get("2026", {}) if isinstance(full.get("tour_seasons", {}), dict) else {}
+            l52 = (full.get("last52_splits", {}) or {}) if isinstance(full.get("last52_splits", {}), dict) else {}
+            best_surface_txt = ""
+            for sf in ["Hard", "Clay", "Grass"]:
+                dd = l52.get(sf, {}) if isinstance(l52.get(sf, {}), dict) else {}
+                if dd.get("matches"):
+                    best_surface_txt = f" · {sf} L52 {dd.get('matches')}p Hold {dd.get('hold_pct','?')}% Break {dd.get('break_pct','?')}%"
+                    break
+            tour_txt = ""
+            if isinstance(tour26, dict) and tour26.get("matches"):
+                tour_txt = f" · Tour 2026 {tour26.get('matches')}p Hold {tour26.get('hold_pct','?')}% Break {tour26.get('break_pct','?')}%"
+            surf_elo = ""
+            if yc:
+                surf_elo = f" · hElo {yc.get('hElo', ta.get('hElo','N/A'))} · cElo {yc.get('cElo', ta.get('cElo','N/A'))} · gElo {yc.get('gElo', ta.get('gElo','N/A'))}"
+            return "✅ Tennis Abstract COMPLETO leído", f"{player}: TA completa guardada · Elo {elo}{surf_elo}{tour_txt}{best_surface_txt} · Recent form aparte: últimos {n} partidos, Over18 {over}/{n}, media {avg:.1f}."
         return "⚠️ Tennis Abstract parcial", f"{player}: {n} partidos detectados, pero sin marcadores completos TA. Elo {elo}."
     if isinstance(fs, dict):
         player = fs.get("player") or "jugador"
