@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.9-ta-strict-real-final"
+APP_VERSION = "v23.49.10-ta-force-full-debug"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -12021,7 +12021,7 @@ def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
         "career_stats": (parsed_obj.get("ta_full", {}) or {}).get("career_splits", {}),
         "last52_stats": (parsed_obj.get("ta_full", {}) or {}).get("last52_splits", {}),
         "profile_source_type": "TA Real Completo" if int(parsed_obj.get("ta_full_score", 0) or 0) >= 3 else parsed_obj.get("source", ""),
-        "permanent_ta": True if (int(parsed_obj.get("ta_full_score", 0) or 0) >= 3 or "Tennis Abstract" in str(parsed_obj.get("source", ""))) else False,
+        "permanent_ta": True if (int(parsed_obj.get("ta_full_score", 0) or 0) >= 3 or "manual" in str(parsed_obj.get("source", "")).lower()) else False,
         "expires_policy": "permanent_use_stale_only_warning",
     }
 
@@ -12241,22 +12241,20 @@ def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
             continue
         profile_text = _ta_match_html_to_profile_text_v23432(html_text, name)
         parsed = _parse_tennisabstract_player_profile(profile_text)
-        if parsed and (int(parsed.get("matches", 0) or 0) >= 1 or int(parsed.get("ta_full_score", 0) or 0) >= 3):
-            # Guardamos el texto completo descargado y dejamos que el upsert decida si pisa Auto Recent.
+        full = int((parsed or {}).get("ta_full_score", 0) or 0) if parsed else 0
+        html_len = len(str(html_text or ""))
+        text_len = len(str(profile_text or ""))
+        if parsed and full >= 3:
+            # Solo guardamos como TA Real si trae secciones completas: Elo/seasons/splits/last52.
             ok, msg = _ta_profile_cache_upsert_from_raw(name, profile_text, parsed=parsed)
             if ok:
-                full = int(parsed.get("ta_full_score", 0) or 0)
-                return True, f"{name}: TA Real guardada desde URL ({parsed.get('matches', 0)} recientes, full={full})"
-            errors.append(f"TA leída pero no guardada: {msg}")
+                return True, f"{name}: TA Real COMPLETA guardada · full={full} · url={url} · html={html_len} chars · text={text_len} chars"
+            errors.append(f"TA completa leída pero no guardada: {msg} · url={url}")
         elif parsed:
-            ok, msg = _ta_profile_cache_upsert_from_raw(name, profile_text, parsed=parsed)
-            if ok:
-                return True, f"{name}: ficha TA básica guardada"
-            errors.append(f"TA básica no guardada: {msg}")
+            # No lo guardamos como TA real para no disfrazar una ficha parcial de TennisAbstract.
+            errors.append(f"TA parcial/no completa · full={full} · recent={parsed.get('matches', 0)} · url={url} · html={html_len} chars · text={text_len} chars")
         else:
-            # Si descargó página pero el formato no trae Recent Results parseable,
-            # no la damos por buena para Over. Pasamos a fallback local.
-            errors.append("TA descargada pero sin Recent Results parseables")
+            errors.append(f"TA descargada pero parser vacío · url={url} · html={html_len} chars · text={text_len} chars")
 
     # 2) Fallback local: usa los históricos que ya tiene la app para generar una ficha automática.
     # Esto NO toca el motor Over; solo rellena la caja de refuerzo con evidencia local.
@@ -12307,13 +12305,19 @@ def _ta_match_players_from_extra_candidates_v23432(cand_df):
 
 
 def _ta_match_cache_status_counts_v23432(players):
+    """v23.49.10: Auto Recent NO cuenta como definitivo.
+    Para el botón de extracción, los Auto Recent pasan a missing/upgrade_candidates
+    para intentar convertirlos en TA Real completa. No toca cálculos.
+    """
     ok, missing = [], []
     for n in players or []:
         canon = _ta_alias_resolve(n)
-        item = _ta_profile_cache_find(canon) or _ta_profile_cache_find(n)
-        if item and str(item.get("raw_text", "")).strip():
+        item = _ta_profile_cache_find(canon, allow_stale=True) or _ta_profile_cache_find(n, allow_stale=True)
+        kind, _label = _ta_profile_source_kind_v23485(item)
+        if kind in ["ta", "manual"]:
             ok.append(n)
         else:
+            # sin ficha, otro, y Auto Recent: volver a intentar TA real
             missing.append(n)
     return ok, missing
 
@@ -13951,7 +13955,7 @@ def render_datos_extra_reanalysis_panel(ok_saved):
             st.warning(f"No se pudo mostrar auditoría TA: {type(e).__name__}: {e}")
 
         with st.expander("🔎 Auto extraer fichas TennisAbstract para estos picks", expanded=bool(missing_cached)):
-            st.caption("Esto intenta leer la ficha TA de los jugadores de estos picks Over y guardarla en caché. Si funciona, no tienes que pegarla a mano.")
+            st.caption("Esto intenta leer la ficha TA REAL COMPLETA. Los Auto Recent también se reintentan para convertirlos en TA Real; no se toca ningún cálculo.")
             if missing_cached:
                 st.dataframe(pd.DataFrame({"Jugador pendiente": missing_cached}), width='stretch', hide_index=True)
             else:
