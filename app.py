@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.48.3-ta-audit-source-clarity"
+APP_VERSION = "v23.48.4-ta-raw-profile-viewer"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -13376,7 +13376,73 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                 a5.metric("Alias usados", audit_sum.get("aliases", 0))
                 st.caption(f"Cobertura TA útil: {audit_sum.get('cobertura', 0):.1f}%. Recientes usados = últimos partidos que entran en el refuerzo (normalmente máx. 12). Total temporada TA solo aparece si la ficha TennisAbstract lo trae. Si ves repetidos pendientes, crea alias o pega ficha manual.")
                 if audit_rows:
-                    st.dataframe(pd.DataFrame(audit_rows), width='stretch', hide_index=True)
+                    audit_df = pd.DataFrame(audit_rows)
+                    st.dataframe(audit_df, width='stretch', hide_index=True)
+
+                    # v23.48.4: inspector de ficha completa TA/cache.
+                    # Permite comprobar si la caché guarda solo recientes o también texto/ficha completa.
+                    try:
+                        st.markdown("#### 👁️ Ver ficha completa guardada")
+                        opciones_ficha = []
+                        for r in audit_rows:
+                            estado = str(r.get("Estado ficha", ""))
+                            if not estado.startswith("❌"):
+                                label = f"{r.get('Jugador detectado','')} → {r.get('Jugador ficha','') or r.get('Nombre usado','')} · {r.get('Estado ficha','')} · {r.get('Edad','')}"
+                                opciones_ficha.append((label, r))
+
+                        if opciones_ficha:
+                            labels = [x[0] for x in opciones_ficha]
+                            elegido_label = st.selectbox("Jugador a inspeccionar", labels, key="ta_raw_profile_viewer_select_v23484")
+                            elegido = dict(opciones_ficha[labels.index(elegido_label)][1])
+
+                            cache_item = None
+                            for candidate_name in [elegido.get("Nombre usado", ""), elegido.get("Jugador detectado", ""), elegido.get("Jugador ficha", "")]:
+                                if str(candidate_name).strip():
+                                    cache_item = _ta_profile_cache_find(candidate_name, allow_stale=True)
+                                    if isinstance(cache_item, dict) and str(cache_item.get("raw_text", "")).strip():
+                                        break
+
+                            if isinstance(cache_item, dict) and str(cache_item.get("raw_text", "")).strip():
+                                raw_txt = str(cache_item.get("raw_text", ""))
+                                meta_cols = st.columns(5)
+                                meta_cols[0].metric("Caracteres ficha", len(raw_txt))
+                                meta_cols[1].metric("Edad", _ta_profile_cache_age_label(cache_item.get("uploaded_at", "")))
+                                meta_cols[2].metric("Player", str(cache_item.get("player", ""))[:22])
+                                meta_cols[3].metric("Source", str(cache_item.get("source", ""))[:22])
+                                meta_cols[4].metric("Stale", "Sí" if bool(cache_item.get("stale", False)) else "No")
+
+                                parsed_info = {}
+                                try:
+                                    if "Auto Challenger Recent Form" in raw_txt or "Auto Recent Form" in raw_txt:
+                                        parsed_info = _parse_auto_recent_profile_v23433(raw_txt) or {}
+                                    else:
+                                        parsed_info = _parse_tennisabstract_player_profile(raw_txt) or {}
+                                except Exception as e_parse:
+                                    parsed_info = {"parse_error": f"{type(e_parse).__name__}: {e_parse}"}
+
+                                with st.expander("Resumen parseado de la ficha", expanded=True):
+                                    st.json(parsed_info if parsed_info else {"info": "La ficha existe, pero no se ha podido parsear en campos estructurados."})
+
+                                with st.expander("Texto completo guardado en caché", expanded=False):
+                                    st.text_area("raw_text", raw_txt, height=360, key="ta_raw_profile_viewer_text_v23484")
+
+                                try:
+                                    st.download_button(
+                                        "⬇️ Descargar ficha cache JSON",
+                                        data=json.dumps(cache_item, ensure_ascii=False, indent=2),
+                                        file_name=f"ta_cache_{limpiar(elegido.get('Nombre usado','jugador'))}.json",
+                                        mime="application/json",
+                                        key="ta_raw_profile_viewer_download_v23484",
+                                        use_container_width=True,
+                                    )
+                                except Exception:
+                                    pass
+                            else:
+                                st.warning("No he encontrado raw_text guardado para este jugador. Puede estar OK por histórico local, no por ficha TA completa.")
+                        else:
+                            st.info("No hay fichas OK para inspeccionar en este bloque.")
+                    except Exception as e_viewer:
+                        st.warning(f"No se pudo abrir el visor de ficha TA: {type(e_viewer).__name__}: {e_viewer}")
         except Exception as e:
             st.warning(f"No se pudo mostrar auditoría TA: {type(e).__name__}: {e}")
 
