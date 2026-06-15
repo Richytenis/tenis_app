@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.48.1-ta-audit-panel"
+APP_VERSION = "v23.48.2-ta-real-matches-audit"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11830,6 +11830,94 @@ def _ta_profile_cache_num_matches(item):
         return 0
 
 
+def _ta_profile_cache_recent_results_raw_count(item):
+    """Cuenta líneas reales de Recent Results dentro del raw_text guardado.
+    Nota: el modelo puede usar solo una ventana reciente, pero este contador sirve
+    para auditar si la ficha pegada/descargada trae más historial que el n usado.
+    """
+    try:
+        raw = normalizar_texto((item or {}).get("raw_text", ""))
+        if not raw:
+            return 0
+        lines = [normalizar_texto(x).strip() for x in raw.splitlines() if normalizar_texto(x).strip()]
+        in_recent = False
+        cnt = 0
+        for ln in lines:
+            if ln.startswith("Recent Results"):
+                in_recent = True
+                continue
+            if in_recent and (ln.startswith("Tour-Level Seasons") or ln.startswith("Challenger Seasons") or ln.startswith("ITF Seasons") or ln.startswith("Doubles Results")):
+                break
+            if not in_recent:
+                continue
+            if re.match(r"^\d{2}-[A-Za-z]{3}-\d{4}\t", ln) and re.search(r"\d+-\d+", ln):
+                cnt += 1
+        return int(cnt)
+    except Exception:
+        return 0
+
+
+def _ta_profile_cache_season_matches_raw(item):
+    """Intenta leer partidos de temporada desde tablas de Tennis Abstract.
+    Prioriza 2026 si aparece. Si no, devuelve el mayor número de partidos anual detectado.
+    """
+    try:
+        raw = normalizar_texto((item or {}).get("raw_text", ""))
+        if not raw:
+            return 0
+        lines = [normalizar_texto(x).strip() for x in raw.splitlines() if normalizar_texto(x).strip()]
+        best = 0
+        for ln in lines:
+            # Ej.: 2026 23 14 9 60.9% ... en Tour-Level/Challenger Seasons
+            if re.match(r"^20\d{2}\s+\d+\s+\d+\s+\d+", ln):
+                parts = re.split(r"\s+", ln)
+                try:
+                    year = int(parts[0]); matches = int(parts[1])
+                    if year == 2026:
+                        return max(0, matches)
+                    best = max(best, matches)
+                except Exception:
+                    pass
+        return int(best)
+    except Exception:
+        return 0
+
+
+def _ta_profile_cache_real_matches_audit(item):
+    """Devuelve el mejor contador visible para auditoría.
+    - n usado: partidos que el parser está usando para señales recientes.
+    - recientes raw: líneas Recent Results presentes en la ficha.
+    - temporada TA: partidos de la tabla de temporadas si existe.
+    """
+    n_used = _ta_profile_cache_num_matches(item)
+    recent_raw = _ta_profile_cache_recent_results_raw_count(item)
+    season_raw = _ta_profile_cache_season_matches_raw(item)
+    real_n = max(n_used, recent_raw, season_raw)
+    if season_raw:
+        source = "Temporada TA"
+    elif recent_raw:
+        source = "Recent Results"
+    elif n_used:
+        source = "Ventana usada"
+    else:
+        source = "Sin partidos"
+    return int(real_n), int(n_used), int(recent_raw), int(season_raw), source
+
+
+def _ta_profile_cache_strength_label(real_matches):
+    try:
+        n = int(real_matches or 0)
+    except Exception:
+        n = 0
+    if n >= 50:
+        return "🟢 Sólida"
+    if n >= 20:
+        return "🟡 Limitada"
+    if n >= 1:
+        return "🔴 Pobre"
+    return "⚪ Sin datos"
+
+
 def _ta_profile_cache_should_replace(old_item, new_item, force_manual=True):
     """Decide si una ficha nueva debe pisar la guardada.
     v23.46.9: si el usuario pega una ficha mejor, debe reemplazar perfiles parciales n=0.
@@ -12148,12 +12236,13 @@ def _ta_match_cache_audit_rows_v23481(players):
         item = _ta_profile_cache_find(canon, allow_stale=True) or _ta_profile_cache_find(detected, allow_stale=True)
         if isinstance(item, dict) and str(item.get("raw_text", "")).strip():
             stale = bool(item.get("stale", _ta_profile_cache_is_stale(item)))
-            matches = _ta_profile_cache_num_matches(item)
+            real_matches, matches_used, recent_raw, season_raw, real_src = _ta_profile_cache_real_matches_audit(item)
+            strength = _ta_profile_cache_strength_label(real_matches)
             if stale:
                 status = "♻️ Caducada >7d"
-            elif matches >= 5:
+            elif matches_used >= 5 or real_matches >= 20:
                 status = "✅ OK"
-            elif matches >= 1:
+            elif matches_used >= 1 or real_matches >= 1:
                 status = "⚠️ Parcial"
             else:
                 status = "⚠️ Sin partidos"
@@ -12162,7 +12251,12 @@ def _ta_match_cache_audit_rows_v23481(players):
                 "Nombre usado": canon,
                 "Alias": "Sí" if alias_used else "No",
                 "Estado ficha": status,
-                "Partidos ficha": matches,
+                "Calidad": strength,
+                "Partidos reales": real_matches,
+                "Partidos usados": matches_used,
+                "Recent raw": recent_raw,
+                "Temporada TA": season_raw,
+                "Origen conteo": real_src,
                 "Fecha ficha": item.get("uploaded_at", ""),
                 "Edad": _ta_profile_cache_age_label(item.get("uploaded_at", "")),
                 "Jugador ficha": item.get("player", ""),
@@ -12174,7 +12268,12 @@ def _ta_match_cache_audit_rows_v23481(players):
                 "Nombre usado": canon,
                 "Alias": "Sí" if alias_used else "No",
                 "Estado ficha": "❌ Pendiente",
-                "Partidos ficha": 0,
+                "Calidad": "⚪ Sin datos",
+                "Partidos reales": 0,
+                "Partidos usados": 0,
+                "Recent raw": 0,
+                "Temporada TA": 0,
+                "Origen conteo": "Sin ficha",
                 "Fecha ficha": "",
                 "Edad": "",
                 "Jugador ficha": "",
@@ -13267,7 +13366,7 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                 a3.metric("Parciales/caducadas", audit_sum.get("partial", 0) + audit_sum.get("stale", 0))
                 a4.metric("Pendientes", audit_sum.get("missing", 0))
                 a5.metric("Alias usados", audit_sum.get("aliases", 0))
-                st.caption(f"Cobertura TA útil: {audit_sum.get('cobertura', 0):.1f}%. Si ves jugadores repetidos como pendientes, crea alias o pega ficha manual.")
+                st.caption(f"Cobertura TA útil: {audit_sum.get('cobertura', 0):.1f}%. Ahora se muestran partidos reales/temporada TA y partidos usados por el modelo. Si ves repetidos pendientes, crea alias o pega ficha manual.")
                 if audit_rows:
                     st.dataframe(pd.DataFrame(audit_rows), width='stretch', hide_index=True)
         except Exception as e:
