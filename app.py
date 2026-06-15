@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.14-ta-html-debug-individual"
+APP_VERSION = "v23.49.15-ta-jsfrag-html-parser"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -12105,18 +12105,100 @@ def _ta_match_fetch_url_v23432(url, timeout_sec=22):
     return "", last or "sin respuesta"
 
 
+def _ta_decode_jsfrag_to_htmlish_v234915(js_text):
+    """v23.49.15: TennisAbstract carga casi todas las tablas desde /jsfrags/*.js.
+    El HTML principal sí descarga bien, pero solo trae cabecera y scripts. Esta función
+    convierte los fragmentos JS escapados a HTML/texto para que el parser pueda ver tablas.
+    No toca cálculos: solo recuperación de datos TA.
+    """
+    raw = str(js_text or "")
+    if not raw.strip():
+        return ""
+    variants = [raw]
+    try:
+        # Muchos jsfrags incluyen HTML escapado dentro de strings JS.
+        variants.append(bytes(raw, "utf-8").decode("unicode_escape", errors="ignore"))
+    except Exception:
+        pass
+    out = []
+    for txt in variants:
+        try:
+            t = txt
+            t = t.replace('\\/', '/')
+            t = t.replace('\\n', '\n').replace('\\t', '\t').replace('\\r', '\n')
+            t = t.replace('\x3c', '<').replace('\x3e', '>').replace('\u003c', '<').replace('\u003e', '>')
+            t = t.replace("\\'", "'").replace('\\"', '"')
+            out.append(t)
+            # Extrae strings largos que contengan HTML o títulos de secciones.
+            for m in re.finditer(r"(['\"])(.*?)(?<!\\)\1", t, flags=re.S):
+                frag = m.group(2)
+                if len(frag) < 20:
+                    continue
+                low = frag.lower()
+                if any(k in low for k in ['<table', '<tr', '<td', 'tour-level', 'challenger', 'last 52', 'year-end', 'recent results', 'match-results']):
+                    out.append(frag)
+        except Exception:
+            continue
+    return "\n".join(out)
+
+
+def _ta_fetch_jsfrags_from_html_v234915(html_text, timeout_sec=18):
+    """Descarga scripts /jsfrags/ enlazados por la página TA.
+    Es la pieza que faltaba: player.cgi contiene poco texto y las tablas van en JS externo.
+    """
+    html_raw = str(html_text or "")
+    urls = []
+    for src in re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html_raw, flags=re.I):
+        src = src.strip()
+        if not src:
+            continue
+        if 'jsfrags/' not in src and '/cgi-bin/jsmatches/' not in src:
+            continue
+        if src.startswith('//'):
+            src = 'https:' + src
+        elif src.startswith('/'):
+            src = 'https://www.tennisabstract.com' + src
+        elif not src.startswith('http'):
+            src = 'https://www.tennisabstract.com/' + src.lstrip('/')
+        if src not in urls:
+            urls.append(src)
+    pieces = []
+    debug = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 TennisIA/TAJSFrag",
+        "Accept": "*/*",
+        "Referer": "https://www.tennisabstract.com/",
+        "Connection": "close",
+    }
+    for u in urls[:6]:
+        try:
+            r = requests.get(u, timeout=max(8, int(timeout_sec)), headers=headers)
+            status = f"HTTP {getattr(r, 'status_code', '')}"
+            txt = r.text or ""
+            debug.append(f"{os.path.basename(u)}:{status}:chars={len(txt)}")
+            if getattr(r, 'status_code', 0) == 200 and txt.strip():
+                pieces.append(f"\n<!-- TA_JSFRAG {u} -->\n" + _ta_decode_jsfrag_to_htmlish_v234915(txt))
+                time.sleep(0.25)
+        except Exception as e:
+            debug.append(f"{os.path.basename(u)}:{type(e).__name__}")
+    if debug:
+        pieces.append("\nTA_JSFRAG_DEBUG\n" + "\n".join(debug) + "\n")
+    return "\n".join(pieces)
+
+
 def _ta_match_html_to_profile_text_v23432(html_text, expected_player=""):
-    """Convierte HTML de TennisAbstract a texto parecido al copiado manual.
-    Importante: convierte celdas de tabla a tabuladores para que
-    _parse_tennisabstract_player_profile() pueda leer Recent Results.
+    """Convierte HTML de TennisAbstract a texto parseable.
+    v23.49.15: además descarga y añade /jsfrags/*.js, porque las tablas actuales
+    no están en el HTML principal sino en scripts externos.
     """
     try:
         import html as _html
-        raw = str(html_text or "")
+        raw0 = str(html_text or "")
+        js_extra = _ta_fetch_jsfrags_from_html_v234915(raw0)
+        raw = raw0 + "\n" + js_extra
 
         def _table_to_tsv(table_html):
             try:
-                import html as _html
                 rows = []
                 for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, flags=re.I | re.S):
                     cells = []
@@ -12132,21 +12214,21 @@ def _ta_match_html_to_profile_text_v23432(html_text, expected_player=""):
             except Exception:
                 return ""
 
-        # Sustituye tablas completas por TSV antes de quitar etiquetas.
-        # Así el parser full puede leer Tour-Level, Challenger, Last52, Career, etc.
+        # Antes de eliminar scripts, ya hemos añadido el contenido de jsfrags.
         raw = re.sub(r"<table[^>]*>.*?</table>", lambda m: "\n" + _table_to_tsv(m.group(0)) + "\n", raw, flags=re.I | re.S)
         txt = raw
-        txt = re.sub(r"<script[^>]*>.*?</script>", " ", txt, flags=re.I | re.S)
         txt = re.sub(r"<style[^>]*>.*?</style>", " ", txt, flags=re.I | re.S)
+        # Quita solo scripts del HTML original; los JSFRAGS ya están fuera en texto/htmlish.
+        txt = re.sub(r"<script[^>]*>.*?</script>", " ", txt, flags=re.I | re.S)
         txt = re.sub(r"</t[dh]>\s*<t[dh][^>]*>", "\t", txt, flags=re.I)
         txt = re.sub(r"<t[dh][^>]*>", "", txt, flags=re.I)
         txt = re.sub(r"</t[dh]>", "\t", txt, flags=re.I)
         txt = re.sub(r"</tr>", "\n", txt, flags=re.I)
         txt = re.sub(r"<br\s*/?>", "\n", txt, flags=re.I)
-        txt = re.sub(r"</p>|</div>|</h\d>", "\n", txt, flags=re.I)
+        txt = re.sub(r"</p>|</div>|</h\d>|</li>", "\n", txt, flags=re.I)
         txt = re.sub(r"<[^>]+>", " ", txt)
         txt = _html.unescape(txt)
-        # Limpieza conservadora: mantiene tabs y saltos.
+        txt = txt.replace('\\n', '\n').replace('\\t', '\t')
         lines = []
         for line in txt.splitlines():
             parts = [re.sub(r"\s+", " ", x).strip() for x in line.split("\t")]
@@ -12155,7 +12237,6 @@ def _ta_match_html_to_profile_text_v23432(html_text, expected_player=""):
             if line2:
                 lines.append(line2)
         body = "\n".join(lines)
-        # El parser espera que la primera línea sea el jugador.
         header = normalizar_texto(expected_player or "").strip()
         if header:
             return f"{header}\nTennis Abstract\n{body}"
@@ -12211,81 +12292,6 @@ def _ta_match_profile_urls_v23432(name):
                     urls.append(u)
     return urls[:14]
 
-
-
-# =========================================================
-# v23.49.14 TA HTML DEBUG INDIVIDUAL
-# Diagnóstico real: descarga 1 jugador, guarda HTML y muestra URL/HTTP/chars/sample.
-# No toca cálculos, Over ni predictor.
-# =========================================================
-TA_DEBUG_HTML_DIR = os.path.join("datos", "ta_debug_html")
-
-def _ta_debug_slug_v234914(name):
-    s = limpiar(name).lower()
-    return s or "jugador"
-
-def _ta_debug_save_html_v234914(player_name, timeout_sec=22, max_urls=8):
-    """Descarga HTML TennisAbstract de UN jugador y lo guarda para poder inspeccionarlo.
-    Devuelve dict con URL, estado, chars, ruta y muestra. No modifica cálculos ni caché de picks.
-    """
-    name = normalizar_texto(player_name)
-    try:
-        os.makedirs(TA_DEBUG_HTML_DIR, exist_ok=True)
-    except Exception:
-        pass
-    urls = _ta_match_profile_urls_v23432(name)[:int(max_urls or 8)]
-    attempts = []
-    best = None
-    for url in urls:
-        html_text, status = _ta_match_fetch_url_v23432(url, timeout_sec=timeout_sec)
-        chars = len(html_text or "")
-        sample = re.sub(r"\s+", " ", str(html_text or "")[:800]).strip()
-        attempt = {
-            "Jugador": name,
-            "URL": url,
-            "Estado": status,
-            "HTML chars": chars,
-            "Sample": sample[:300],
-        }
-        attempts.append(attempt)
-        if html_text and status == "OK" and chars > 1000 and best is None:
-            best = (url, html_text, attempt)
-            # No seguimos descargando más para evitar 429.
-            break
-        # pequeña pausa si falló, para no machacar TA
-        time.sleep(0.35)
-
-    if best:
-        url, html_text, attempt = best
-        slug = _ta_debug_slug_v234914(name)
-        path_html = os.path.join(TA_DEBUG_HTML_DIR, f"{slug}.html")
-        path_txt = os.path.join(TA_DEBUG_HTML_DIR, f"{slug}_texto_convertido.txt")
-        try:
-            with open(path_html, "w", encoding="utf-8") as f:
-                f.write(html_text)
-            profile_text = _ta_match_html_to_profile_text_v23432(html_text, name)
-            with open(path_txt, "w", encoding="utf-8") as f:
-                f.write(profile_text)
-            parsed = None
-            try:
-                parsed = _parse_tennisabstract_player_profile(profile_text)
-            except Exception as e:
-                parsed = {"parse_error": f"{type(e).__name__}: {e}"}
-            return {
-                "ok": True,
-                "player": name,
-                "url": url,
-                "html_chars": len(html_text),
-                "html_path": path_html,
-                "txt_path": path_txt,
-                "sample": re.sub(r"\s+", " ", html_text[:1200]).strip(),
-                "converted_sample": profile_text[:2000],
-                "parsed": parsed or {},
-                "attempts": attempts,
-            }
-        except Exception as e:
-            return {"ok": False, "player": name, "error": f"No se pudo guardar HTML: {type(e).__name__}: {e}", "attempts": attempts}
-    return {"ok": False, "player": name, "error": "No se descargó HTML válido", "attempts": attempts}
 
 def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
     """Busca la ficha TA y, si TA no responde/no parsea, crea ficha de refuerzo
@@ -14031,56 +14037,6 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                 st.dataframe(pd.DataFrame({"Jugador pendiente": missing_cached}), width='stretch', hide_index=True)
             else:
                 st.success("Todas las fichas de estos picks ya están en caché.")
-            # v23.49.14: diagnóstico individual HTML TA. Un jugador cada vez para evitar HTTP 429.
-            try:
-                st.markdown("#### 🧪 Diagnóstico individual TennisAbstract")
-                st.caption("Descarga SOLO un jugador, guarda el HTML real y muestra qué recibe el parser. Úsalo con Zverev/Karen/Vit, de uno en uno.")
-                debug_players = []
-                try:
-                    debug_players = list(dict.fromkeys([normalizar_texto(x) for x in (players_extra or []) if normalizar_texto(x)]))
-                except Exception:
-                    debug_players = []
-                if not debug_players:
-                    debug_players = list(missing_cached or [])
-                if debug_players:
-                    chosen_debug = st.selectbox("Jugador para ver/guardar HTML TA", debug_players, key="ta_debug_html_player_v234914")
-                    cdbg1, cdbg2 = st.columns([1, 1])
-                    with cdbg1:
-                        if st.button("📄 Descargar y guardar HTML TA de este jugador", key="ta_debug_html_btn_v234914", use_container_width=True):
-                            with st.spinner(f"Descargando HTML TA de {chosen_debug}..."):
-                                dbg = _ta_debug_save_html_v234914(chosen_debug, timeout_sec=int(st.session_state.get("ta_auto_timeout_v23432", 22)), max_urls=8)
-                            st.session_state["ta_debug_last_v234914"] = dbg
-                    with cdbg2:
-                        if st.button("🔎 Intentar guardar TA Real SOLO este jugador", key="ta_debug_one_save_btn_v234914", use_container_width=True):
-                            with st.spinner(f"Intentando TA Real de {chosen_debug}..."):
-                                ok_one, msg_one = _ta_match_auto_cache_one_player_v23432(chosen_debug, timeout_sec=int(st.session_state.get("ta_auto_timeout_v23432", 22)))
-                            if ok_one:
-                                st.success(msg_one)
-                            else:
-                                st.error(msg_one)
-                    dbg = st.session_state.get("ta_debug_last_v234914")
-                    if isinstance(dbg, dict):
-                        if dbg.get("ok"):
-                            st.success(f"HTML guardado: {dbg.get('html_chars')} caracteres · {dbg.get('html_path')}")
-                            st.write("URL usada:", dbg.get("url"))
-                            st.write("TXT convertido:", dbg.get("txt_path"))
-                            with st.expander("Intentos URL / HTTP", expanded=True):
-                                st.dataframe(pd.DataFrame(dbg.get("attempts", [])), width='stretch', hide_index=True)
-                            with st.expander("Primeros caracteres del HTML descargado", expanded=False):
-                                st.text_area("HTML sample", dbg.get("sample", ""), height=220, key="ta_debug_html_sample_v234914")
-                            with st.expander("Texto convertido que recibe el parser", expanded=True):
-                                st.text_area("Texto convertido", dbg.get("converted_sample", ""), height=300, key="ta_debug_text_sample_v234914")
-                            with st.expander("Resultado parser", expanded=True):
-                                st.json(dbg.get("parsed", {}) or {"parser": "None"})
-                        else:
-                            st.error(dbg.get("error", "Fallo desconocido"))
-                            if dbg.get("attempts"):
-                                st.dataframe(pd.DataFrame(dbg.get("attempts", [])), width='stretch', hide_index=True)
-                else:
-                    st.info("No hay jugadores detectados para diagnóstico.")
-            except Exception as e_dbg:
-                st.warning(f"No se pudo mostrar diagnóstico HTML TA: {type(e_dbg).__name__}: {e_dbg}")
-
             timeout_auto = st.slider("Timeout por ficha TA", 12, 35, 22, 1, key="ta_auto_timeout_v23432")
             max_auto = st.slider("Máximo fichas a intentar ahora", 2, 30, min(20, max(2, len(missing_cached) if missing_cached else 2)), 1, key="ta_auto_max_v23432")
             if st.button("🔎 Extraer fichas TA pendientes y guardar caché", key="ta_auto_fetch_v23432", use_container_width=True, disabled=not bool(missing_cached)):
