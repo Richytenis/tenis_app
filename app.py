@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.1-ta-parser-v2-fixed"
+APP_VERSION = "v23.49.3-auto-ta-url-full"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -1693,6 +1693,53 @@ def _auto_profile_parse_ta_elo_html_v23420(html_text):
     except Exception:
         return pd.DataFrame()
 
+
+
+
+def _ta_match_urls_from_elo_leaderboard_v23493(name, circuito="ATP", min_score=0.90):
+    """Busca la URL real de TennisAbstract en el leaderboard Elo.
+    Esto corrige casos donde la URL directa falla por iniciales, acentos o variantes.
+    No toca el motor Over: solo resuelve la ficha TA.
+    """
+    out = []
+    try:
+        # ATP por defecto; Challenger también vive en el ranking ATP de TA.
+        circuits = [circuito] if str(circuito).upper() in ["ATP", "WTA"] else ["ATP"]
+        if "ATP" not in [str(c).upper() for c in circuits]:
+            circuits.append("ATP")
+        for c in circuits:
+            url = _auto_profile_ta_report_url_v23420(c)
+            html_text, status = _ta_match_fetch_url_v23432(url, timeout_sec=18)
+            if not html_text:
+                continue
+            df = _auto_profile_parse_ta_elo_html_v23420(html_text)
+            if df is None or df.empty or "PlayerUrl" not in df.columns:
+                continue
+            best = []
+            target = _ta_alias_resolve(name)
+            for _, r in df.iterrows():
+                player = normalizar_texto(r.get("Player", ""))
+                pu = normalizar_texto(r.get("PlayerUrl", ""))
+                if not player or not pu:
+                    continue
+                sc = max(similitud_nombre(target, player), similitud_nombre(name, player))
+                # Refuerzo apellido+inicial para nombres abreviados tipo N. Kyrgios.
+                try:
+                    ai1 = apellido_inicial_key(target)
+                    ai2 = apellido_inicial_key(player)
+                    if ai1 and ai2 and ai1 == ai2:
+                        sc = max(sc, 0.99)
+                except Exception:
+                    pass
+                if sc >= min_score:
+                    best.append((sc, int(float(r.get("EloRank", 9999) or 9999)), pu))
+            best.sort(key=lambda x: (-x[0], x[1]))
+            for _, __, u in best[:3]:
+                if u and u not in out:
+                    out.append(u)
+    except Exception:
+        pass
+    return out
 
 def _auto_profile_direct_urls_v23431(name):
     """Candidatos de URL para fichas TennisAbstract. Se usan solo si la tabla Elo no trae enlace."""
@@ -12066,6 +12113,28 @@ def _ta_match_html_to_profile_text_v23432(html_text, expected_player=""):
     try:
         import html as _html
         raw = str(html_text or "")
+
+        def _table_to_tsv(table_html):
+            try:
+                import html as _html
+                rows = []
+                for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, flags=re.I | re.S):
+                    cells = []
+                    for cell in re.findall(r"<t[dh][^>]*>(.*?)</t[dh]>", tr, flags=re.I | re.S):
+                        c = re.sub(r"<br\s*/?>", " ", cell, flags=re.I)
+                        c = re.sub(r"<[^>]+>", " ", c)
+                        c = _html.unescape(c)
+                        c = re.sub(r"\s+", " ", c).strip()
+                        cells.append(c)
+                    if cells:
+                        rows.append("\t".join(cells))
+                return "\n".join(rows)
+            except Exception:
+                return ""
+
+        # Sustituye tablas completas por TSV antes de quitar etiquetas.
+        # Así el parser full puede leer Tour-Level, Challenger, Last52, Career, etc.
+        raw = re.sub(r"<table[^>]*>.*?</table>", lambda m: "\n" + _table_to_tsv(m.group(0)) + "\n", raw, flags=re.I | re.S)
         txt = raw
         txt = re.sub(r"<script[^>]*>.*?</script>", " ", txt, flags=re.I | re.S)
         txt = re.sub(r"<style[^>]*>.*?</style>", " ", txt, flags=re.I | re.S)
@@ -12096,25 +12165,51 @@ def _ta_match_html_to_profile_text_v23432(html_text, expected_player=""):
 
 
 def _ta_match_profile_urls_v23432(name):
-    """URLs candidatas de ficha TA. Primero usa generador existente y añade variantes."""
+    """URLs candidatas de ficha TA.
+    v23.49.3: primero intenta resolver la URL real desde el leaderboard Elo de TA,
+    luego prueba variantes directas con/sin www. Esto arregla jugadores conocidos
+    que antes salían como Sin ficha pese a existir en TennisAbstract.
+    """
     urls = []
-    try:
-        urls.extend(_auto_profile_direct_urls_v23431(name))
-    except Exception:
-        pass
-    toks = tokens(name)
-    if toks:
-        variants = []
-        title_tokens = [str(t).title() for t in toks]
-        variants.append("".join(title_tokens))
-        variants.append("-".join(title_tokens))
-        # Por si viene Apellido Inicial, intentamos solo apellido+inicial sin punto.
-        variants.append("".join(toks).title())
-        for v in variants:
-            u = f"https://www.tennisabstract.com/cgi-bin/player.cgi?p={v}"
-            if v and u not in urls:
+    # 0) Alias manual primero.
+    name0 = normalizar_texto(name)
+    name1 = _ta_alias_resolve(name0)
+    for nm in [name1, name0]:
+        for u in _ta_match_urls_from_elo_leaderboard_v23493(nm, circuito="ATP", min_score=0.88):
+            if u and u not in urls:
                 urls.append(u)
-    return urls[:5]
+
+    # 1) Generador existente.
+    for nm in [name1, name0]:
+        try:
+            for u in _auto_profile_direct_urls_v23431(nm):
+                if u and u not in urls:
+                    urls.append(u)
+        except Exception:
+            pass
+
+    # 2) Variantes directas robustas.
+    for nm in [name1, name0]:
+        toks = tokens(nm)
+        if not toks:
+            continue
+        title_tokens = [str(t).title() for t in toks]
+        variants = []
+        variants.append("".join(title_tokens))              # AlexanderZverev
+        variants.append("-".join(title_tokens))             # Alexander-Zverev
+        variants.append("".join(toks).title())              # NZverev / NKyrgios si abreviado
+        # Si viene "Apellido Inicial" o "Inicial Apellido", probamos apellido+inicial, pero no como única opción.
+        if len(toks) >= 2:
+            variants.append(toks[-1].title() + toks[0][0].title())
+            variants.append(toks[0][0].title() + toks[-1].title())
+        for v in variants:
+            if not v:
+                continue
+            for host in ["https://www.tennisabstract.com", "https://tennisabstract.com"]:
+                u = f"{host}/cgi-bin/player.cgi?p={v}"
+                if u not in urls:
+                    urls.append(u)
+    return urls[:14]
 
 
 def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
@@ -12125,11 +12220,15 @@ def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
     name = normalizar_texto(player_name)
     if not name:
         return False, "sin nombre"
-    existing = _ta_profile_cache_find(name)
-    if existing and str(existing.get("raw_text", "")).strip():
-        return True, f"ya estaba en caché: {existing.get('player', name)}"
+    existing = _ta_profile_cache_find(name, allow_stale=True)
+    existing_priority = _ta_profile_cache_source_priority(existing) if isinstance(existing, dict) else 0
+    # Si ya tenemos TA Real/Manual permanente, no la tocamos.
+    if existing and str(existing.get("raw_text", "")).strip() and existing_priority >= 80:
+        return True, f"ya estaba en caché TA Real/Manual permanente: {existing.get('player', name)}"
 
     errors = []
+    if existing and str(existing.get("raw_text", "")).strip() and existing_priority < 80:
+        errors.append("existía Auto Recent; se intenta mejorar a TA Real")
     # 1) Intento real TennisAbstract.
     for url in _ta_match_profile_urls_v23432(name):
         html_text, status = _ta_match_fetch_url_v23432(url, timeout_sec=timeout_sec)
@@ -12142,10 +12241,12 @@ def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
             continue
         profile_text = _ta_match_html_to_profile_text_v23432(html_text, name)
         parsed = _parse_tennisabstract_player_profile(profile_text)
-        if parsed and int(parsed.get("matches", 0) or 0) >= 1:
+        if parsed and (int(parsed.get("matches", 0) or 0) >= 1 or int(parsed.get("ta_full_score", 0) or 0) >= 3):
+            # Guardamos el texto completo descargado y dejamos que el upsert decida si pisa Auto Recent.
             ok, msg = _ta_profile_cache_upsert_from_raw(name, profile_text, parsed=parsed)
             if ok:
-                return True, f"{name}: ficha TA guardada ({parsed.get('matches', 0)} recientes)"
+                full = int(parsed.get("ta_full_score", 0) or 0)
+                return True, f"{name}: TA Real guardada desde URL ({parsed.get('matches', 0)} recientes, full={full})"
             errors.append(f"TA leída pero no guardada: {msg}")
         elif parsed:
             ok, msg = _ta_profile_cache_upsert_from_raw(name, profile_text, parsed=parsed)
