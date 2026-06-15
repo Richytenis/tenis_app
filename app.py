@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.13-ta-any-table-parser"
+APP_VERSION = "v23.49.14-ta-html-debug-individual"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -12206,12 +12206,86 @@ def _ta_match_profile_urls_v23432(name):
             if not v:
                 continue
             for host in ["https://www.tennisabstract.com", "https://tennisabstract.com"]:
-                for endpoint in ["player.cgi", "player-classic.cgi"]:
-                    u = f"{host}/cgi-bin/{endpoint}?p={v}"
-                    if u not in urls:
-                        urls.append(u)
-    return urls[:24]
+                u = f"{host}/cgi-bin/player.cgi?p={v}"
+                if u not in urls:
+                    urls.append(u)
+    return urls[:14]
 
+
+
+# =========================================================
+# v23.49.14 TA HTML DEBUG INDIVIDUAL
+# Diagnóstico real: descarga 1 jugador, guarda HTML y muestra URL/HTTP/chars/sample.
+# No toca cálculos, Over ni predictor.
+# =========================================================
+TA_DEBUG_HTML_DIR = os.path.join("datos", "ta_debug_html")
+
+def _ta_debug_slug_v234914(name):
+    s = limpiar(name).lower()
+    return s or "jugador"
+
+def _ta_debug_save_html_v234914(player_name, timeout_sec=22, max_urls=8):
+    """Descarga HTML TennisAbstract de UN jugador y lo guarda para poder inspeccionarlo.
+    Devuelve dict con URL, estado, chars, ruta y muestra. No modifica cálculos ni caché de picks.
+    """
+    name = normalizar_texto(player_name)
+    try:
+        os.makedirs(TA_DEBUG_HTML_DIR, exist_ok=True)
+    except Exception:
+        pass
+    urls = _ta_match_profile_urls_v23432(name)[:int(max_urls or 8)]
+    attempts = []
+    best = None
+    for url in urls:
+        html_text, status = _ta_match_fetch_url_v23432(url, timeout_sec=timeout_sec)
+        chars = len(html_text or "")
+        sample = re.sub(r"\s+", " ", str(html_text or "")[:800]).strip()
+        attempt = {
+            "Jugador": name,
+            "URL": url,
+            "Estado": status,
+            "HTML chars": chars,
+            "Sample": sample[:300],
+        }
+        attempts.append(attempt)
+        if html_text and status == "OK" and chars > 1000 and best is None:
+            best = (url, html_text, attempt)
+            # No seguimos descargando más para evitar 429.
+            break
+        # pequeña pausa si falló, para no machacar TA
+        time.sleep(0.35)
+
+    if best:
+        url, html_text, attempt = best
+        slug = _ta_debug_slug_v234914(name)
+        path_html = os.path.join(TA_DEBUG_HTML_DIR, f"{slug}.html")
+        path_txt = os.path.join(TA_DEBUG_HTML_DIR, f"{slug}_texto_convertido.txt")
+        try:
+            with open(path_html, "w", encoding="utf-8") as f:
+                f.write(html_text)
+            profile_text = _ta_match_html_to_profile_text_v23432(html_text, name)
+            with open(path_txt, "w", encoding="utf-8") as f:
+                f.write(profile_text)
+            parsed = None
+            try:
+                parsed = _parse_tennisabstract_player_profile(profile_text)
+            except Exception as e:
+                parsed = {"parse_error": f"{type(e).__name__}: {e}"}
+            return {
+                "ok": True,
+                "player": name,
+                "url": url,
+                "html_chars": len(html_text),
+                "html_path": path_html,
+                "txt_path": path_txt,
+                "sample": re.sub(r"\s+", " ", html_text[:1200]).strip(),
+                "converted_sample": profile_text[:2000],
+                "parsed": parsed or {},
+                "attempts": attempts,
+            }
+        except Exception as e:
+            return {"ok": False, "player": name, "error": f"No se pudo guardar HTML: {type(e).__name__}: {e}", "attempts": attempts}
+    return {"ok": False, "player": name, "error": "No se descargó HTML válido", "attempts": attempts}
 
 def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
     """Busca la ficha TA y, si TA no responde/no parsea, crea ficha de refuerzo
@@ -12973,68 +13047,6 @@ def _ta_parse_full_sections_v23490(text, lines):
     return result
 
 
-
-
-def _ta_parse_full_sections_any_table_v234913(lines):
-    """v23.49.13: parser de rescate para HTML actual de TennisAbstract.
-    Algunas páginas descargadas traen tablas completas pero sin los títulos exactos
-    que esperaba el parser anterior. Este fallback no toca cálculos: solo intenta
-    reconocer filas TA reales por sus columnas (M/W/L/Hld%/Brk%/SPW/RPW...).
-    """
-    result = {
-        'tour_seasons': {},
-        'challenger_seasons': {},
-        'career_splits': {},
-        'last52_splits': {},
-        'year_end_current': {},
-        'full_score': 0,
-        'fallback_any_table': True,
-    }
-    current_hint = ''
-    surface_labels = {'Hard','Clay','Grass','Carpet'}
-    split_labels = {'Grand Slams','Masters','Other Tours','Best of 5','Best of 3','vs Righties','vs Lefties','vs Top 10','Finals','Semi-finals','Quarter-finals'}
-
-    for ln in lines or []:
-        lns = normalizar_texto(ln)
-        low = lns.lower()
-        if 'challenger' in low:
-            current_hint = 'challenger'
-        elif 'last 52' in low:
-            current_hint = 'last52'
-        elif 'career' in low and 'split' in low:
-            current_hint = 'career_splits'
-        elif 'tour-level seasons' in low or 'tour seasons' in low:
-            current_hint = 'tour'
-
-        cells = _ta_split_cells_v23490(lns)
-        if len(cells) < 22:
-            continue
-        label = str(cells[0]).strip()
-        row = _ta_parse_stats_row_v23490(cells)
-        if not row:
-            continue
-
-        if label in surface_labels or label in split_labels or label.startswith('vs '):
-            if current_hint == 'last52':
-                result['last52_splits'][label] = row
-            else:
-                result['career_splits'][label] = row
-        elif label == 'Career' or re.fullmatch(r"20\d{2}", label):
-            if current_hint == 'challenger':
-                result['challenger_seasons'][label] = row
-            else:
-                result['tour_seasons'][label] = row
-
-    result['year_end_current'] = _ta_parse_year_end_current_v23490(lines)
-    score = 0
-    score += 2 if result['tour_seasons'] else 0
-    score += 2 if result['challenger_seasons'] else 0
-    score += 2 if result['career_splits'] else 0
-    score += 2 if result['last52_splits'] else 0
-    score += 1 if result['year_end_current'] else 0
-    result['full_score'] = score
-    return result
-
 def _ta_best_surface_stats_v23490(full, surface='Hard'):
     """Elige stats TA útiles para integrar/mostrar por superficie sin tocar motor."""
     if not isinstance(full, dict):
@@ -13114,15 +13126,6 @@ def _parse_tennisabstract_player_profile(raw_text):
             break
 
     ta_full = _ta_parse_full_sections_v23490(text, lines)
-    # v23.49.13: si el parser por secciones no reconoce la página descargada,
-    # intentamos leer filas de tablas TA reales aunque falten títulos exactos.
-    try:
-        if not isinstance(ta_full, dict) or int(ta_full.get('full_score', 0) or 0) <= 0:
-            ta_full_rescue = _ta_parse_full_sections_any_table_v234913(lines)
-            if isinstance(ta_full_rescue, dict) and int(ta_full_rescue.get('full_score', 0) or 0) > int((ta_full or {}).get('full_score', 0) or 0):
-                ta_full = ta_full_rescue
-    except Exception:
-        pass
     year_current = ta_full.get('year_end_current', {}) if isinstance(ta_full, dict) else {}
     if elo is None and year_current.get('elo') is not None:
         elo = year_current.get('elo')
@@ -14028,6 +14031,56 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                 st.dataframe(pd.DataFrame({"Jugador pendiente": missing_cached}), width='stretch', hide_index=True)
             else:
                 st.success("Todas las fichas de estos picks ya están en caché.")
+            # v23.49.14: diagnóstico individual HTML TA. Un jugador cada vez para evitar HTTP 429.
+            try:
+                st.markdown("#### 🧪 Diagnóstico individual TennisAbstract")
+                st.caption("Descarga SOLO un jugador, guarda el HTML real y muestra qué recibe el parser. Úsalo con Zverev/Karen/Vit, de uno en uno.")
+                debug_players = []
+                try:
+                    debug_players = list(dict.fromkeys([normalizar_texto(x) for x in (players_extra or []) if normalizar_texto(x)]))
+                except Exception:
+                    debug_players = []
+                if not debug_players:
+                    debug_players = list(missing_cached or [])
+                if debug_players:
+                    chosen_debug = st.selectbox("Jugador para ver/guardar HTML TA", debug_players, key="ta_debug_html_player_v234914")
+                    cdbg1, cdbg2 = st.columns([1, 1])
+                    with cdbg1:
+                        if st.button("📄 Descargar y guardar HTML TA de este jugador", key="ta_debug_html_btn_v234914", use_container_width=True):
+                            with st.spinner(f"Descargando HTML TA de {chosen_debug}..."):
+                                dbg = _ta_debug_save_html_v234914(chosen_debug, timeout_sec=int(st.session_state.get("ta_auto_timeout_v23432", 22)), max_urls=8)
+                            st.session_state["ta_debug_last_v234914"] = dbg
+                    with cdbg2:
+                        if st.button("🔎 Intentar guardar TA Real SOLO este jugador", key="ta_debug_one_save_btn_v234914", use_container_width=True):
+                            with st.spinner(f"Intentando TA Real de {chosen_debug}..."):
+                                ok_one, msg_one = _ta_match_auto_cache_one_player_v23432(chosen_debug, timeout_sec=int(st.session_state.get("ta_auto_timeout_v23432", 22)))
+                            if ok_one:
+                                st.success(msg_one)
+                            else:
+                                st.error(msg_one)
+                    dbg = st.session_state.get("ta_debug_last_v234914")
+                    if isinstance(dbg, dict):
+                        if dbg.get("ok"):
+                            st.success(f"HTML guardado: {dbg.get('html_chars')} caracteres · {dbg.get('html_path')}")
+                            st.write("URL usada:", dbg.get("url"))
+                            st.write("TXT convertido:", dbg.get("txt_path"))
+                            with st.expander("Intentos URL / HTTP", expanded=True):
+                                st.dataframe(pd.DataFrame(dbg.get("attempts", [])), width='stretch', hide_index=True)
+                            with st.expander("Primeros caracteres del HTML descargado", expanded=False):
+                                st.text_area("HTML sample", dbg.get("sample", ""), height=220, key="ta_debug_html_sample_v234914")
+                            with st.expander("Texto convertido que recibe el parser", expanded=True):
+                                st.text_area("Texto convertido", dbg.get("converted_sample", ""), height=300, key="ta_debug_text_sample_v234914")
+                            with st.expander("Resultado parser", expanded=True):
+                                st.json(dbg.get("parsed", {}) or {"parser": "None"})
+                        else:
+                            st.error(dbg.get("error", "Fallo desconocido"))
+                            if dbg.get("attempts"):
+                                st.dataframe(pd.DataFrame(dbg.get("attempts", [])), width='stretch', hide_index=True)
+                else:
+                    st.info("No hay jugadores detectados para diagnóstico.")
+            except Exception as e_dbg:
+                st.warning(f"No se pudo mostrar diagnóstico HTML TA: {type(e_dbg).__name__}: {e_dbg}")
+
             timeout_auto = st.slider("Timeout por ficha TA", 12, 35, 22, 1, key="ta_auto_timeout_v23432")
             max_auto = st.slider("Máximo fichas a intentar ahora", 2, 30, min(20, max(2, len(missing_cached) if missing_cached else 2)), 1, key="ta_auto_max_v23432")
             if st.button("🔎 Extraer fichas TA pendientes y guardar caché", key="ta_auto_fetch_v23432", use_container_width=True, disabled=not bool(missing_cached)):
