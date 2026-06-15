@@ -14002,7 +14002,7 @@ def render_datos_extra_reanalysis_panel(ok_saved):
 
                     # v23.48.5: pegado manual directo desde el auditor.
                     with st.expander("📋 Pegar ficha TennisAbstract manual", expanded=bool(audit_sum.get("missing", 0))):
-                        st.caption("Pega aquí la ficha completa copiada de TennisAbstract para sustituir Auto Recent o rellenar pendientes. Se guarda en caché y se prioriza sobre el perfil automático.")
+                        st.caption("Pega aquí la ficha completa copiada de TennisAbstract para sustituir Auto Recent o rellenar pendientes. Se guarda en caché permanente y NO recarga toda la app al guardar.")
                         opciones_manual = []
                         for r in audit_rows:
                             label = f"{r.get('Jugador detectado','')} · {r.get('Fuente perfil','')} · {r.get('Estado ficha','')}"
@@ -14015,15 +14015,8 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                             if st.button("💾 Guardar ficha manual TA", key="ta_manual_profile_save_v23485", use_container_width=True, disabled=not bool(str(raw_manual).strip())):
                                 ok_m, msg_m = _ta_profile_cache_upsert_manual_v23485(chosen_player_manual, raw_manual)
                                 if ok_m:
-                                    st.success(msg_m)
-                                    try:
-                                        st.cache_data.clear()
-                                    except Exception:
-                                        pass
-                                    try:
-                                        st.rerun()
-                                    except Exception:
-                                        pass
+                                    st.success(msg_m + " · guardado sin recargar toda la app. Si quieres ver la tabla actualizada, pulsa Rerun manualmente o vuelve a analizar cuando termines de pegar fichas.")
+                                    st.session_state["ta_manual_last_saved_v23485"] = {"player": chosen_player_manual, "msg": msg_m}
                                 else:
                                     st.error(msg_m)
                         else:
