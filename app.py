@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.47.3-ta-cache-7d-refresh"
+APP_VERSION = "v23.48.0-player-games-challenger-clean"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -2201,6 +2201,8 @@ def circuito_lookup_para_match(m, circuito_ui):
     """
     src = str((m or {}).get("circuito_detectado", "")).upper().strip()
     ui = str(circuito_ui).upper().strip()
+    if ui == "CHALLENGER":
+        return "challenger"
     if ui == "ATP" and (src in {"CHALLENGER_ATP", "ITF_ATP"} or _es_entorno_challenger_match(m, circuito_ui)):
         return "challenger"
     return circuito_ui
@@ -6211,6 +6213,12 @@ def filtrar_matches_por_circuito_pegado(matches, circuito, incluir_itf=False, in
             allowed.add("CHALLENGER_ATP")
         if incluir_itf:
             allowed.add("ITF_ATP")
+    elif circuito == "CHALLENGER":
+        # v23.48.0: Challenger debe poder analizarse separado.
+        # Usa el mismo parser que ATP/SofaScore, pero solo deja bloques Challenger.
+        allowed = {"CHALLENGER_ATP"}
+        if incluir_itf:
+            allowed.add("ITF_ATP")
     elif circuito == "WTA":
         allowed = {"WTA"}
         if incluir_challenger:
@@ -6218,7 +6226,7 @@ def filtrar_matches_por_circuito_pegado(matches, circuito, incluir_itf=False, in
         if incluir_itf:
             allowed.add("ITF_WTA")
     else:
-        allowed = {"ATP", "WTA"}
+        allowed = {"ATP", "WTA", "CHALLENGER_ATP"}
     return [m for m in matches if str(m.get("circuito_detectado", "")).upper().strip() in allowed]
 
 
@@ -7874,6 +7882,28 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         avg_g1 = float(np.mean(games_p1)) if len(games_p1) else 0.0
         avg_g2 = float(np.mean(games_p2)) if len(games_p2) else 0.0
 
+        # v23.48.0 Player Games Markets: no toca motor Over;
+        # solo lee la distribución de juegos ya simulada para cada jugador.
+        p1_games_over_10_5 = float(sum(float(x) > 10.5 for x in games_p1) / max(1, len(games_p1))) if len(games_p1) else 0.0
+        p1_games_over_11_5 = float(sum(float(x) > 11.5 for x in games_p1) / max(1, len(games_p1))) if len(games_p1) else 0.0
+        p2_games_over_10_5 = float(sum(float(x) > 10.5 for x in games_p2) / max(1, len(games_p2))) if len(games_p2) else 0.0
+        p2_games_over_11_5 = float(sum(float(x) > 11.5 for x in games_p2) / max(1, len(games_p2))) if len(games_p2) else 0.0
+        player_game_candidates = [
+            (f"{p1_key} +10.5 juegos", p1_games_over_10_5, p1_key, "+10.5"),
+            (f"{p1_key} +11.5 juegos", p1_games_over_11_5, p1_key, "+11.5"),
+            (f"{p2_key} +10.5 juegos", p2_games_over_10_5, p2_key, "+10.5"),
+            (f"{p2_key} +11.5 juegos", p2_games_over_11_5, p2_key, "+11.5"),
+        ]
+        player_games_best_label, player_games_best_prob, player_games_best_player, player_games_best_line = max(player_game_candidates, key=lambda x: x[1])
+        if player_games_best_prob >= 0.86:
+            player_games_tier = "🔥 Muy alta"
+        elif player_games_best_prob >= 0.80:
+            player_games_tier = "✅ Alta"
+        elif player_games_best_prob >= 0.74:
+            player_games_tier = "👀 Observar"
+        else:
+            player_games_tier = "⚠️ Baja"
+
         over17_raw = sum(x > 17.5 for x in games)/sims if sims else 0
         over18_raw = sum(x > 18.5 for x in games)/sims if sims else 0
         over19_raw = sum(x > 19.5 for x in games)/sims if sims else 0
@@ -8024,6 +8054,15 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Juegos J1": f"{avg_g1:.1f}",
             "Juegos J2": f"{avg_g2:.1f}",
             "Total games": f"{avg_games:.1f}",
+            "J1 +10.5 juegos": f"{p1_games_over_10_5:.1%}",
+            "J1 +11.5 juegos": f"{p1_games_over_11_5:.1%}",
+            "J2 +10.5 juegos": f"{p2_games_over_10_5:.1%}",
+            "J2 +11.5 juegos": f"{p2_games_over_11_5:.1%}",
+            "Mejor juegos jugador": player_games_best_label,
+            "Prob juegos jugador": f"{player_games_best_prob:.1%}",
+            "Confianza juegos jugador": player_games_tier,
+            "Jugador juegos premium": player_games_best_player,
+            "Línea juegos premium": player_games_best_line,
             "Cuota pegada": quoted_odd if quoted_odd else "",
             "Jugador cuota": quoted_player or "",
             "Cuota justa": f"{fair_odd:.2f}" if fair_odd else "",
@@ -11539,6 +11578,13 @@ def prepare_batch_display_table(ok_df):
         "Jugador gana set",
         "Prob gana set",
         "Favorito gana al menos 1 set",
+        "J1 +10.5 juegos",
+        "J1 +11.5 juegos",
+        "J2 +10.5 juegos",
+        "J2 +11.5 juegos",
+        "Mejor juegos jugador",
+        "Prob juegos jugador",
+        "Confianza juegos jugador",
         "Juegos J1",
         "Juegos J2",
         "Total games",
@@ -11558,16 +11604,11 @@ def prepare_batch_display_table(ok_df):
         df = df.drop(columns=over17_cols, errors="ignore")
         preferred = [c for c in preferred if c not in over17_cols]
 
-    # Si no hay cuotas, ocultar columnas de cuotas/value para que pantalla y Excel queden limpios.
+    # v23.48.0: pantalla/Excel limpios. Las cuotas/stake/value ya no forman parte
+    # del flujo operativo; se decide fuera de la app.
     odds_cols = ["Cuota pegada", "Jugador cuota", "Cuota justa", "Edge"]
-    has_any_odds = False
-    for c in odds_cols:
-        if c in df.columns and df[c].astype(str).str.strip().replace("nan", "").ne("").any():
-            has_any_odds = True
-            break
-    if not has_any_odds:
-        df = df.drop(columns=odds_cols, errors="ignore")
-        preferred = [c for c in preferred if c not in odds_cols]
+    df = df.drop(columns=odds_cols, errors="ignore")
+    preferred = [c for c in preferred if c not in odds_cols]
 
     cols = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
     return df[cols]
@@ -13713,6 +13754,7 @@ PICKS_LIMPIOS_COLS = [
     "🎯 Acción final", "🎯 Mercado más probable", "🎯 Prob máxima", "🎯 Confianza acierto",
     "📥 Necesita Datos extra", "📥 Prioridad Datos extra", "📥 Estado Datos extra", "📥 Ajuste Datos extra", "📥 Qué mirar Datos extra",
     "🎯 Motivo acierto", "📥 Motivo Datos extra",
+    "Mejor juegos jugador", "Prob juegos jugador", "Confianza juegos jugador",
 ]
 
 DETALLE_TECNICO_FIRST_COLS = [
@@ -13724,6 +13766,8 @@ DETALLE_TECNICO_FIRST_COLS = [
     "Recomendación", "Pick oficial", "Mercado recomendado", "Prob mercado recomendado",
     "Favorito modelo", "ML favorito", "Over 18.5", "Over 19.5", "Under 22.5",
     "Jugador gana set", "Prob gana set", "Favorito gana al menos 1 set",
+    "J1 +10.5 juegos", "J1 +11.5 juegos", "J2 +10.5 juegos", "J2 +11.5 juegos",
+    "Mejor juegos jugador", "Prob juegos jugador", "Confianza juegos jugador",
     "Signal Trust", "Confianza mínima", "Mín. partidos superficie", "Riesgos",
 ]
 
@@ -14071,6 +14115,70 @@ def aplicar_estilo_excel_limpio(writer):
                 for c in range(1, ws.max_column + 1):
                     ws.cell(row=r, column=c).fill = fill
 
+def crear_juegos_jugador_df_v23480(df):
+    """Hoja nueva para validar mercados de jugador +10.5/+11.5 juegos.
+    No crea picks oficiales: solo ordena señales para observación y estadística.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+    rows = []
+    for _, r in df.iterrows():
+        partido = str(r.get("Partido", ""))
+        if not partido or " vs " not in partido:
+            continue
+        try:
+            p1, p2 = partido.split(" vs ", 1)
+        except Exception:
+            p1, p2 = "Jugador 1", "Jugador 2"
+        specs = [
+            (p1, "Jugador 1 +10.5 juegos", r.get("J1 +10.5 juegos", ""), 0.86, 0.80, 0.74),
+            (p1, "Jugador 1 +11.5 juegos", r.get("J1 +11.5 juegos", ""), 0.80, 0.74, 0.68),
+            (p2, "Jugador 2 +10.5 juegos", r.get("J2 +10.5 juegos", ""), 0.86, 0.80, 0.74),
+            (p2, "Jugador 2 +11.5 juegos", r.get("J2 +11.5 juegos", ""), 0.80, 0.74, 0.68),
+        ]
+        for jugador, mercado, prob_txt, th_jugar, th_alta, th_obs in specs:
+            prob = _prob_to_float_v23467(prob_txt)
+            if prob <= 0:
+                continue
+            if prob >= th_jugar:
+                accion = "✅ JUGAR"
+                confianza = "🔥 Muy alta"
+            elif prob >= th_alta:
+                accion = "👀 OBSERVAR ALTO"
+                confianza = "✅ Alta"
+            elif prob >= th_obs:
+                accion = "👀 OBSERVAR"
+                confianza = "⚖️ Media-alta"
+            else:
+                continue
+            rows.append({
+                "Acción": accion,
+                "Confianza": confianza,
+                "Prob.": f"{prob:.1%}",
+                "Jugador": jugador,
+                "Mercado": mercado,
+                "Partido": partido,
+                "Hora": r.get("Hora", ""),
+                "Fecha": r.get("Fecha", ""),
+                "Torneo": r.get("Torneo", ""),
+                "Superficie": r.get("Superficie", ""),
+                "Circuito": r.get("Circuito cálculo", r.get("Circuito datos", "")),
+                "Over 18.5": r.get("Over 18.5", ""),
+                "Over 19.5": r.get("Over 19.5", ""),
+                "Partido a 3 sets": r.get("Partido a 3 sets", ""),
+                "Gana set jugador": (r.get(f"{jugador} gana al menos 1 set", "") if f"{jugador} gana al menos 1 set" in r.index else ""),
+                "Total games estimado": r.get("Total games", ""),
+                "Motivo": "Mercado intermedio entre Over total y gana set; validar unos días antes de usar fuerte.",
+            })
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out["__prob_sort"] = out["Prob."].apply(_prob_to_float_v23467)
+    out = out.sort_values(["__prob_sort", "Acción"], ascending=[False, True]).drop(columns=["__prob_sort"]).reset_index(drop=True)
+    out.insert(0, "Ranking", [f"#{i}" for i in range(1, len(out)+1)])
+    return out
+
+
 def batch_excel_bytes(df):
     """Exporta Excel limpio: hoja diaria + detalle técnico."""
     output = io.BytesIO()
@@ -14081,6 +14189,7 @@ def batch_excel_bytes(df):
         try:
             crear_top_apuestas_df_v23467(picks_df, n=10).to_excel(writer, index=False, sheet_name="TOP APUESTAS")
             crear_combinada_recomendada_df_v23467(picks_df).to_excel(writer, index=False, sheet_name="COMBINADA RECOMENDADA")
+            crear_juegos_jugador_df_v23480(detalle_df).to_excel(writer, index=False, sheet_name="JUEGOS_JUGADOR")
         except Exception:
             pass
         detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
@@ -14108,6 +14217,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
         try:
             crear_top_apuestas_df_v23467(picks_df, n=10).to_excel(writer, index=False, sheet_name="TOP APUESTAS")
             crear_combinada_recomendada_df_v23467(picks_df).to_excel(writer, index=False, sheet_name="COMBINADA RECOMENDADA")
+            crear_juegos_jugador_df_v23480(detalle_df).to_excel(writer, index=False, sheet_name="JUEGOS_JUGADOR")
         except Exception:
             pass
         detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
@@ -16806,11 +16916,21 @@ Sebastián Baez - Roberto Carballés Baena"""
 
             render_datos_extra_reanalysis_panel(ok_saved)
 
-            st.subheader("🔥 Resumen ordenado completo")
-            st.dataframe(ok_saved, width='stretch', hide_index=True)
+            try:
+                _jg_view = crear_juegos_jugador_df_v23480(ok_saved)
+                if _jg_view is not None and not _jg_view.empty:
+                    st.subheader("🎯 Juegos jugador +10.5 / +11.5")
+                    st.caption("Mercado nuevo en observación: no toca motor Over. Úsalo unos días para validar estadísticas.")
+                    st.dataframe(_jg_view.head(20), width='stretch', hide_index=True)
+            except Exception as _e_jg:
+                st.caption(f"Juegos jugador no disponible: {type(_e_jg).__name__}: {_e_jg}")
 
-            # v23.40.1: Plan de apuestas + stake operativo.
-            render_constructor_combinadas_v23268(ok_saved)
+            st.subheader("🔥 Resumen ordenado completo")
+            _hide_cols_v23480 = [c for c in ["Cuota pegada", "Jugador cuota", "Cuota justa", "Edge"] if c in ok_saved.columns]
+            st.dataframe(ok_saved.drop(columns=_hide_cols_v23480, errors="ignore"), width='stretch', hide_index=True)
+
+            # v23.48.0: pantalla principal limpia. Se ocultan cuotas, stake y value.
+            # La estrategia se decide con rankings, Over, gana set y juegos jugador.
 
             dl1, dl2 = st.columns(2)
             with dl1:
