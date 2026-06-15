@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.0-ta-full-parser-manual-auto"
+APP_VERSION = "v23.49.1-ta-parser-v2-fixed"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11841,6 +11841,13 @@ def _ta_profile_cache_should_replace(old_item, new_item, force_manual=True):
     old_raw_len = len(str(old_item.get("raw_text", "") or ""))
     new_raw_len = len(str(new_item.get("raw_text", "") or ""))
 
+    # v23.49.1: una ficha TennisAbstract completa siempre pisa Auto Recent o fichas antiguas.
+    try:
+        if int((new_item or {}).get("ta_full_score", 0) or 0) >= 3:
+            return True
+    except Exception:
+        pass
+
     # Regla principal: una ficha con más partidos siempre mejora una ficha parcial.
     if new_n > old_n:
         return True
@@ -11907,6 +11914,11 @@ def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
         "ta_best_hard": parsed_obj.get("ta_best_hard", {}),
         "ta_best_clay": parsed_obj.get("ta_best_clay", {}),
         "ta_best_grass": parsed_obj.get("ta_best_grass", {}),
+        "ta_year_current": (parsed_obj.get("ta_full", {}) or {}).get("year_end_current", {}),
+        "tour_2026": (parsed_obj.get("ta_full", {}) or {}).get("tour_seasons", {}).get("2026", {}),
+        "challenger_2026_full": (parsed_obj.get("ta_full", {}) or {}).get("challenger_seasons", {}).get("2026", {}),
+        "career_stats": (parsed_obj.get("ta_full", {}) or {}).get("career_splits", {}),
+        "last52_stats": (parsed_obj.get("ta_full", {}) or {}).get("last52_splits", {}),
         "profile_source_type": "TA Real Completo" if int(parsed_obj.get("ta_full_score", 0) or 0) >= 3 else parsed_obj.get("source", ""),
     }
 
@@ -12601,7 +12613,7 @@ def _ta_parse_current_elo_line(line):
     como 2024/2025/2019 como si fueran Elo. Aquí usamos posiciones, no rango bruto.
     """
     ln = normalizar_texto(line or "").strip()
-    if not ln.startswith("Current"):
+    if not ln.startswith("Current ("):
         return None, None, None, None
 
     # Elimina la fecha Current (2026-05-25) para que 2026/05/25 no entren en la secuencia.
@@ -12720,7 +12732,7 @@ def _ta_parse_stats_row_v23490(cells, row_label_type='season'):
 def _ta_parse_year_end_current_v23490(lines):
     out = {}
     for ln in lines or []:
-        if not str(ln).startswith('Current'):
+        if not str(ln).startswith('Current ('):
             continue
         # Current (date) ATP Rank Points Elo Rank Elo hElo Rank hElo cElo Rank cElo gElo Rank gElo
         ln2 = re.sub(r"^Current\s*\([^)]*\)", "", normalizar_texto(ln)).strip()
@@ -12762,7 +12774,7 @@ def _ta_parse_full_sections_v23490(text, lines):
             section = 'tour'; continue
         if ln.startswith('Challenger Seasons'):
             section = 'challenger'; continue
-        if ln.startswith('Career Tour-Level Splits'):
+        if ln.startswith('Career Tour-Level Splits') or ln.startswith('Career Challenger-Level Splits'):
             section = 'career_splits'; continue
         if ln.startswith('Last 52 Weeks Tour-Level Splits'):
             section = 'last52_splits'; continue
@@ -12781,7 +12793,7 @@ def _ta_parse_full_sections_v23490(text, lines):
                     result['tour_seasons' if section == 'tour' else 'challenger_seasons'][label] = row
         elif section in ['career_splits','last52_splits'] and cells:
             label = cells[0]
-            valid_labels = {'Hard','Clay','Grass','Grand Slams','Masters','Other Tours','Best of 5','Best of 3','vs Righties','vs Lefties','vs Top 10'}
+            valid_labels = {'Hard','Clay','Grass','Grand Slams','Masters','Other Tours','Best of 5','Best of 3','vs Righties','vs Lefties','vs Top 10','Finals','Semi-finals','Quarter-finals'}
             if label in valid_labels or label.startswith('vs '):
                 row = _ta_parse_stats_row_v23490(cells)
                 if row:
@@ -12844,7 +12856,7 @@ def _parse_tennisabstract_player_profile(raw_text):
     # FIX v23.37.25: usar posiciones reales de columnas, no "todos los números 1200-2300".
     helo = celo = gelo = None
     for ln in lines:
-        if ln.startswith("Current") and re.search(r"\b\d{2,4}\b", ln):
+        if ln.startswith("Current (") and re.search(r"\b\d{2,4}\b", ln):
             cur_elo, cur_helo, cur_celo, cur_gelo = _ta_parse_current_elo_line(ln)
             if elo is None and cur_elo is not None:
                 elo = cur_elo
