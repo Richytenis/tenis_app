@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.6-ta-upgrade-auto-recent-button"
+APP_VERSION = "v23.49.7-ta-real-force-debug"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -13289,6 +13289,163 @@ def _safe_pct_from_row(row, col, default=0.0):
         return default
 
 
+
+
+# =========================================================
+# v23.49.7 TA REAL FORCE UPGRADE + DEBUG
+# SOLO TennisAbstract: no toca cálculos, Over ni predictor.
+# Cambios:
+# - Auto Recent deja de contar como suficiente para el botón de extracción.
+# - El botón intenta convertir Auto Recent/Sin ficha a TA Real completa.
+# - Detalle de errores con URL/HTTP/parse para saber por qué no entra TA.
+# =========================================================
+
+def _ta_item_is_auto_recent_v23497(item):
+    if not isinstance(item, dict):
+        return False
+    src = str(item.get('source','') or '')
+    raw = str(item.get('raw_text','') or '')[:1500]
+    low = (src + '\n' + raw).lower()
+    return ('auto recent' in low) or ('auto challenger recent' in low) or ('historico local' in low) or ('histórico local' in low)
+
+
+def _ta_match_cache_status_counts_v23432(players):
+    """v23.49.7: OK real solo TA Real/Manual. Auto Recent se manda a mejorar.
+    Antes Auto Recent contaba como OK y por eso el botón no intentaba convertirlo a TA Real.
+    """
+    ok, to_upgrade = [], []
+    for n in players or []:
+        canon = _ta_alias_resolve(n)
+        item = _ta_profile_cache_find(canon, allow_stale=True) or _ta_profile_cache_find(n, allow_stale=True)
+        if isinstance(item, dict) and _ta_profile_cache_is_ta_real_permanent(item):
+            ok.append(n)
+        else:
+            # Incluye Sin ficha, Auto Recent y fichas no TA completas.
+            to_upgrade.append(n)
+    return ok, to_upgrade
+
+
+def _ta_direct_url_variants_v23497(name):
+    """Genera URLs directas TA muy explícitas. No calcula nada, solo resuelve ficha."""
+    import urllib.parse
+    out=[]
+    for nm in [name, _ta_alias_resolve(name)]:
+        nm = normalizar_texto(nm)
+        toks = tokens(nm)
+        if not toks:
+            continue
+        variants=[]
+        title = ''.join(t.title() for t in toks)
+        variants.append(title)                         # AlexanderZverev
+        variants.append(urllib.parse.quote(title))     # seguro URL
+        variants.append(urllib.parse.quote(nm))        # Alexander%20Zverev
+        variants.append(nm.replace(' ',''))            # AlexanderZverev conservador
+        if len(toks) >= 2:
+            variants.append(toks[-1].title()+toks[0][0].title())  # ZverevA
+            variants.append(toks[0][0].title()+toks[-1].title())  # AZverev
+        for v in variants:
+            if not v:
+                continue
+            for host in ['https://www.tennisabstract.com','https://tennisabstract.com']:
+                u=f'{host}/cgi-bin/player.cgi?p={v}'
+                if u not in out:
+                    out.append(u)
+    return out
+
+
+def _ta_match_profile_urls_v23432(name):
+    """v23.49.7: leaderboard + directas robustas. Orden: directas obvias primero para ATP conocidos."""
+    urls=[]
+    for u in _ta_direct_url_variants_v23497(name):
+        if u not in urls:
+            urls.append(u)
+    for nm in [normalizar_texto(name), _ta_alias_resolve(name)]:
+        try:
+            for u in _ta_match_urls_from_elo_leaderboard_v23493(nm, circuito='ATP', min_score=0.84):
+                if u and u not in urls:
+                    urls.append(u)
+        except Exception:
+            pass
+    return urls[:18]
+
+
+def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
+    """v23.49.7: fuerza intento TA Real también cuando ya existe Auto Recent.
+    Si falla, conserva/crea Auto Recent, pero devuelve detalle de URL/HTTP/parser.
+    """
+    name = normalizar_texto(player_name)
+    if not name:
+        return False, 'sin nombre'
+
+    existing = _ta_profile_cache_find(name, allow_stale=True)
+    if isinstance(existing, dict) and _ta_profile_cache_is_ta_real_permanent(existing):
+        return True, f'ya estaba en caché TA Real/Manual permanente: {existing.get("player", name)}'
+
+    errors=[]
+    urls = _ta_match_profile_urls_v23432(name)
+    if not urls:
+        errors.append('sin URLs candidatas')
+
+    for url in urls:
+        html_text, status = _ta_match_fetch_url_v23432(url, timeout_sec=timeout_sec)
+        short_url = url.replace('https://www.tennisabstract.com/cgi-bin/player.cgi?p=','p=').replace('https://tennisabstract.com/cgi-bin/player.cgi?p=','p=')
+        if not html_text:
+            errors.append(f'{short_url}: {status}')
+            continue
+        low = html_text.lower()
+        html_len = len(html_text)
+        if 'player not found' in low or 'no player found' in low:
+            errors.append(f'{short_url}: 200 pero player not found')
+            continue
+        if 'recent results' not in low and 'tour-level seasons' not in low and 'elo rank' not in low:
+            errors.append(f'{short_url}: 200 len={html_len} sin marcas TA')
+            continue
+        profile_text = _ta_match_html_to_profile_text_v23432(html_text, name)
+        parsed = _parse_tennisabstract_player_profile(profile_text)
+        if isinstance(parsed, dict):
+            full_score = int(parsed.get('ta_full_score',0) or 0)
+            n_recent = int(parsed.get('matches',0) or 0)
+            # Acepta ficha completa aunque no haya recientes parseados.
+            if full_score >= 3 or n_recent >= 1 or parsed.get('elo'):
+                ok, msg = _ta_profile_cache_upsert_from_raw(name, profile_text, parsed=parsed)
+                if ok:
+                    return True, f'{name}: TA Real guardada | {short_url} | len={html_len} | recientes={n_recent} | full={full_score}'
+                errors.append(f'{short_url}: parse OK pero no guardado: {msg}')
+            else:
+                errors.append(f'{short_url}: parse vacío full={full_score} n={n_recent}')
+        else:
+            sample = profile_text[:180].replace('\n',' ') if profile_text else ''
+            errors.append(f'{short_url}: 200 len={html_len} parser=None muestra={sample[:120]}')
+
+    # Fallback local: solo si no se consiguió TA Real. Conserva utilidad, pero NO se confunde con TA.
+    try:
+        st_ch = _ch_recent_stats(name, surface=None, limit=12)
+        if isinstance(st_ch, dict) and st_ch.get('found') and int(st_ch.get('n',0) or 0) >= 3:
+            raw = (
+                f'Auto Challenger Recent Form\n'
+                f'Player: {st_ch.get("player", name)}\n'
+                f'n={int(st_ch.get("n",0) or 0)}; wins={int(st_ch.get("wins",0) or 0)}; '
+                f'over18={int(st_ch.get("over18",0) or 0)}; over19={int(st_ch.get("over19",0) or 0)}; '
+                f'three_sets={int(st_ch.get("three_sets",0) or 0)}; set_won={int(st_ch.get("set_won",0) or 0)}; '
+                f'lost02={int(st_ch.get("lost_02",0) or 0)}; short={int(st_ch.get("short",0) or 0)}; '
+                f'avg_games={float(st_ch.get("avg_games",0.0) or 0.0):.1f}\n'
+                f'Summary: {st_ch.get("summary","")}\n'
+                f'Nota: TennisAbstract no respondió o no fue parseable; se usa histórico local como refuerzo provisional.\n'
+                f'Debug TA: {' | '.join(errors[-6:])}'
+            )
+            parsed_local = _parse_auto_recent_profile_v23433(raw) or {}
+            ok, msg = _ta_profile_cache_upsert_auto_recent_v23433(name, parsed_local, raw)
+            detail = ' | '.join(errors[-4:]) if errors else 'sin detalle TA'
+            if ok:
+                return True, f'{name}: Auto Recent conservado/guardado; TA Real falló -> {detail}'
+            return False, f'{name}: TA falló y fallback no guardado: {msg} | {detail}'
+    except Exception as e:
+        errors.append(f'fallback local error {type(e).__name__}: {e}')
+
+    detail = ' | '.join(errors[-6:]) if errors else 'sin coincidencia'
+    return False, f'{name}: no extraída como TA Real ({detail})'
+
+
 def _tennisabstract_all_markets_signal(row, ta1, ta2):
     """Con dos fichas TA, reelige el mejor mercado entre Over18/Over19/gana-set/ML/+2.5.
     No usa cuotas. Devuelve selección y señal de confirmación.
@@ -13910,60 +14067,27 @@ def render_datos_extra_reanalysis_panel(ok_saved):
         except Exception as e:
             st.warning(f"No se pudo mostrar auditoría TA: {type(e).__name__}: {e}")
 
-        # v23.49.6: antes solo se intentaban las "pendientes".
-        # Problema detectado: Auto Recent contaba como OK y por eso Zverev/Fritz/Medvedev
-        # nunca volvían a intentar TennisAbstract real. Ahora se intentan también los 🟠 Auto Recent.
-        try:
-            ta_upgrade_candidates = []
-            _seen_up = set()
-            _audit_rows_for_upgrade = audit_rows if 'audit_rows' in locals() and isinstance(audit_rows, list) else []
-            for r in _audit_rows_for_upgrade:
-                src = str(r.get("Fuente perfil", "") or "")
-                estado = str(r.get("Estado ficha", "") or "")
-                name_up = normalizar_texto(r.get("Nombre usado") or r.get("Jugador detectado") or "")
-                # Candidatos: sin ficha, pendientes y Auto Recent. TA Real/Manual se respetan.
-                if name_up and (("Auto Recent" in src) or ("Sin ficha" in src) or ("Pendiente" in estado)):
-                    k_up = limpiar(name_up)
-                    if k_up and k_up not in _seen_up:
-                        ta_upgrade_candidates.append(name_up)
-                        _seen_up.add(k_up)
-            # Fallback si el auditor no se pudo construir.
-            for name_up in (missing_cached or []):
-                k_up = limpiar(name_up)
-                if k_up and k_up not in _seen_up:
-                    ta_upgrade_candidates.append(name_up)
-                    _seen_up.add(k_up)
-        except Exception:
-            ta_upgrade_candidates = list(missing_cached or [])
-
-        with st.expander("🔎 Auto extraer/mejorar fichas TennisAbstract para estos picks", expanded=bool(ta_upgrade_candidates)):
-            st.caption("Esto intenta convertir 🟠 Auto Recent y 🔴 Sin ficha en 🟢 TA Real completa. No toca cálculos ni motor Over; solo lectura/caché TennisAbstract.")
-            if ta_upgrade_candidates:
-                st.dataframe(pd.DataFrame({"Jugador a intentar/mejorar": ta_upgrade_candidates}), width='stretch', hide_index=True)
+        with st.expander("🔎 Auto extraer fichas TennisAbstract para estos picks", expanded=bool(missing_cached)):
+            st.caption("Esto intenta leer la ficha TA de los jugadores de estos picks Over y guardarla en caché. Si funciona, no tienes que pegarla a mano.")
+            if missing_cached:
+                st.dataframe(pd.DataFrame({"Jugador pendiente": missing_cached}), width='stretch', hide_index=True)
             else:
-                st.success("No hay fichas pendientes ni Auto Recent que mejorar: las TA Real/Manual se conservan permanentes.")
+                st.success("Todas las fichas de estos picks ya están en caché.")
             timeout_auto = st.slider("Timeout por ficha TA", 12, 35, 22, 1, key="ta_auto_timeout_v23432")
-            max_auto = st.slider("Máximo fichas a intentar ahora", 2, 30, min(20, max(2, len(ta_upgrade_candidates) if ta_upgrade_candidates else 2)), 1, key="ta_auto_max_v23432")
-            if st.button("🔎 Intentar TA Real para pendientes y Auto Recent", key="ta_auto_fetch_v23432", use_container_width=True, disabled=not bool(ta_upgrade_candidates)):
+            max_auto = st.slider("Máximo fichas a intentar ahora", 2, 30, min(20, max(2, len(missing_cached) if missing_cached else 2)), 1, key="ta_auto_max_v23432")
+            if st.button("🔎 Extraer fichas TA pendientes y guardar caché", key="ta_auto_fetch_v23432", use_container_width=True, disabled=not bool(missing_cached)):
                 results = []
-                with st.spinner("Extrayendo/mejorando fichas TennisAbstract en bloque..."):
-                    for name in ta_upgrade_candidates[:int(max_auto)]:
+                with st.spinner("Extrayendo fichas TennisAbstract en bloque..."):
+                    for name in missing_cached[:int(max_auto)]:
                         ok, msg = _ta_match_auto_cache_one_player_v23432(name, timeout_sec=int(timeout_auto))
-                        # Relee caché tras el intento para saber si quedó TA Real o Auto Recent.
-                        try:
-                            item_now = _ta_profile_cache_find(name, allow_stale=True)
-                            kind_now, label_now = _ta_profile_source_kind_v23485(item_now) if item_now else ("sin", "🔴 Sin ficha")
-                            full_now = int((item_now or {}).get("ta_full_score", 0) or 0)
-                        except Exception:
-                            label_now, full_now = "?", 0
-                        results.append({"Jugador": name, "OK": "Sí" if ok else "No", "Quedó como": label_now, "Full score": full_now, "Detalle": msg})
+                        results.append({"Jugador": name, "OK": "Sí" if ok else "No", "Detalle": msg})
                 if results:
                     st.dataframe(pd.DataFrame(results), width='stretch', hide_index=True)
-                    real_n = sum(1 for r in results if "TA Real" in str(r.get("Quedó como", "")))
-                    if real_n:
-                        st.success(f"Convertidas a TA Real: {real_n}. Pulsa Rerun o vuelve a analizar para ver el auditor actualizado.")
+                    saved_n = sum(1 for r in results if r.get("OK") == "Sí")
+                    if saved_n:
+                        st.success(f"Guardadas {saved_n} fichas. Pulsa Rerun o vuelve a analizar para que se apliquen al reanálisis.")
                     else:
-                        st.warning("Se intentó la extracción, pero ninguna quedó como TA Real. Revisa la columna Detalle para ver si fue URL/HTTP/parser.")
+                        st.warning("No se pudo guardar ninguna ficha automática. Puede ser timeout, nombre distinto o página TA sin resultados recientes parseables.")
                 try:
                     st.rerun()
                 except Exception:
