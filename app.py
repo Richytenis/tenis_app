@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.48.4-ta-raw-profile-viewer"
+APP_VERSION = "v23.48.5-ta-real-source-manual"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -12141,6 +12141,51 @@ def _ta_match_cache_status_counts_v23432(players):
 
 
 
+
+def _ta_profile_source_kind_v23485(item):
+    """Clasifica una ficha guardada para no confundir TA real con Auto Recent.
+    No toca motor Over; solo auditoría y guardado manual.
+    """
+    if not isinstance(item, dict) or not str(item.get("raw_text", "") or "").strip():
+        return "sin", "🔴 Sin ficha"
+    src = str(item.get("source", "") or "")
+    raw = str(item.get("raw_text", "") or "")
+    low = (src + "\n" + raw[:500]).lower()
+    if "manual" in low and ("tennis abstract" in low or "flashscore" in low):
+        return "manual", "📋 Manual"
+    if "auto recent" in low or "auto challenger recent form" in low or "histórico local" in low or "historico local" in low:
+        return "auto", "🟠 Auto Recent"
+    if "tennis abstract" in low or "tennisabstract" in low or "recent results" in low or "elo rank" in low:
+        return "ta", "🟢 TA Real"
+    if "flashscore" in low:
+        return "manual", "📋 Manual/Flashscore"
+    return "otro", "⚪ Perfil guardado"
+
+
+def _ta_profile_cache_upsert_manual_v23485(expected_player, raw_text):
+    """Guarda ficha pegada manualmente y la marca como Manual/TA si se reconoce.
+    Mantiene la validación de jugador de _ta_profile_cache_upsert_from_raw.
+    """
+    ok, msg = _ta_profile_cache_upsert_from_raw(expected_player, raw_text)
+    if not ok:
+        return ok, msg
+    try:
+        cache = _ta_profile_cache_load()
+        for nm in [expected_player]:
+            k = _ta_profile_cache_key(nm)
+            if k in cache and isinstance(cache[k], dict):
+                item = cache[k].copy()
+                src_old = str(item.get("source", "") or "")
+                if "Auto Recent" not in src_old:
+                    if "manual" not in src_old.lower():
+                        item["source"] = "Manual " + (src_old or "TennisAbstract")
+                item["manual_saved_at"] = _ta_profile_cache_today()
+                cache[k] = item
+        _ta_profile_cache_save(cache)
+    except Exception:
+        pass
+    return ok, msg + " · marcado como manual"
+
 def _ta_profile_audit_detail_v23483(item):
     """v23.48.3: auditoría honesta de fuente.
     - matches/recent_used = últimos partidos parseados y usados por el modelo (máx. 12).
@@ -12240,6 +12285,7 @@ def _ta_match_cache_audit_rows_v23481(players):
         if isinstance(item, dict) and str(item.get("raw_text", "")).strip():
             stale = bool(item.get("stale", _ta_profile_cache_is_stale(item)))
             detail = _ta_profile_audit_detail_v23483(item)
+            source_kind, source_label_visible = _ta_profile_source_kind_v23485(item)
             recent_used = int(detail.get("recent_used", 0) or 0)
             season_total = int(detail.get("season_total", 0) or 0)
             ref_n = int(detail.get("reference_n", 0) or 0)
@@ -12256,6 +12302,8 @@ def _ta_match_cache_audit_rows_v23481(players):
                 "Nombre usado": canon,
                 "Alias": "Sí" if alias_used else "No",
                 "Estado ficha": status,
+                "Fuente perfil": source_label_visible,
+                "Tipo fuente": source_kind,
                 "Calidad": detail.get("quality", ""),
                 "Recientes usados": recent_used,
                 "Total temporada TA": season_total,
@@ -12273,6 +12321,8 @@ def _ta_match_cache_audit_rows_v23481(players):
                 "Nombre usado": canon,
                 "Alias": "Sí" if alias_used else "No",
                 "Estado ficha": "❌ Pendiente",
+                "Fuente perfil": "🔴 Sin ficha",
+                "Tipo fuente": "sin",
                 "Calidad": "⚪ Sin datos",
                 "Recientes usados": 0,
                 "Total temporada TA": 0,
@@ -12295,10 +12345,15 @@ def _ta_match_cache_audit_summary_v23481(players):
     stale = sum(1 for r in rows if "Caducada" in str(r.get("Estado ficha", "")))
     missing = sum(1 for r in rows if str(r.get("Estado ficha", "")).startswith("❌"))
     aliases = sum(1 for r in rows if r.get("Alias") == "Sí")
+    ta_real = sum(1 for r in rows if r.get("Tipo fuente") == "ta")
+    auto_recent = sum(1 for r in rows if r.get("Tipo fuente") == "auto")
+    manual = sum(1 for r in rows if r.get("Tipo fuente") == "manual")
+    otros = sum(1 for r in rows if r.get("Tipo fuente") == "otro")
     cobertura = (100.0 * (total - missing) / total) if total else 0.0
     return rows, {
         "total": total, "ok": ok, "partial": partial, "stale": stale,
-        "missing": missing, "aliases": aliases, "cobertura": cobertura
+        "missing": missing, "aliases": aliases, "cobertura": cobertura,
+        "ta_real": ta_real, "auto_recent": auto_recent, "manual": manual, "otros": otros
     }
 
 
@@ -13374,10 +13429,44 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                 a3.metric("Parciales/caducadas", audit_sum.get("partial", 0) + audit_sum.get("stale", 0))
                 a4.metric("Pendientes", audit_sum.get("missing", 0))
                 a5.metric("Alias usados", audit_sum.get("aliases", 0))
-                st.caption(f"Cobertura TA útil: {audit_sum.get('cobertura', 0):.1f}%. Recientes usados = últimos partidos que entran en el refuerzo (normalmente máx. 12). Total temporada TA solo aparece si la ficha TennisAbstract lo trae. Si ves repetidos pendientes, crea alias o pega ficha manual.")
+                b1, b2, b3, b4 = st.columns(4)
+                b1.metric("🟢 TA Real", audit_sum.get("ta_real", 0))
+                b2.metric("🟠 Auto Recent", audit_sum.get("auto_recent", 0))
+                b3.metric("📋 Manual", audit_sum.get("manual", 0))
+                b4.metric("🔴 Sin ficha", audit_sum.get("missing", 0))
+                st.caption(f"Cobertura de perfiles: {audit_sum.get('cobertura', 0):.1f}%. Ahora se distingue TA Real de Auto Recent. Auto Recent es útil como refuerzo local, pero NO equivale a ficha TennisAbstract completa. Si ves Auto Recent y quieres TA real, pega la ficha manual.")
                 if audit_rows:
                     audit_df = pd.DataFrame(audit_rows)
                     st.dataframe(audit_df, width='stretch', hide_index=True)
+
+                    # v23.48.5: pegado manual directo desde el auditor.
+                    with st.expander("📋 Pegar ficha TennisAbstract manual", expanded=bool(audit_sum.get("missing", 0))):
+                        st.caption("Pega aquí la ficha completa copiada de TennisAbstract para sustituir Auto Recent o rellenar pendientes. Se guarda en caché y se prioriza sobre el perfil automático.")
+                        opciones_manual = []
+                        for r in audit_rows:
+                            label = f"{r.get('Jugador detectado','')} · {r.get('Fuente perfil','')} · {r.get('Estado ficha','')}"
+                            opciones_manual.append((label, r.get('Nombre usado') or r.get('Jugador detectado')))
+                        if opciones_manual:
+                            labels_manual = [x[0] for x in opciones_manual]
+                            chosen_label_manual = st.selectbox("Jugador", labels_manual, key="ta_manual_profile_player_v23485")
+                            chosen_player_manual = opciones_manual[labels_manual.index(chosen_label_manual)][1]
+                            raw_manual = st.text_area("Ficha completa TennisAbstract", height=220, key="ta_manual_profile_text_v23485", placeholder="Copia la ficha del jugador desde TennisAbstract y pégala aquí...")
+                            if st.button("💾 Guardar ficha manual TA", key="ta_manual_profile_save_v23485", use_container_width=True, disabled=not bool(str(raw_manual).strip())):
+                                ok_m, msg_m = _ta_profile_cache_upsert_manual_v23485(chosen_player_manual, raw_manual)
+                                if ok_m:
+                                    st.success(msg_m)
+                                    try:
+                                        st.cache_data.clear()
+                                    except Exception:
+                                        pass
+                                    try:
+                                        st.rerun()
+                                    except Exception:
+                                        pass
+                                else:
+                                    st.error(msg_m)
+                        else:
+                            st.info("No hay jugadores en este bloque para guardar ficha manual.")
 
                     # v23.48.4: inspector de ficha completa TA/cache.
                     # Permite comprobar si la caché guarda solo recientes o también texto/ficha completa.
