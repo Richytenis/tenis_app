@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.11-ta-real-fetch-debug"
+APP_VERSION = "v23.49.12-ta-individual-permanent"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -12166,29 +12166,46 @@ def _ta_match_html_to_profile_text_v23432(html_text, expected_player=""):
 
 def _ta_match_profile_urls_v23432(name):
     """URLs candidatas de ficha TA.
-    v23.49.3: primero intenta resolver la URL real desde el leaderboard Elo de TA,
-    luego prueba variantes directas con/sin www. Esto arregla jugadores conocidos
-    que antes salían como Sin ficha pese a existir en TennisAbstract.
+    v23.49.12: prioriza player-classic.cgi porque suele traer HTML más parseable.
+    Además añade la versión classic equivalente a cualquier URL encontrada por leaderboard.
     """
     urls = []
-    # 0) Alias manual primero.
+
+    def _add_url(u):
+        u = str(u or "").strip()
+        if not u:
+            return
+        # Siempre probar classic antes si viene player.cgi.
+        variants = []
+        if "player.cgi" in u:
+            variants.append(u.replace("player.cgi", "player-classic.cgi"))
+        variants.append(u)
+        if "player-classic.cgi" in u:
+            variants.append(u.replace("player-classic.cgi", "player.cgi"))
+        for x in variants:
+            if x and x not in urls:
+                urls.append(x)
+
     name0 = normalizar_texto(name)
     name1 = _ta_alias_resolve(name0)
-    for nm in [name1, name0]:
-        for u in _ta_match_urls_from_elo_leaderboard_v23493(nm, circuito="ATP", min_score=0.88):
-            if u and u not in urls:
-                urls.append(u)
 
-    # 1) Generador existente.
+    # 0) URL real desde leaderboard Elo, duplicando a classic.
     for nm in [name1, name0]:
         try:
-            for u in _auto_profile_direct_urls_v23431(nm):
-                if u and u not in urls:
-                    urls.append(u)
+            for u in _ta_match_urls_from_elo_leaderboard_v23493(nm, circuito="ATP", min_score=0.88):
+                _add_url(u)
         except Exception:
             pass
 
-    # 2) Variantes directas robustas.
+    # 1) Generador existente, duplicando a classic.
+    for nm in [name1, name0]:
+        try:
+            for u in _auto_profile_direct_urls_v23431(nm):
+                _add_url(u)
+        except Exception:
+            pass
+
+    # 2) Variantes directas robustas: classic primero, luego moderno.
     for nm in [name1, name0]:
         toks = tokens(nm)
         if not toks:
@@ -12197,8 +12214,7 @@ def _ta_match_profile_urls_v23432(name):
         variants = []
         variants.append("".join(title_tokens))              # AlexanderZverev
         variants.append("-".join(title_tokens))             # Alexander-Zverev
-        variants.append("".join(toks).title())              # NZverev / NKyrgios si abreviado
-        # Si viene "Apellido Inicial" o "Inicial Apellido", probamos apellido+inicial, pero no como única opción.
+        variants.append("".join(toks).title())
         if len(toks) >= 2:
             variants.append(toks[-1].title() + toks[0][0].title())
             variants.append(toks[0][0].title() + toks[-1].title())
@@ -12206,11 +12222,74 @@ def _ta_match_profile_urls_v23432(name):
             if not v:
                 continue
             for host in ["https://www.tennisabstract.com", "https://tennisabstract.com"]:
-                u = f"{host}/cgi-bin/player.cgi?p={v}"
-                if u not in urls:
-                    urls.append(u)
-    return urls[:14]
+                _add_url(f"{host}/cgi-bin/player-classic.cgi?p={v}")
+                _add_url(f"{host}/cgi-bin/player.cgi?p={v}")
+    return urls[:24]
 
+
+def _ta_match_fetch_ta_real_only_v234912(player_name, timeout_sec=22):
+    """Busca SOLO TA Real para un jugador, sin crear Auto Recent fallback.
+    Guarda permanentemente si el parser detecta señales reales de TennisAbstract.
+    Devuelve (ok, detalle) con URL/HTTP/html/text/parser para depurar.
+    """
+    name = normalizar_texto(player_name)
+    if not name:
+        return False, "sin nombre"
+
+    existing = _ta_profile_cache_find(name, allow_stale=True)
+    if isinstance(existing, dict) and _ta_profile_cache_source_priority(existing) >= 80:
+        return True, f"ya existe TA Real/Manual permanente para {existing.get('player', name)}"
+
+    details = []
+    tried = 0
+    for url in _ta_match_profile_urls_v23432(name):
+        tried += 1
+        html_text, status = _ta_match_fetch_url_v23432(url, timeout_sec=timeout_sec)
+        short_url = url.split('/cgi-bin/')[-1]
+        if not html_text:
+            details.append(f"{short_url}: {status}, html=0")
+            if "HTTP 429" in str(status):
+                break
+            continue
+
+        profile_text = _ta_match_html_to_profile_text_v23432(html_text, name)
+        parsed = _parse_tennisabstract_player_profile(profile_text)
+        full = int((parsed or {}).get("ta_full_score", 0) or 0) if isinstance(parsed, dict) else 0
+        n = int((parsed or {}).get("matches", 0) or 0) if isinstance(parsed, dict) else 0
+        elo = (parsed or {}).get("elo", None) if isinstance(parsed, dict) else None
+        sample = re.sub(r"\s+", " ", str(profile_text or "")[:180])
+        details.append(f"{short_url}: {status}, html={len(html_text)}, text={len(profile_text)}, parser={'OK' if parsed else 'None'}, n={n}, full={full}, Elo={elo or 'N/A'}, sample={sample}")
+
+        # TA real: exigimos algo que NO puede venir de Auto Recent local.
+        is_real = bool(parsed) and (
+            full >= 1 or
+            elo is not None or
+            bool((parsed or {}).get("hElo")) or bool((parsed or {}).get("cElo")) or bool((parsed or {}).get("gElo")) or
+            bool((parsed or {}).get("challenger_2026"))
+        )
+        if is_real:
+            ok, msg = _ta_profile_cache_upsert_from_raw(name, profile_text, parsed=parsed)
+            if ok:
+                # Fuerza bandera permanente en las claves guardadas.
+                try:
+                    cache = _ta_profile_cache_load()
+                    for k in [_ta_profile_cache_key(name), _ta_profile_cache_key((parsed or {}).get('player', name))]:
+                        if k in cache and isinstance(cache[k], dict):
+                            cache[k]["permanent_ta"] = True
+                            cache[k]["source"] = "Tennis Abstract Real"
+                            cache[k]["profile_source_type"] = "TA Real Permanente"
+                    _ta_profile_cache_save(cache)
+                except Exception:
+                    pass
+                return True, f"TA Real guardada permanentemente · {msg} · " + " | ".join(details[-2:])
+            details.append(f"parseó TA Real pero no guardó: {msg}")
+
+        # Pequeña pausa para no disparar 429 incluso en intento individual con varias URLs.
+        time.sleep(0.8)
+        if tried >= 8:
+            break
+
+    return False, "No se pudo guardar TA Real. " + " | ".join(details[:8])
 
 def _ta_match_auto_cache_one_player_v23432(player_name, timeout_sec=22):
     """Busca la ficha TA y, si TA no responde/no parsea, crea ficha de refuerzo
@@ -12306,71 +12385,12 @@ def _ta_match_players_from_extra_candidates_v23432(cand_df):
     return out
 
 
-
-def _ta_match_force_ta_real_debug_v234911(player_name, timeout_sec=22):
-    """Intenta SOLO TennisAbstract real y devuelve diagnóstico visible.
-    No crea Auto Recent como fallback. Sirve para saber si falla URL, HTTP o parser.
-    """
-    name = normalizar_texto(player_name)
-    if not name:
-        return False, "sin nombre"
-
-    existing = _ta_profile_cache_find(name, allow_stale=True)
-    if isinstance(existing, dict) and _ta_profile_cache_source_priority(existing) >= 80:
-        return True, f"TA Real/Manual ya permanente: {existing.get('player', name)}"
-
-    urls = _ta_match_profile_urls_v23432(name)
-    if not urls:
-        return False, "sin URLs candidatas"
-
-    debug = []
-    for url in urls[:10]:
-        label = url.split('p=')[-1] if 'p=' in url else url[-45:]
-        html_text, status = _ta_match_fetch_url_v23432(url, timeout_sec=timeout_sec)
-        chars_html = len(html_text or "")
-        if not html_text:
-            debug.append(f"{label}: {status}, html=0")
-            continue
-
-        low = html_text.lower()
-        if "player not found" in low or "no player found" in low:
-            debug.append(f"{label}: {status}, html={chars_html}, jugador no encontrado")
-            continue
-
-        profile_text = _ta_match_html_to_profile_text_v23432(html_text, name)
-        chars_text = len(profile_text or "")
-        parsed = _parse_tennisabstract_player_profile(profile_text)
-        if not isinstance(parsed, dict):
-            sample = re.sub(r"\s+", " ", profile_text[:180]).strip()
-            debug.append(f"{label}: {status}, html={chars_html}, text={chars_text}, parser=None, sample={sample[:90]}")
-            continue
-
-        full = int(parsed.get("ta_full_score", 0) or 0)
-        n = int(parsed.get("matches", 0) or 0)
-        elo = parsed.get("elo", None)
-        ch = (parsed.get("challenger_2026", {}) or {}).get("matches", 0)
-        # Guardamos si de verdad viene de HTML TA y aporta algo real: full sections, Elo o recent results parseados.
-        if full >= 1 or elo is not None or n >= 1 or int(ch or 0) > 0:
-            ok, msg = _ta_profile_cache_upsert_from_raw(name, profile_text, parsed=parsed)
-            if ok:
-                return True, f"TA Real/parcial guardada · url={label} · html={chars_html} · text={chars_text} · recent={n} · full={full} · elo={elo or 'N/A'} · ch2026={ch}"
-            debug.append(f"{label}: parse OK recent={n}, full={full}, elo={elo or 'N/A'}, pero no guardó: {msg}")
-        else:
-            debug.append(f"{label}: parse vacío recent={n}, full={full}, elo={elo or 'N/A'}, html={chars_html}, text={chars_text}")
-
-    return False, " | ".join(debug[:6])
-
 def _ta_match_cache_status_counts_v23432(players):
-    """v23.49.11: para esta fase, OK significa TA Real/Manual útil.
-    Auto Recent NO cuenta como ficha TA definitiva: entra en pendientes para intentar
-    convertirlo a TennisAbstract real. No toca cálculos, solo flujo de descarga.
-    """
     ok, missing = [], []
     for n in players or []:
         canon = _ta_alias_resolve(n)
-        item = _ta_profile_cache_find(canon, allow_stale=True) or _ta_profile_cache_find(n, allow_stale=True)
-        pr = _ta_profile_cache_source_priority(item) if isinstance(item, dict) else 0
-        if item and str(item.get("raw_text", "")).strip() and pr >= 80:
+        item = _ta_profile_cache_find(canon) or _ta_profile_cache_find(n)
+        if item and str(item.get("raw_text", "")).strip():
             ok.append(n)
         else:
             missing.append(n)
@@ -13913,6 +13933,40 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                     audit_df = pd.DataFrame(audit_rows)
                     st.dataframe(audit_df, width='stretch', hide_index=True)
 
+                    # v23.49.12: botón individual para buscar TA Real de un solo jugador y guardarla permanente.
+                    with st.expander("🔎 Buscar TA Real individual permanente", expanded=False):
+                        st.caption("Busca SOLO un jugador para evitar HTTP 429. Si encuentra TA Real, la guarda para siempre y nunca será sustituida por Auto Recent.")
+                        opciones_ind = []
+                        for r in audit_rows:
+                            nombre_ind = r.get('Nombre usado') or r.get('Jugador detectado')
+                            fuente_ind = str(r.get('Fuente perfil', ''))
+                            estado_ind = str(r.get('Estado ficha', ''))
+                            label_ind = f"{nombre_ind} · {fuente_ind} · {estado_ind}"
+                            opciones_ind.append((label_ind, nombre_ind))
+                        if opciones_ind:
+                            labels_ind = [x[0] for x in opciones_ind]
+                            chosen_ind_label = st.selectbox("Jugador", labels_ind, key="ta_individual_fetch_select_v234912")
+                            chosen_ind = opciones_ind[labels_ind.index(chosen_ind_label)][1]
+                            cta1, cta2 = st.columns([2, 1])
+                            with cta1:
+                                st.info(f"Jugador seleccionado: {chosen_ind}")
+                            with cta2:
+                                timeout_ind = st.number_input("Timeout", min_value=12, max_value=45, value=25, step=1, key="ta_individual_timeout_v234912")
+                            if st.button("🔎 Buscar TA Real de este jugador y guardar permanente", key="ta_individual_fetch_btn_v234912", use_container_width=True):
+                                with st.spinner(f"Buscando TA Real de {chosen_ind}..."):
+                                    ok_ind, msg_ind = _ta_match_fetch_ta_real_only_v234912(chosen_ind, timeout_sec=int(timeout_ind))
+                                if ok_ind:
+                                    st.success(msg_ind)
+                                    try:
+                                        st.cache_data.clear()
+                                    except Exception:
+                                        pass
+                                else:
+                                    st.warning(msg_ind)
+                                    st.caption("Si ves HTTP 429, espera 1-2 minutos antes de probar otro jugador. Si ves html grande y parser=None, el fallo está en el parser de ese HTML.")
+                        else:
+                            st.info("No hay jugadores para buscar.")
+
                     # v23.48.5: pegado manual directo desde el auditor.
                     with st.expander("📋 Pegar ficha TennisAbstract manual", expanded=bool(audit_sum.get("missing", 0))):
                         st.caption("Pega aquí la ficha completa copiada de TennisAbstract para sustituir Auto Recent o rellenar pendientes. Se guarda en caché y se prioriza sobre el perfil automático.")
@@ -14010,27 +14064,30 @@ def render_datos_extra_reanalysis_panel(ok_saved):
             st.warning(f"No se pudo mostrar auditoría TA: {type(e).__name__}: {e}")
 
         with st.expander("🔎 Auto extraer fichas TennisAbstract para estos picks", expanded=bool(missing_cached)):
-            st.caption("Intenta convertir pendientes y 🟠 Auto Recent en TennisAbstract real. No crea Auto Recent como éxito; muestra URL/HTTP/parser si falla.")
+            st.caption("Esto intenta leer la ficha TA de los jugadores de estos picks Over y guardarla en caché. Si funciona, no tienes que pegarla a mano.")
             if missing_cached:
-                st.dataframe(pd.DataFrame({"Jugador a intentar convertir a TA Real": missing_cached}), width='stretch', hide_index=True)
+                st.dataframe(pd.DataFrame({"Jugador pendiente": missing_cached}), width='stretch', hide_index=True)
             else:
-                st.success("Todos estos jugadores tienen TA Real/Manual útil en caché.")
+                st.success("Todas las fichas de estos picks ya están en caché.")
             timeout_auto = st.slider("Timeout por ficha TA", 12, 35, 22, 1, key="ta_auto_timeout_v23432")
             max_auto = st.slider("Máximo fichas a intentar ahora", 2, 30, min(20, max(2, len(missing_cached) if missing_cached else 2)), 1, key="ta_auto_max_v23432")
-            if st.button("🔎 Intentar TA Real ahora (pendientes + Auto Recent)", key="ta_auto_fetch_v23432", use_container_width=True, disabled=not bool(missing_cached)):
+            if st.button("🔎 Extraer fichas TA pendientes y guardar caché", key="ta_auto_fetch_v23432", use_container_width=True, disabled=not bool(missing_cached)):
                 results = []
                 with st.spinner("Extrayendo fichas TennisAbstract en bloque..."):
                     for name in missing_cached[:int(max_auto)]:
-                        ok, msg = _ta_match_force_ta_real_debug_v234911(name, timeout_sec=int(timeout_auto))
+                        ok, msg = _ta_match_auto_cache_one_player_v23432(name, timeout_sec=int(timeout_auto))
                         results.append({"Jugador": name, "OK": "Sí" if ok else "No", "Detalle": msg})
                 if results:
                     st.dataframe(pd.DataFrame(results), width='stretch', hide_index=True)
                     saved_n = sum(1 for r in results if r.get("OK") == "Sí")
                     if saved_n:
-                        st.success(f"Guardadas/actualizadas {saved_n} fichas TA reales/parciales. Vuelve a analizar para aplicar.")
+                        st.success(f"Guardadas {saved_n} fichas. Pulsa Rerun o vuelve a analizar para que se apliquen al reanálisis.")
                     else:
-                        st.warning("No se pudo guardar ninguna TA Real. Mira la columna Detalle: ahí aparece URL/HTTP/html/parser.")
-                st.info("Revisa la tabla de resultados. Luego pulsa Rerun o vuelve a analizar si se guardó alguna TA Real.")
+                        st.warning("No se pudo guardar ninguna ficha automática. Puede ser timeout, nombre distinto o página TA sin resultados recientes parseables.")
+                try:
+                    st.rerun()
+                except Exception:
+                    pass
     except Exception as e:
         st.warning(f"No se pudo mostrar Auto TA reinforcer: {type(e).__name__}: {e}")
 
