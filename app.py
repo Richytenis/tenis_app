@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.48.5-ta-real-source-manual"
+APP_VERSION = "v23.49.0-ta-full-parser-manual-auto"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11902,6 +11902,12 @@ def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
         "recent_used": parsed_obj.get("matches", ""),
         "challenger_2026_matches": (parsed_obj.get("challenger_2026", {}) or {}).get("matches", ""),
         "ta_player_detected": parsed_obj.get("player", ""),
+        "ta_full_score": parsed_obj.get("ta_full_score", 0),
+        "ta_full": parsed_obj.get("ta_full", {}),
+        "ta_best_hard": parsed_obj.get("ta_best_hard", {}),
+        "ta_best_clay": parsed_obj.get("ta_best_clay", {}),
+        "ta_best_grass": parsed_obj.get("ta_best_grass", {}),
+        "profile_source_type": "TA Real Completo" if int(parsed_obj.get("ta_full_score", 0) or 0) >= 3 else parsed_obj.get("source", ""),
     }
 
     cache = _ta_profile_cache_load()
@@ -12151,6 +12157,8 @@ def _ta_profile_source_kind_v23485(item):
     src = str(item.get("source", "") or "")
     raw = str(item.get("raw_text", "") or "")
     low = (src + "\n" + raw[:500]).lower()
+    if int(item.get("ta_full_score", 0) or 0) >= 3 and ("tennis abstract" in low or "manual" in low):
+        return "ta", "🟢 TA Real Completa"
     if "manual" in low and ("tennis abstract" in low or "flashscore" in low):
         return "manual", "📋 Manual"
     if "auto recent" in low or "auto challenger recent form" in low or "histórico local" in low or "historico local" in low:
@@ -12631,6 +12639,181 @@ def _ta_elo_is_suspicious_year(x):
 
 
 
+
+
+# =========================================================
+# v23.49.0 TENNISABSTRACT FULL PROFILE PARSER
+# Lee secciones completas de TA (no solo Recent Results):
+# Tour-Level Seasons, Challenger Seasons, Splits y Elo por superficie.
+# No toca motor Over: solo enriquece caché/ficha para auditoría y futuras lecturas.
+# =========================================================
+
+def _ta_cell_pct_v23490(x, default=None):
+    try:
+        t = normalizar_texto(x).replace('%','').replace(',','.').strip()
+        if t in ['', '-', 'nan']:
+            return default
+        return float(t)
+    except Exception:
+        return default
+
+
+def _ta_cell_int_v23490(x, default=0):
+    try:
+        t = normalizar_texto(x).strip()
+        if t in ['', '-', 'nan']:
+            return default
+        m = re.search(r"-?\d+", t)
+        return int(m.group(0)) if m else default
+    except Exception:
+        return default
+
+
+def _ta_split_cells_v23490(line):
+    line = normalizar_texto(line or '').strip()
+    if not line:
+        return []
+    if '\t' in line:
+        return [c.strip() for c in line.split('\t') if str(c).strip()]
+    # Fallback conservador: separa por 2+ espacios. No rompe nombres como "Best of 3" si hay tabs.
+    return [c.strip() for c in re.split(r"\s{2,}", line) if str(c).strip()]
+
+
+def _ta_parse_stats_row_v23490(cells, row_label_type='season'):
+    """Parsea filas TA con columnas:
+    Label/Year, M,W,L,Win%,Set W-L,Set%,Game W-L,Game%,TB W-L,TB%,MS,Hld%,Brk%,A%,DF%,1stIn,1st%,2nd%,SPW,RPW,TPW,DR,...
+    """
+    try:
+        if not cells or len(cells) < 22:
+            return None
+        label = cells[0]
+        out = {
+            'label': label,
+            'matches': _ta_cell_int_v23490(cells[1]),
+            'wins': _ta_cell_int_v23490(cells[2]),
+            'losses': _ta_cell_int_v23490(cells[3]),
+            'win_pct': _ta_cell_pct_v23490(cells[4]),
+            'set_wl': cells[5] if len(cells) > 5 else '',
+            'set_pct': _ta_cell_pct_v23490(cells[6] if len(cells) > 6 else None),
+            'game_wl': cells[7] if len(cells) > 7 else '',
+            'game_pct': _ta_cell_pct_v23490(cells[8] if len(cells) > 8 else None),
+            'tb_wl': cells[9] if len(cells) > 9 else '',
+            'tb_pct': _ta_cell_pct_v23490(cells[10] if len(cells) > 10 else None),
+            'ms': _ta_cell_int_v23490(cells[11] if len(cells) > 11 else None),
+            'hold_pct': _ta_cell_pct_v23490(cells[12] if len(cells) > 12 else None),
+            'break_pct': _ta_cell_pct_v23490(cells[13] if len(cells) > 13 else None),
+            'ace_pct': _ta_cell_pct_v23490(cells[14] if len(cells) > 14 else None),
+            'df_pct': _ta_cell_pct_v23490(cells[15] if len(cells) > 15 else None),
+            'first_in_pct': _ta_cell_pct_v23490(cells[16] if len(cells) > 16 else None),
+            'first_won_pct': _ta_cell_pct_v23490(cells[17] if len(cells) > 17 else None),
+            'second_won_pct': _ta_cell_pct_v23490(cells[18] if len(cells) > 18 else None),
+            'spw_pct': _ta_cell_pct_v23490(cells[19] if len(cells) > 19 else None),
+            'rpw_pct': _ta_cell_pct_v23490(cells[20] if len(cells) > 20 else None),
+            'tpw_pct': _ta_cell_pct_v23490(cells[21] if len(cells) > 21 else None),
+            'dr': _ta_cell_pct_v23490(cells[22] if len(cells) > 22 else None),
+        }
+        return out if out['matches'] > 0 else None
+    except Exception:
+        return None
+
+
+def _ta_parse_year_end_current_v23490(lines):
+    out = {}
+    for ln in lines or []:
+        if not str(ln).startswith('Current'):
+            continue
+        # Current (date) ATP Rank Points Elo Rank Elo hElo Rank hElo cElo Rank cElo gElo Rank gElo
+        ln2 = re.sub(r"^Current\s*\([^)]*\)", "", normalizar_texto(ln)).strip()
+        cells = _ta_split_cells_v23490(ln2)
+        nums = []
+        for c in cells:
+            if re.fullmatch(r"\d{1,5}", str(c).strip()):
+                nums.append(int(c))
+        if len(nums) < 10:
+            nums = [int(x) for x in re.findall(r"\b\d{1,5}\b", ln2)]
+        if len(nums) >= 4:
+            out['rank'] = nums[0]
+            out['points'] = nums[1] if len(nums) > 1 else None
+            out['elo_rank'] = nums[2] if len(nums) > 2 else None
+            out['elo'] = _ta_valid_elo_rating(nums[3])
+            out['hElo_rank'] = nums[4] if len(nums) > 4 else None
+            out['hElo'] = _ta_valid_elo_rating(nums[5]) if len(nums) > 5 else None
+            out['cElo_rank'] = nums[6] if len(nums) > 6 else None
+            out['cElo'] = _ta_valid_elo_rating(nums[7]) if len(nums) > 7 else None
+            out['gElo_rank'] = nums[8] if len(nums) > 8 else None
+            out['gElo'] = _ta_valid_elo_rating(nums[9]) if len(nums) > 9 else None
+            return out
+    return out
+
+
+def _ta_parse_full_sections_v23490(text, lines):
+    """Devuelve dict TA completo con secciones estructuradas."""
+    result = {
+        'tour_seasons': {},
+        'challenger_seasons': {},
+        'career_splits': {},
+        'last52_splits': {},
+        'year_end_current': {},
+        'full_score': 0,
+    }
+    section = None
+    for ln in lines or []:
+        if ln.startswith('Tour-Level Seasons'):
+            section = 'tour'; continue
+        if ln.startswith('Challenger Seasons'):
+            section = 'challenger'; continue
+        if ln.startswith('Career Tour-Level Splits'):
+            section = 'career_splits'; continue
+        if ln.startswith('Last 52 Weeks Tour-Level Splits'):
+            section = 'last52_splits'; continue
+        if ln.startswith('Year-End Rankings'):
+            section = 'year_end'; continue
+        # cortes principales
+        if any(ln.startswith(x) for x in ['Recent Titles', 'Major and Recent Events', 'Winners and Unforced Errors', 'Key Points', 'Match Charting', 'Most Frequent Head-to-Heads']):
+            if section in ['tour','challenger','career_splits','last52_splits','year_end']:
+                section = None
+        cells = _ta_split_cells_v23490(ln)
+        if section in ['tour','challenger'] and cells:
+            label = cells[0]
+            if label == 'Career' or re.fullmatch(r"20\d{2}", label):
+                row = _ta_parse_stats_row_v23490(cells)
+                if row:
+                    result['tour_seasons' if section == 'tour' else 'challenger_seasons'][label] = row
+        elif section in ['career_splits','last52_splits'] and cells:
+            label = cells[0]
+            valid_labels = {'Hard','Clay','Grass','Grand Slams','Masters','Other Tours','Best of 5','Best of 3','vs Righties','vs Lefties','vs Top 10'}
+            if label in valid_labels or label.startswith('vs '):
+                row = _ta_parse_stats_row_v23490(cells)
+                if row:
+                    result[section][label] = row
+    result['year_end_current'] = _ta_parse_year_end_current_v23490(lines)
+    # puntuación de riqueza: sirve para clasificar TA Real Completo.
+    score = 0
+    score += 2 if result['tour_seasons'] else 0
+    score += 2 if result['challenger_seasons'] else 0
+    score += 2 if result['career_splits'] else 0
+    score += 2 if result['last52_splits'] else 0
+    score += 1 if result['year_end_current'] else 0
+    result['full_score'] = score
+    return result
+
+
+def _ta_best_surface_stats_v23490(full, surface='Hard'):
+    """Elige stats TA útiles para integrar/mostrar por superficie sin tocar motor."""
+    if not isinstance(full, dict):
+        return {}
+    surf = {'Hard':'Hard','Clay':'Clay','Grass':'Grass'}.get(str(surface), str(surface))
+    # Prioridad: Last52 superficie > Career superficie > Tour 2026 > Challenger 2026 > Career tour/challenger.
+    for path in [
+        ('last52_splits', surf), ('career_splits', surf),
+        ('tour_seasons', '2026'), ('challenger_seasons', '2026'),
+        ('tour_seasons', 'Career'), ('challenger_seasons', 'Career')
+    ]:
+        row = (full.get(path[0], {}) or {}).get(path[1])
+        if isinstance(row, dict) and row.get('matches',0):
+            return row
+    return {}
+
 def _parse_tennisabstract_player_profile(raw_text):
     """Extrae señales desde una ficha copiada de Tennis Abstract.
     Usa Recent Results para calcular Over18.5, Over19.5, 3 sets, set ganado,
@@ -12692,6 +12875,17 @@ def _parse_tennisabstract_player_profile(raw_text):
             break
         if in_ch and ln.startswith("Recent Titles"):
             break
+
+    ta_full = _ta_parse_full_sections_v23490(text, lines)
+    year_current = ta_full.get('year_end_current', {}) if isinstance(ta_full, dict) else {}
+    if elo is None and year_current.get('elo') is not None:
+        elo = year_current.get('elo')
+    if helo is None and year_current.get('hElo') is not None:
+        helo = year_current.get('hElo')
+    if celo is None and year_current.get('cElo') is not None:
+        celo = year_current.get('cElo')
+    if gelo is None and year_current.get('gElo') is not None:
+        gelo = year_current.get('gElo')
 
     matches = []
     in_recent = False
@@ -12757,7 +12951,7 @@ def _parse_tennisabstract_player_profile(raw_text):
         if len(matches) >= 12:
             break
 
-    if not matches and elo is None and not ch_2026:
+    if not matches and elo is None and not ch_2026 and not (isinstance(ta_full, dict) and ta_full.get('full_score', 0) > 0):
         return None
     n = len(matches)
     wins = sum(m["win"] for m in matches)
@@ -12812,6 +13006,10 @@ def _parse_tennisabstract_player_profile(raw_text):
         "long_sets": long_sets, "tb_sets": tb_sets, "avg_games": avg_games,
         "hard_n": hard_n, "hard_over": hard_over, "clay_n": clay_n, "clay_over": clay_over,
         "elo": elo, "hElo": helo, "cElo": celo, "gElo": gelo, "challenger_2026": ch_2026,
+        "ta_full": ta_full, "ta_full_score": (ta_full or {}).get("full_score", 0),
+        "ta_best_grass": _ta_best_surface_stats_v23490(ta_full, "Grass"),
+        "ta_best_clay": _ta_best_surface_stats_v23490(ta_full, "Clay"),
+        "ta_best_hard": _ta_best_surface_stats_v23490(ta_full, "Hard"),
         "largos": largos, "palizas": palizas, "summary": summary,
     }
 
