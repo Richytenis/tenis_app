@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.8-ta-strict-auto-recent-fix"
+APP_VERSION = "v23.49.9-ta-strict-real-final"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -12989,19 +12989,11 @@ def _ta_best_surface_stats_v23490(full, surface='Hard'):
     return {}
 
 def _parse_tennisabstract_player_profile(raw_text):
-    """Extrae señales desde una ficha REAL copiada de Tennis Abstract.
+    """Extrae señales desde una ficha copiada de Tennis Abstract.
     Usa Recent Results para calcular Over18.5, Over19.5, 3 sets, set ganado,
     derrotas 0-2 y palizas cortas. También intenta leer Elo/hElo/cElo/gElo.
-
-    v23.49.8: validación estricta.
-    Un perfil generado por la propia app (Auto Recent Form / Auto Challenger Recent Form)
-    NO puede clasificarse nunca como TennisAbstract real. Esto evita el bucle:
-    Auto Recent -> se relee -> se etiqueta como "Tennis Abstract leído".
     """
     text = normalizar_texto(raw_text or "")
-    low = text.lower()
-    if any(x in low for x in ["auto challenger recent form", "auto recent form", "autorecent "]):
-        return None
     if "Tennis Abstract" not in text and "Recent Results" not in text and "Elo rank" not in text:
         return None
     lines = [normalizar_texto(x).strip() for x in text.splitlines() if normalizar_texto(x).strip()]
@@ -13562,8 +13554,10 @@ def _extraer_datos_extra_desde_texto(raw_text, row=None):
         return data
 
     # 0b) Ficha auto generada desde históricos locales cuando TA no responde.
-    # v23.49.8: esto NO es TennisAbstract real. Se guarda como auto_recent,
-    # no como tennisabstract, para que el panel no muestre "TA leído" por error.
+    # IMPORTANTE v23.49.9:
+    # Auto Recent NO es TennisAbstract real. Antes se guardaba en data["tennisabstract"]
+    # y la pantalla lo pintaba como "✅ Tennis Abstract leído". Eso era el bug.
+    # Lo mantenemos como refuerzo local, pero separado para no disfrazarlo de TA real.
     ar = _parse_auto_recent_profile_v23433(text)
     if ar:
         data["j1_v"] = int(ar.get("wins", 0))
@@ -13572,7 +13566,7 @@ def _extraer_datos_extra_desde_texto(raw_text, row=None):
         data["h2h"] = "No aparece"
         data["nota"] = ar.get("summary", "")
         data["auto_recent"] = ar
-        data["manual"] = "Auto Recent"
+        data["is_ta_real"] = False
         return data
 
     # 1) Ficha Flashscore pegada: resultados recientes y marcadores.
@@ -13726,14 +13720,47 @@ def _combinar_lecturas_datos_extra_jugadores(text_j1, text_j2, row=None):
 
 
 def _estado_lectura_ficha_datos_extra(d):
-    """Devuelve estado legible para mostrar si una ficha pegada se ha leído bien."""
+    """Devuelve estado legible para mostrar si una ficha pegada se ha leído bien.
+
+    v23.49.9: Auto Recent se muestra como Auto Recent, nunca como TennisAbstract.
+    """
     if not isinstance(d, dict):
         return "❌ No leída", "No se pudo interpretar el bloque pegado."
     if d.get("mismatch"):
         return "❌ Ficha no coincide", str(d.get("mismatch"))
+
+    raw = str(d.get("ocr_text", "") or "")
+    raw_is_auto_recent = any(x in raw for x in [
+        "Auto Challenger Recent Form",
+        "Auto Recent Form",
+        "AutoRecent "
+    ])
+
+    ar = d.get("auto_recent")
+    if isinstance(ar, dict):
+        player = ar.get("player") or "jugador"
+        n = int(ar.get("matches", 0) or 0)
+        over = int(ar.get("overs", 0) or 0)
+        setwon = int(ar.get("set_won", 0) or 0)
+        threes = int(ar.get("three_sets", 0) or 0)
+        avg = ar.get("avg_games", 0) or 0
+        return "🟠 Auto Recent detectado", f"{player}: refuerzo local reciente · {n} partidos · Over18 {over}/{n if n else 1} · Set ganado {setwon}/{n if n else 1} · 3 sets {threes}/{n if n else 1} · media {avg:.1f} juegos. NO es TennisAbstract completo."
+
     ta = d.get("tennisabstract")
     fs = d.get("flashscore")
     if isinstance(ta, dict):
+        # Defensa extra: si por una entrada antigua llega un Auto Recent dentro de tennisabstract,
+        # no lo pintamos en verde.
+        src = str(ta.get("source", "") or "")
+        if raw_is_auto_recent or "Auto Recent" in src or "Auto" in src:
+            player = ta.get("player") or "jugador"
+            n = int(ta.get("matches", 0) or 0)
+            over = int(ta.get("overs", 0) or 0)
+            setwon = int(ta.get("set_won", 0) or 0)
+            threes = int(ta.get("three_sets", 0) or 0)
+            avg = ta.get("avg_games", 0) or 0
+            return "🟠 Auto Recent detectado", f"{player}: refuerzo local reciente · {n} partidos · Over18 {over}/{n if n else 1} · Set ganado {setwon}/{n if n else 1} · 3 sets {threes}/{n if n else 1} · media {avg:.1f} juegos. NO es TennisAbstract completo."
+
         player = ta.get("player") or "jugador"
         n = int(ta.get("matches", 0) or 0)
         over = int(ta.get("overs", 0) or 0)
@@ -13741,9 +13768,11 @@ def _estado_lectura_ficha_datos_extra(d):
         threes = int(ta.get("three_sets", 0) or 0)
         elo = ta.get("elo") or "N/A"
         avg = ta.get("avg_games", 0) or 0
-        if n >= 5:
+        # Para pintar verde exigimos marcadores reales de TA, no solo n=12.
+        ta_markers = any(k in ta for k in ["tour_2026", "challenger_2026", "career_challenger", "last52", "hElo", "cElo", "gElo", "helo", "celo", "gelo"]) or any(x in raw for x in ["Tour-Level Seasons", "Challenger Seasons", "Last 52 Weeks", "Career Splits", "Year-End Rankings", "Elo rank:"])
+        if n >= 5 and ta_markers:
             return "✅ Tennis Abstract leído", f"{player}: {n} partidos · Over18 {over}/{n} · Set ganado {setwon}/{n} · 3 sets {threes}/{n} · media {avg:.1f} juegos · Elo {elo}"
-        return "⚠️ Tennis Abstract parcial", f"{player}: solo {n} partidos detectados · Elo {elo}. Sirve, pero con menos confianza."
+        return "⚠️ Tennis Abstract parcial", f"{player}: {n} partidos detectados, pero sin marcadores completos TA. Elo {elo}."
     if isinstance(fs, dict):
         player = fs.get("player") or "jugador"
         n = int(fs.get("matches", 0) or 0)
@@ -13755,15 +13784,6 @@ def _estado_lectura_ficha_datos_extra(d):
         if n >= 5:
             return "✅ Flashscore leído", f"{player}: {n} partidos · W {wins}/{n} · Over18 {overs}/{n} · 3 sets {threes}/{n}{extra}"
         return "⚠️ Flashscore parcial", f"{player}: solo {n} partidos detectados{extra}. Sirve, pero con menos confianza."
-    ar = d.get("auto_recent")
-    if isinstance(ar, dict):
-        player = ar.get("player") or "jugador"
-        n = int(ar.get("matches", 0) or 0)
-        over = int(ar.get("overs", 0) or 0)
-        setwon = int(ar.get("set_won", 0) or 0)
-        threes = int(ar.get("three_sets", 0) or 0)
-        avg = ar.get("avg_games", 0) or 0
-        return "🟠 Auto Recent detectado", f"{player}: perfil local reciente, NO es TennisAbstract real · {n} partidos · Over18 {over}/{n} · Set ganado {setwon}/{n} · 3 sets {threes}/{n} · media {avg:.1f}"
     raw = str(d.get("ocr_text", "") or "").strip()
     largos = str(d.get("largos", "") or "")
     nota = str(d.get("nota", "") or "")
