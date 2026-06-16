@@ -16193,11 +16193,140 @@ def _predictor_excel_bytes(payload, ta_adj=None):
     output.seek(0)
     return output.getvalue()
 
+
+# =========================================================
+# v23.49.18 PREDICTOR · TA COVERAGE / TRACEABILITY
+# Solo visualiza qué ficha está entrando al Predictor y evita mostrar TA de partidos antiguos.
+# No toca motor Over, probabilidades ni fórmulas.
+# =========================================================
+
+def _predictor_match_key_v234918(p1_name, p2_name, surface="", circuito="", best_of=""):
+    try:
+        return "__".join([limpiar(p1_name), limpiar(p2_name), limpiar(surface), limpiar(circuito), limpiar(best_of)])
+    except Exception:
+        return f"{p1_name}__{p2_name}__{surface}__{circuito}__{best_of}"
+
+
+def _predictor_ta_item_v234918(player_name):
+    """Devuelve ficha cacheada TA/Auto para el jugador, respetando alias."""
+    try:
+        canon = _ta_alias_resolve(player_name)
+    except Exception:
+        canon = player_name
+    item = _ta_profile_cache_find(canon, allow_stale=True) or _ta_profile_cache_find(player_name, allow_stale=True)
+    return item if isinstance(item, dict) else None
+
+
+def _predictor_ta_trace_v234918(player_name, surface="Hard"):
+    item = _predictor_ta_item_v234918(player_name)
+    kind, label = _ta_profile_source_kind_v23485(item) if isinstance(item, dict) else ("sin", "🔴 Sin ficha")
+    parsed = {}
+    if isinstance(item, dict):
+        parsed = item.get("parsed") if isinstance(item.get("parsed"), dict) else {}
+    ta_full = parsed.get("ta_full") if isinstance(parsed.get("ta_full"), dict) else {}
+    current = ta_full.get("year_end_current") if isinstance(ta_full.get("year_end_current"), dict) else {}
+    last52 = ta_full.get("last52_splits") if isinstance(ta_full.get("last52_splits"), dict) else {}
+    career = ta_full.get("career_splits") if isinstance(ta_full.get("career_splits"), dict) else {}
+    surface_key = str(surface or "Hard").title()
+    surf_block = last52.get(surface_key) if isinstance(last52.get(surface_key), dict) else career.get(surface_key, {}) if isinstance(career.get(surface_key, {}), dict) else {}
+    tour_seasons = ta_full.get("tour_seasons") if isinstance(ta_full.get("tour_seasons"), dict) else {}
+    y2026 = tour_seasons.get("2026") if isinstance(tour_seasons.get("2026"), dict) else {}
+
+    source = str((item or {}).get("source", "") or parsed.get("source", ""))
+    full_score = int((item or {}).get("ta_full_score", parsed.get("ta_full_score", 0)) or 0)
+    is_ta_full = (kind == "ta" and full_score >= 3) or (str(parsed.get("source", "")).lower() == "tennis abstract" and full_score >= 3)
+
+    def fmt_pct(v):
+        try:
+            if v is None or v == "":
+                return "—"
+            return f"{float(v):.1f}%"
+        except Exception:
+            return "—"
+
+    def fmt_num(v, decimals=0):
+        try:
+            if v is None or v == "":
+                return "—"
+            return f"{float(v):.{decimals}f}"
+        except Exception:
+            return "—"
+
+    if is_ta_full:
+        status = "🟢 TennisAbstract COMPLETO"
+        details = (
+            f"Rank {fmt_num(current.get('rank', parsed.get('rank')),0)} · "
+            f"Elo {fmt_num(parsed.get('elo', current.get('elo')),0)} · "
+            f"hElo {fmt_num(parsed.get('hElo', current.get('hElo')),0)} · "
+            f"cElo {fmt_num(parsed.get('cElo', current.get('cElo')),0)} · "
+            f"gElo {fmt_num(parsed.get('gElo', current.get('gElo')),0)} · "
+            f"Tour 2026 {fmt_num(y2026.get('matches'),0)}p Hold {fmt_pct(y2026.get('hold_pct'))} Break {fmt_pct(y2026.get('break_pct'))} · "
+            f"{surface_key} L52 {fmt_num(surf_block.get('matches'),0)}p Hold {fmt_pct(surf_block.get('hold_pct'))} Break {fmt_pct(surf_block.get('break_pct'))}"
+        )
+        used = "Elo/hElo/cElo/gElo + Hold/Break + splits TA disponibles para Intelligence"
+    elif kind == "auto":
+        n = parsed.get("matches") or _ta_profile_cache_num_matches(item)
+        status = "🟠 Auto Recent"
+        details = f"Últimos {fmt_num(n,0)} partidos locales · no es ficha TA completa"
+        used = "Solo refuerzo reciente; sin Elo/hold/break TA completo"
+    elif kind == "manual":
+        status = "📋 Manual"
+        details = f"Ficha manual guardada · matches {fmt_num(parsed.get('matches'),0)}"
+        used = "Manual; revisar si contiene TA completa"
+    else:
+        status = label
+        details = "Sin ficha útil guardada"
+        used = "No aporta TA"
+
+    return {
+        "player": player_name,
+        "item": item,
+        "kind": kind,
+        "is_ta_full": bool(is_ta_full),
+        "status": status,
+        "details": details,
+        "used": used,
+        "source": source,
+        "full_score": full_score,
+        "age": _ta_profile_cache_age_label((item or {}).get("uploaded_at", "")) if isinstance(item, dict) else "—",
+    }
+
+
+def render_predictor_ta_coverage_panel_v234918(payload=None):
+    payload = payload or st.session_state.get("predictor_last_payload_v23440")
+    if not isinstance(payload, dict):
+        return
+    p1 = payload.get("p1_name", "Jugador 1")
+    p2 = payload.get("p2_name", "Jugador 2")
+    surface = payload.get("surface", "Hard")
+    t1 = _predictor_ta_trace_v234918(p1, surface)
+    t2 = _predictor_ta_trace_v234918(p2, surface)
+    coverage = int((50 if t1.get("is_ta_full") else 0) + (50 if t2.get("is_ta_full") else 0))
+
+    st.subheader("📊 Cobertura TennisAbstract del partido")
+    c1, c2, c3 = st.columns([2,2,1])
+    with c1:
+        st.markdown(f"**{p1}**  \n{t1['status']}  ")
+        st.caption(t1["details"])
+        st.caption(f"Usado: {t1['used']}")
+    with c2:
+        st.markdown(f"**{p2}**  \n{t2['status']}  ")
+        st.caption(t2["details"])
+        st.caption(f"Usado: {t2['used']}")
+    with c3:
+        st.metric("Cobertura TA", f"{coverage}%")
+    if coverage < 100:
+        st.warning("Hay algún jugador sin TennisAbstract completo. El Predictor puede usar Auto Recent como apoyo, pero no equivale a ficha TA completa.")
+    else:
+        st.success("Ambos jugadores tienen TennisAbstract completo guardado. Recent form se muestra aparte, pero la ficha TA completa está disponible.")
+
 def render_predictor_excel_download_panel():
     payload = st.session_state.get("predictor_last_payload_v23440")
     if not isinstance(payload, dict):
         return
     ta_adj = st.session_state.get("predictor_last_ta_adjustment_v23441")
+    if isinstance(ta_adj, dict) and ta_adj.get("match_key") and ta_adj.get("match_key") != payload.get("match_key"):
+        ta_adj = None
     st.divider()
     with st.expander("📥 Descargar Excel del Predictor", expanded=False):
         st.caption("Descarga un Excel del Predictor en una sola hoja, incluyendo Deep Match Analyzer, Intelligence Challenger/TA, mercados derivados, conclusiones y ajuste TennisAbstract si lo has calculado. No modifica ningún cálculo.")
@@ -16272,6 +16401,7 @@ def render_predictor_ta_finetune_panel():
                 return
 
             adj = _pred_ta_compute_adjustments(payload.get("base", {}), ta1, ta2, p1_name, p2_name)
+            adj["match_key"] = payload.get("match_key")
             st.session_state["predictor_last_ta_adjustment_v23441"] = adj
             st.subheader("🎯 Porcentajes afinados por TA")
             st.caption(f"Confianza del ajuste: {adj['confidence']} · peso aplicado sobre el motor base: {adj['weight']:.0%}")
@@ -16667,6 +16797,9 @@ def render_predictor_deep_match_analyzer_panel():
     if not isinstance(payload, dict):
         return
     ta_adj = st.session_state.get("predictor_last_ta_adjustment_v23441")
+    # v23.49.18: si el ajuste TA pertenece a otro partido, no se usa ni se muestra.
+    if isinstance(ta_adj, dict) and ta_adj.get("match_key") and ta_adj.get("match_key") != payload.get("match_key"):
+        ta_adj = None
     p1 = payload.get("p1_name", "Jugador 1")
     p2 = payload.get("p2_name", "Jugador 2")
     base = payload.get("base", {}) if isinstance(payload.get("base", {}), dict) else {}
@@ -16815,6 +16948,17 @@ elif modo == "Predictor":
     with c2: p2_name = st.selectbox("Jugador 2", players, index=min(1, len(players)-1))
 
     if st.button("🚀 ANALIZAR PARTIDO", width='stretch'):
+        # v23.49.18: limpiar resultados TA/Deep antiguos al cambiar de partido.
+        best_of_preview = 5 if "5" in formato else 3
+        current_match_key = _predictor_match_key_v234918(p1_name, p2_name, surface, circuito, best_of_preview)
+        if st.session_state.get("predictor_current_match_key_v234918") != current_match_key:
+            for _k in [
+                "predictor_last_ta_adjustment_v23441",
+                "ta_analysis", "ta_summary", "ta_intelligence", "ta_conclusions",
+                "deep_match_result", "deep_match_payload", "deep_match_intel",
+            ]:
+                st.session_state.pop(_k, None)
+            st.session_state["predictor_current_match_key_v234918"] = current_match_key
         d1, d2 = db[p1_name], db[p2_name]
         best_of = 5 if "5" in formato else 3
         if sims >= 10000:
@@ -16911,6 +17055,7 @@ elif modo == "Predictor":
             "surface": surface,
             "circuito": circuito,
             "best_of": best_of,
+            "match_key": _predictor_match_key_v234918(d1.get("Player", p1_name), d2.get("Player", p2_name), surface, circuito, best_of),
             "base": {
                 "p1": float(sim.get("p1_cal", sim.get("p1", 0.5))),
                 "p2": float(sim.get("p2_cal", sim.get("p2", 0.5))),
@@ -17382,7 +17527,8 @@ elif modo == "Predictor":
         st.caption(f"Tennis IA v23.25 Fix Países + Watchlist Label · {sims:,} simulaciones Monte Carlo")
 
 
-    # Mostrar afinador TA aunque el botón de simulación ya no esté pulsado.
+    # Mostrar cobertura TA + afinador aunque el botón de simulación ya no esté pulsado.
+    render_predictor_ta_coverage_panel_v234918()
     render_predictor_ta_finetune_panel()
     render_predictor_deep_match_analyzer_panel()
     render_predictor_excel_download_panel()
