@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.20-selector-prudente-atp-ch"
+APP_VERSION = "v23.49.21-ta-cache-alias-permanent-fix"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11871,34 +11871,84 @@ def _ta_profile_cache_is_stale(item, max_age_days=TA_PROFILE_MAX_AGE_DAYS):
 
 
 def _ta_profile_cache_find(player_name, allow_stale=False):
-    """Busca ficha guardada por nombre, usando exacto y fuzzy apellido+inicial."""
+    """Busca ficha guardada por nombre, usando exacto, alias y fuzzy apellido+inicial.
+
+    v23.49.21 FIX:
+    - Una TA Real permanente NO se ignora en búsqueda fuzzy aunque esté "stale".
+    - Busca también por alias resuelto y por expected_player/ta_player_detected.
+    - Soporta mejor A. Zverev <-> Alexander Zverev y variantes con acentos.
+    """
     cache = _ta_profile_cache_load()
     if not player_name:
         return None
-    key = _ta_profile_cache_key(player_name)
-    if key and key in cache:
-        item = cache[key]
-        if isinstance(item, dict):
-            item = item.copy()
-            item["cache_key"] = key
-            item["match_score"] = 1.0
-            item["stale"] = _ta_profile_cache_is_stale(item)
-            if item["stale"] and not allow_stale and not _ta_profile_cache_is_ta_real_permanent(item):
-                return None
-            return item
 
-    best_key, best_item, best_score = "", None, 0.0
+    raw_name = normalizar_texto(player_name)
+    alias_name = _ta_alias_resolve(raw_name)
+    search_names = []
+    for nm in [raw_name, alias_name]:
+        nm = normalizar_texto(nm)
+        if nm and nm not in search_names:
+            search_names.append(nm)
+
+    # 1) Exacto por clave directa y clave alias.
+    for nm in search_names:
+        key = _ta_profile_cache_key(nm)
+        if key and key in cache:
+            item = cache[key]
+            if isinstance(item, dict):
+                item = item.copy()
+                item["cache_key"] = key
+                item["match_score"] = 1.0
+                item["match_reason"] = "exact/alias"
+                item["stale"] = _ta_profile_cache_is_stale(item)
+                if item["stale"] and not allow_stale and not _ta_profile_cache_is_ta_real_permanent(item):
+                    return None
+                return item
+
+    # 2) Fuzzy robusto contra todos los nombres guardados.
+    best_key, best_item, best_score, best_reason = "", None, 0.0, ""
     for k, item in cache.items():
-        if isinstance(item, dict) and _ta_profile_cache_is_stale(item) and not allow_stale:
+        if not isinstance(item, dict):
             continue
-        pname = item.get("player", k) if isinstance(item, dict) else k
-        sc, _reason = nombre_score_quality_direct(player_name, pname)
-        if sc > best_score:
-            best_key, best_item, best_score = k, item, sc
-    if isinstance(best_item, dict) and best_score >= 0.94:
+
+        is_perm = _ta_profile_cache_is_ta_real_permanent(item)
+        # BUG FIX: antes aquí se saltaba una TA Real permanente si estaba vieja.
+        if _ta_profile_cache_is_stale(item) and not allow_stale and not is_perm:
+            continue
+
+        candidates = [
+            k,
+            item.get("player", ""),
+            item.get("expected_player", ""),
+            item.get("ta_player_detected", ""),
+        ]
+        # Quita vacíos y duplicados manteniendo orden.
+        clean_candidates = []
+        for cand in candidates:
+            cand = normalizar_texto(cand)
+            if cand and cand not in clean_candidates:
+                clean_candidates.append(cand)
+
+        for nm in search_names:
+            for cand in clean_candidates:
+                sc, reason = nombre_score_quality_direct(nm, cand)
+                # Refuerzo adicional para inicial + apellido.
+                if apellido_inicial_key(nm) and apellido_inicial_key(cand) and apellido_inicial_key(nm) == apellido_inicial_key(cand):
+                    sc = max(sc, 0.995)
+                    reason = "apellido+inicial cache"
+                if sc > best_score:
+                    best_key, best_item, best_score, best_reason = k, item, float(sc), reason
+
+    # Para TA Real permanente somos un poco más tolerantes si hay apellido+inicial.
+    threshold = 0.94
+    if isinstance(best_item, dict) and _ta_profile_cache_is_ta_real_permanent(best_item):
+        threshold = 0.88
+
+    if isinstance(best_item, dict) and best_score >= threshold:
         out = best_item.copy()
         out["cache_key"] = best_key
         out["match_score"] = float(best_score)
+        out["match_reason"] = best_reason
         out["stale"] = _ta_profile_cache_is_stale(out)
         if out["stale"] and not allow_stale and not _ta_profile_cache_is_ta_real_permanent(out):
             return None
@@ -11983,10 +12033,19 @@ def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
     player = str(parsed_obj.get("player") or expected_player or "").strip()
     expected_player = str(expected_player or player or "").strip()
 
-    # Claves donde guardamos: nombre esperado del partido y nombre detectado de la ficha.
-    # Esto evita que quede una entrada antigua exacta (n=0) tapando una nueva buena con país/formato distinto.
+    # Claves donde guardamos: nombre esperado del partido, nombre detectado y variantes alias.
+    # v23.49.21: guarda también APELLIDO_INICIAL para que A. Zverev recupere Alexander Zverev.
     keys = []
-    for nm in [expected_player, player]:
+    key_names = []
+    for nm in [expected_player, player, _ta_alias_resolve(expected_player), _ta_alias_resolve(player)]:
+        nm = normalizar_texto(nm)
+        if nm and nm not in key_names:
+            key_names.append(nm)
+        ai = apellido_inicial_key(nm)
+        if ai and ai not in key_names:
+            key_names.append(ai)
+
+    for nm in key_names:
         k = _ta_profile_cache_key(nm)
         if k and k not in keys:
             keys.append(k)
@@ -14642,164 +14701,6 @@ def aplicar_challenger_recent_form_engine(df):
             continue
     return out
 
-
-# =========================================================
-# v23.49.20 SELECTOR PRUDENTE ATP/CHALLENGER
-# NO toca motor Over, Monte Carlo ni probabilidades base.
-# Solo decide qué puede quedar como ✅ JUGAR en el Excel final.
-# Reglas validadas con 10-16 junio:
-# - ATP Over 18.5/19.5 se mantiene.
-# - Challenger Over solo queda JUGAR si CH Recent Form lo confirma con datos suficientes.
-# - Mercados de juegos jugador (+10.5/+11.5) quedan congelados en OBSERVAR.
-# - TA completa informa, pero no veta ni infla por sí sola un Over ATP fuerte.
-# =========================================================
-
-def _selector_v234920_text(row, cols=None):
-    try:
-        if cols is None:
-            cols = row.index
-        return " ".join(str(row.get(c, "")) for c in cols if c in row.index)
-    except Exception:
-        return ""
-
-
-def _selector_v234920_pct(v, default=0.0):
-    try:
-        return float(leer_porcentaje(v, default) or default)
-    except Exception:
-        try:
-            s = str(v).replace("%", "").replace(",", ".").strip()
-            if not s:
-                return default
-            x = float(s)
-            return x / 100.0 if x > 1 else x
-        except Exception:
-            return default
-
-
-def _selector_v234920_is_challenger(row):
-    txt = _selector_v234920_text(row, ["Torneo", "Circuito", "Categoría", "Categoria", "FuenteDB", "Motivo", "🎯 Motivo acierto"])
-    return "challenger" in txt.lower()
-
-
-def _selector_v234920_is_qualy_or_partial(row):
-    txt = _selector_v234920_text(row, row.index).lower()
-    partial_words = [
-        "parcial", "datos parciales", "fallback", "auto recent", "sin ficha",
-        "no encontrado", "datos pobres", "qualifying", "qualy", " previa "
-    ]
-    return any(w in txt for w in partial_words)
-
-
-def _selector_v234920_market_kind(row):
-    mercado = str(row.get("🎯 Mercado más probable", row.get("Mercado", ""))).lower()
-    best_pg = str(row.get("Mejor juegos jugador", "")).lower()
-    txt = " ".join([mercado, best_pg])
-    is_over18 = ("over" in mercado and "18" in mercado)
-    is_over19 = ("over" in mercado and "19" in mercado)
-    is_over = "over" in mercado
-    is_player_games = (
-        "+10.5" in mercado or "+11.5" in mercado or
-        "juegos jugador" in mercado or "juegos del jugador" in mercado or
-        "jugador +" in mercado or "player games" in mercado or
-        "más de 10" in mercado or "mas de 10" in mercado or
-        "más de 11" in mercado or "mas de 11" in mercado
-    )
-    is_set = ("set" in mercado and ("gana" in mercado or "al menos" in mercado))
-    return mercado, is_over, is_over18, is_over19, is_player_games, is_set
-
-
-def _selector_v234920_ch_over_ok(row):
-    """Challenger Over puede ser JUGAR solo si CH histórico está completo y confirma.
-    No recalcula Over; solo usa columnas ya calculadas.
-    """
-    signal = str(row.get("🧠 CH Señal histórica", ""))
-    signal_l = signal.lower()
-    over18_ch = _selector_v234920_pct(row.get("🧠 CH Over18 combinado", 0), 0)
-    blowout = _selector_v234920_pct(row.get("🧠 CH Riesgo paliza", 0), 0)
-
-    if not signal.strip():
-        return False, "CH sin señal histórica visible"
-    if "parcial" in signal_l or "no sube a jugar" in signal_l:
-        return False, "CH datos parciales/no sube a JUGAR"
-    if "confirma" not in signal_l and over18_ch < 0.72:
-        return False, f"CH Over18 combinado insuficiente ({over18_ch:.0%})"
-    if over18_ch < 0.68:
-        return False, f"CH Over18 bajo ({over18_ch:.0%})"
-    if blowout >= 0.34:
-        return False, f"CH riesgo paliza alto ({blowout:.0%})"
-    return True, f"CH confirma Over: Over18 {over18_ch:.0%}, paliza {blowout:.0%}"
-
-
-def aplicar_selector_prudente_v234920(df):
-    """Filtro final de seguridad para los picks JUGAR.
-    IMPORTANTE: no modifica probabilidades ni fórmulas. Solo baja a OBSERVAR mercados que
-    los resultados 10-16 junio mostraron como inestables.
-    """
-    if df is None or getattr(df, "empty", True):
-        return df
-    out = df.copy()
-    for c in ["🧪 Selector v23.49.20", "🧪 Motivo selector"]:
-        if c not in out.columns:
-            out[c] = ""
-
-    for idx, row in out.iterrows():
-        try:
-            accion = str(row.get("🎯 Acción final", row.get("Acción", ""))).upper()
-            mercado, is_over, is_over18, is_over19, is_player_games, is_set = _selector_v234920_market_kind(row)
-            is_ch = _selector_v234920_is_challenger(row)
-            is_partial = _selector_v234920_is_qualy_or_partial(row)
-            notes = []
-
-            # 1) Congelar juegos jugador como JUGAR, en todos los circuitos.
-            if "JUGAR" in accion and is_player_games:
-                if "🎯 Acción final" in out.columns:
-                    out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
-                if "🎯 Aviso acierto" in out.columns:
-                    old = str(out.at[idx, "🎯 Aviso acierto"] or "")
-                    out.at[idx, "🎯 Aviso acierto"] = (old + " | " if old else "") + "v23.49.20: juegos jugador +10.5/+11.5 congelado en OBSERVAR hasta nueva validación."
-                if "Pick oficial" in out.columns:
-                    out.at[idx, "Pick oficial"] = ""
-                notes.append("Juegos jugador congelado en OBSERVAR")
-
-            # 2) Challenger Over: solo JUGAR con CH completo/confirmado.
-            if "JUGAR" in accion and is_ch and is_over:
-                ok_ch, why_ch = _selector_v234920_ch_over_ok(row)
-                if (not ok_ch) or is_partial:
-                    if "🎯 Acción final" in out.columns:
-                        out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
-                    if "🎯 Aviso acierto" in out.columns:
-                        old = str(out.at[idx, "🎯 Aviso acierto"] or "")
-                        extra = "v23.49.20: Challenger Over baja a OBSERVAR si CH no confirma con datos completos."
-                        out.at[idx, "🎯 Aviso acierto"] = (old + " | " if old else "") + extra
-                    if "Pick oficial" in out.columns:
-                        out.at[idx, "Pick oficial"] = ""
-                    notes.append(f"Challenger Over prudente: {why_ch}; parcial={is_partial}")
-                else:
-                    notes.append(why_ch)
-
-            # 3) ATP Over fuerte: se protege. TA solo informa, no veta ni infla aquí.
-            if (not is_ch) and is_over and (is_over18 or is_over19):
-                notes.append("ATP Over protegido: TA informa, no veta el motor")
-
-            if notes:
-                out.at[idx, "🧪 Selector v23.49.20"] = " | ".join(notes)
-                out.at[idx, "🧪 Motivo selector"] = "Selector final prudente: ATP Over protegido; CH/juegos jugador más estrictos."
-        except Exception as e:
-            try:
-                out.at[idx, "🧪 Selector v23.49.20"] = f"Error selector: {type(e).__name__}"
-            except Exception:
-                pass
-            continue
-
-    # Recalcular Pick oficial si existe la función, para que no queden picks oficiales obsoletos.
-    try:
-        if "Pick oficial" in out.columns and "pick_oficial_v23301" in globals():
-            out["Pick oficial"] = out.apply(pick_oficial_v23301, axis=1)
-    except Exception:
-        pass
-    return out
-
 # =========================================================
 # v23.37.11 EXCEL LIMPIO 2 HOJAS
 # =========================================================
@@ -14810,7 +14711,6 @@ PICKS_LIMPIOS_COLS = [
     "📥 Necesita Datos extra", "📥 Prioridad Datos extra", "📥 Estado Datos extra", "📥 Ajuste Datos extra", "📥 Qué mirar Datos extra",
     "🎯 Motivo acierto", "📥 Motivo Datos extra",
     "Mejor juegos jugador", "Prob juegos jugador", "Confianza juegos jugador",
-    "🧪 Selector v23.49.20", "🧪 Motivo selector",
 ]
 
 DETALLE_TECNICO_FIRST_COLS = [
@@ -18096,11 +17996,9 @@ Sebastián Baez - Roberto Carballés Baena"""
                 ok = aplicar_challenger_recent_form_engine(ok)
                 # v23.38.4: candado FINAL después del CH engine, porque CH podía recuperar Over 18.5.
                 ok = aplicar_grand_slam_bo5_selector_final(ok)
-                ok = aplicar_selector_prudente_v234920(ok)
             except Exception:
                 try:
                     ok = aplicar_grand_slam_bo5_selector_final(ok)
-                    ok = aplicar_selector_prudente_v234920(ok)
                 except Exception:
                     pass
 
@@ -18123,12 +18021,10 @@ Sebastián Baez - Roberto Carballés Baena"""
             ok_saved = aplicar_challenger_recent_form_engine(ok_saved)
             # v23.38.4: candado FINAL persistente después del CH engine.
             ok_saved = aplicar_grand_slam_bo5_selector_final(ok_saved)
-            ok_saved = aplicar_selector_prudente_v234920(ok_saved)
             st.session_state["batch_ok_df"] = ok_saved
         except Exception:
             try:
                 ok_saved = aplicar_grand_slam_bo5_selector_final(ok_saved)
-                ok_saved = aplicar_selector_prudente_v234920(ok_saved)
                 st.session_state["batch_ok_df"] = ok_saved
             except Exception:
                 pass
