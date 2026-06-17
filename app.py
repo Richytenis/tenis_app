@@ -16320,6 +16320,83 @@ def render_predictor_ta_coverage_panel_v234918(payload=None):
     else:
         st.success("Ambos jugadores tienen TennisAbstract completo guardado. Recent form se muestra aparte, pero la ficha TA completa está disponible.")
 
+
+
+# =========================================================
+# v23.49.19 AUDITORÍA MOTOR PURO vs TENNISABSTRACT
+# No modifica cálculos, Over ni predictor. Solo muestra trazabilidad.
+# Objetivo: saber si el motor puro daba Over y si la capa TA lo está frenando/confirmando.
+# =========================================================
+
+def _fmt_pct_audit_v234919(x):
+    try:
+        return f"{float(x):.1%}"
+    except Exception:
+        return "—"
+
+
+def render_predictor_motor_ta_audit_v234919():
+    payload = st.session_state.get("predictor_last_payload_v23440")
+    if not isinstance(payload, dict):
+        return
+
+    ta_adj = st.session_state.get("predictor_last_ta_adjustment_v23441")
+    if isinstance(ta_adj, dict) and ta_adj.get("match_key") and ta_adj.get("match_key") != payload.get("match_key"):
+        ta_adj = None
+
+    base = payload.get("base", {}) if isinstance(payload.get("base", {}), dict) else {}
+    p1 = payload.get("p1_name", "Jugador 1")
+    p2 = payload.get("p2_name", "Jugador 2")
+
+    over18 = float(base.get("over18", 0) or 0)
+    over19 = float(base.get("over19", 0) or 0)
+    over20 = float(base.get("over20", 0) or 0)
+    set3 = float(base.get("set3", 0) or 0)
+    dog = float(base.get("dog_wins_set", 0) or 0)
+    fav20 = float(base.get("fav_2_0", 0) or 0)
+
+    with st.expander("🧪 Auditoría Motor vs TennisAbstract — no modifica cálculos", expanded=True):
+        st.caption("Sirve para saber si el motor puro apuntaba a Over y si TA solo confirma, avisa o frena. No cambia probabilidades ni picks.")
+        c1, c2, c3, c4 = st.columns(4)
+        with c1: st.metric("Motor Over 18.5", _fmt_pct_audit_v234919(over18))
+        with c2: st.metric("Motor Over 19.5", _fmt_pct_audit_v234919(over19))
+        with c3: st.metric("Motor 3 sets", _fmt_pct_audit_v234919(set3))
+        with c4: st.metric("Riesgo 2-0 fav", _fmt_pct_audit_v234919(fav20))
+
+        rows = [
+            {"Bloque": "Motor puro", "Lectura": "Probabilidades Monte Carlo/base", "Detalle": f"Over18 {_fmt_pct_audit_v234919(over18)} · Over19 {_fmt_pct_audit_v234919(over19)} · 3 sets {_fmt_pct_audit_v234919(set3)} · Dog set {_fmt_pct_audit_v234919(dog)}"},
+        ]
+
+        if isinstance(ta_adj, dict):
+            estado = ta_adj.get("estado", "neutral")
+            mercado = ta_adj.get("nuevo_mercado") or "Sin mercado TA"
+            prob = ta_adj.get("nueva_prob")
+            motivo = ta_adj.get("motivo", "")
+            decision = ta_adj.get("decision", "")
+            rows.append({
+                "Bloque": "TennisAbstract",
+                "Lectura": f"{estado} · {decision}",
+                "Detalle": f"{mercado} {(_fmt_pct_audit_v234919(prob) if prob is not None else '')} · {motivo}",
+            })
+        else:
+            rows.append({"Bloque": "TennisAbstract", "Lectura": "Sin ajuste TA calculado", "Detalle": "Pulsa el afinador TA si quieres comparar contra fichas."})
+
+        # Lectura práctica para validar si TA está empeorando Over.
+        if over18 >= 0.78:
+            if isinstance(ta_adj, dict) and str(ta_adj.get("estado", "")).lower() != "confirmar":
+                conclusion = "⚠️ Motor Over18 fuerte, pero TA no confirma. Para la prueba controlada, NO cancelar automáticamente: marcar como Over protegido/observar y validar resultado."
+            else:
+                conclusion = "✅ Motor Over18 fuerte y TA no lo bloquea. Buen candidato para comparar en validación."
+        elif over18 >= 0.72:
+            conclusion = "🟡 Motor Over18 medio-alto. TA puede servir como filtro, pero no subir línea sin apoyo claro."
+        else:
+            conclusion = "⚪ Motor Over18 no es fuerte. TA solo aporta contexto, no forzar mercado."
+
+        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+        st.info(conclusion)
+        st.caption(f"Partido auditado: {p1} vs {p2}. Si ves muchos casos donde Motor Over18 fuerte acierta y TA lo frenaba, la capa TA está siendo demasiado conservadora.")
+
+
 def render_predictor_excel_download_panel():
     payload = st.session_state.get("predictor_last_payload_v23440")
     if not isinstance(payload, dict):
@@ -17531,6 +17608,7 @@ elif modo == "Predictor":
     render_predictor_ta_coverage_panel_v234918()
     render_predictor_ta_finetune_panel()
     render_predictor_deep_match_analyzer_panel()
+    render_predictor_motor_ta_audit_v234919()
     render_predictor_excel_download_panel()
 
 elif modo == "Analizador por lista":
