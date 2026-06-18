@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.23-cache-portable-over-buenos"
+APP_VERSION = "v23.49.21-ta-cache-alias-permanent-fix"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11778,6 +11778,125 @@ def _ta_profile_cache_save(cache):
         return False, str(e)
 
 
+# =========================================================
+# v23.49.24 BACKUP / RESTORE CACHÉ COMPLETA TENNISABSTRACT
+# Streamlit Cloud puede perder archivos locales al reiniciar.
+# Estos helpers permiten descargar/cargar TODA la caché TA en un solo JSON.
+# No toca motor Over ni cálculos.
+# =========================================================
+
+def _ta_profile_cache_export_json_v234924():
+    try:
+        cache = _ta_profile_cache_load()
+        payload = {
+            "schema": "tennis_ia_ta_profile_cache",
+            "app_version": APP_VERSION,
+            "exported_at": _ta_profile_cache_today(),
+            "entries": cache if isinstance(cache, dict) else {},
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+    except Exception:
+        return json.dumps({"schema": "tennis_ia_ta_profile_cache", "entries": {}}, ensure_ascii=False, indent=2)
+
+
+def _ta_profile_cache_import_merge_v234924(uploaded_bytes):
+    """Carga un JSON de caché completa y lo fusiona con la caché actual.
+    Mantiene siempre la ficha de mayor prioridad/calidad.
+    """
+    try:
+        if uploaded_bytes is None:
+            return False, "no se ha seleccionado archivo"
+        raw = uploaded_bytes.read() if hasattr(uploaded_bytes, "read") else uploaded_bytes
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        data = json.loads(str(raw or "{}"))
+
+        # Soporta formato nuevo {entries:{...}} y formato antiguo directo {KEY:{...}}.
+        incoming = data.get("entries", data) if isinstance(data, dict) else {}
+        if not isinstance(incoming, dict) or not incoming:
+            return False, "el JSON no contiene fichas TA"
+
+        current = _ta_profile_cache_load()
+        if not isinstance(current, dict):
+            current = {}
+
+        added = 0
+        updated = 0
+        kept = 0
+
+        for k, item in incoming.items():
+            if not isinstance(item, dict):
+                continue
+
+            # Clave principal recibida + claves robustas por nombres guardados.
+            candidate_names = [
+                k,
+                item.get("player", ""),
+                item.get("expected_player", ""),
+                item.get("ta_player_detected", ""),
+            ]
+            keys = []
+            for nm in candidate_names:
+                nm = normalizar_texto(nm)
+                if not nm:
+                    continue
+                for nm2 in [nm, _ta_alias_resolve(nm), apellido_inicial_key(nm)]:
+                    kk = _ta_profile_cache_key(nm2)
+                    if kk and kk not in keys:
+                        keys.append(kk)
+            if not keys:
+                kk = _ta_profile_cache_key(k)
+                if kk:
+                    keys.append(kk)
+
+            for kk in keys:
+                old = current.get(kk)
+                if old is None:
+                    current[kk] = item.copy()
+                    added += 1
+                elif _ta_profile_cache_should_replace(old, item, force_manual=False):
+                    current[kk] = item.copy()
+                    updated += 1
+                else:
+                    kept += 1
+
+        ok, info = _ta_profile_cache_save(current)
+        if not ok:
+            return False, f"no se pudo guardar caché fusionada: {info}"
+        try:
+            st.cache_data.clear()
+        except Exception:
+            pass
+        return True, f"Caché TA fusionada: {added} añadidas, {updated} actualizadas, {kept} mantenidas. Total claves: {len(current)}"
+    except Exception as e:
+        return False, f"error importando caché: {type(e).__name__}: {e}"
+
+
+def _ta_profile_cache_stats_v234924():
+    cache = _ta_profile_cache_load()
+    if not isinstance(cache, dict):
+        cache = {}
+    total = len(cache)
+    ta_real = 0
+    auto_recent = 0
+    manual = 0
+    players = set()
+    for item in cache.values():
+        if not isinstance(item, dict):
+            continue
+        p = normalizar_texto(item.get("player", "") or item.get("expected_player", ""))
+        if p:
+            players.add(limpiar(p) or p)
+        low = (str(item.get("source", "")) + "\n" + str(item.get("raw_text", ""))[:500]).lower()
+        if _ta_profile_cache_is_ta_real_permanent(item):
+            ta_real += 1
+        elif "auto recent" in low or "auto challenger recent" in low or "historico local" in low or "histórico local" in low:
+            auto_recent += 1
+        if "manual" in low:
+            manual += 1
+    return {"keys": total, "players": len(players), "ta_real": ta_real, "auto_recent": auto_recent, "manual": manual}
+
+
 def _ta_profile_cache_key(name):
     return limpiar(name or "")
 
@@ -14055,10 +14174,42 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                 b3.metric("📋 Manual", audit_sum.get("manual", 0))
                 b4.metric("🔴 Sin ficha", audit_sum.get("missing", 0))
                 st.caption(f"Cobertura de perfiles: {audit_sum.get('cobertura', 0):.1f}%. Ahora se distingue TA Real de Auto Recent. Auto Recent es útil como refuerzo local, pero NO equivale a ficha TennisAbstract completa. Si ves Auto Recent y quieres TA real, pega la ficha manual.")
+
+                # v23.49.24: backup/restore de TODA la caché TA.
+                # Streamlit Cloud NO sube automáticamente estos JSON a GitHub; por eso damos export/import.
                 try:
-                    _render_ta_cache_portable_panel_v234922(context_key="batch_audit")
-                except Exception:
-                    pass
+                    with st.expander("📦 Backup fichas TennisAbstract", expanded=False):
+                        stats_cache = _ta_profile_cache_stats_v234924()
+                        bc1, bc2, bc3, bc4 = st.columns(4)
+                        bc1.metric("Claves caché", stats_cache.get("keys", 0))
+                        bc2.metric("Jugadores aprox.", stats_cache.get("players", 0))
+                        bc3.metric("TA Real", stats_cache.get("ta_real", 0))
+                        bc4.metric("Auto Recent", stats_cache.get("auto_recent", 0))
+                        st.download_button(
+                            "⬇️ Descargar caché completa TA",
+                            data=_ta_profile_cache_export_json_v234924(),
+                            file_name="ta_profile_cache.json",
+                            mime="application/json",
+                            key="ta_full_cache_download_v234924",
+                            use_container_width=True,
+                        )
+                        uploaded_ta_cache = st.file_uploader(
+                            "📤 Cargar caché TA guardada",
+                            type=["json"],
+                            key="ta_full_cache_upload_v234924",
+                            help="Carga el ta_profile_cache.json que descargaste. Se fusiona con lo que ya haya, no borra fichas buenas.",
+                        )
+                        if st.button("🔁 Fusionar caché cargada", key="ta_full_cache_merge_v234924", use_container_width=True, disabled=uploaded_ta_cache is None):
+                            ok_imp, msg_imp = _ta_profile_cache_import_merge_v234924(uploaded_ta_cache)
+                            if ok_imp:
+                                st.success(msg_imp)
+                                st.info("Después de fusionar, vuelve a analizar o pulsa Rerun para ver la tabla actualizada.")
+                            else:
+                                st.error(msg_imp)
+                        st.caption("Uso recomendado: al terminar de pegar fichas nuevas, descarga la caché completa. Si Streamlit reinicia, vuelve a cargar ese JSON y recuperas todas las fichas.")
+                except Exception as e_cache_ui:
+                    st.warning(f"Backup TA no disponible: {type(e_cache_ui).__name__}: {e_cache_ui}")
+
                 if audit_rows:
                     audit_df = pd.DataFrame(audit_rows)
                     st.dataframe(audit_df, width='stretch', hide_index=True)
@@ -14662,7 +14813,7 @@ def aplicar_challenger_recent_form_engine(df):
         return df
     out = df.copy()
     new_cols = [
-        "🧪 Selector v23.49.23", "🧠 CH Form J1", "🧠 CH Form J2", "🧠 CH Over18 combinado", "🧠 CH Set J1", "🧠 CH Set J2",
+        "🧠 CH Form J1", "🧠 CH Form J2", "🧠 CH Over18 combinado", "🧠 CH Set J1", "🧠 CH Set J2",
         "🧠 CH 3 sets", "🧠 CH Riesgo paliza", "🧠 CH Señal histórica"
     ]
     for c in new_cols:
@@ -14705,135 +14856,6 @@ def aplicar_challenger_recent_form_engine(df):
             continue
     return out
 
-
-# =========================================================
-# v23.49.23 SELECTOR OVER BUENO PROTEGIDO
-# No toca el motor Over ni probabilidades: solo decide qué filas pasan a JUGAR.
-# Basado en validación 10-16 junio: ATP hierba Over 18.5 sigue sólido;
-# Challenger/qualy y juegos jugador se dejan más prudentes.
-# =========================================================
-
-def _v234923_prob(row, col):
-    try:
-        return float(leer_porcentaje(row.get(col, 0), 0) or 0)
-    except Exception:
-        return 0.0
-
-
-def _v234923_txt(row, col):
-    try:
-        return str(row.get(col, "") or "")
-    except Exception:
-        return ""
-
-
-def aplicar_selector_over_buenos_v234923(df):
-    """Postprocesado de selector.
-    - ATP/Tour hierba: si Over 18.5 >=80%, vuelve/queda como ✅ JUGAR.
-    - ATP/Tour hierba: si Over 19.5 >=76% y Over18 >=84%, puede marcar Over 19.5.
-    - Challenger/qualy: no promociona a JUGAR salvo confirmación ya existente; baja juegos jugador.
-    - Juegos jugador +10.5/+11.5: siempre OBSERVAR hasta validar.
-    No recalcula nada: usa columnas ya calculadas.
-    """
-    if df is None or getattr(df, "empty", True):
-        return df
-    out = df.copy()
-    if "🧪 Selector v23.49.23" not in out.columns:
-        out["🧪 Selector v23.49.23"] = ""
-
-    for idx, row in out.iterrows():
-        try:
-            torneo = _v234923_txt(row, "Torneo").lower()
-            circuito_txt = " ".join([
-                torneo,
-                _v234923_txt(row, "Circuito").lower(),
-                _v234923_txt(row, "Categoría").lower(),
-                _v234923_txt(row, "Categoria").lower(),
-            ])
-            superficie = _v234923_txt(row, "Superficie").lower()
-            mercado = _v234923_txt(row, "🎯 Mercado más probable").lower()
-            accion = _v234923_txt(row, "🎯 Acción final").upper()
-            aviso = _v234923_txt(row, "🎯 Aviso acierto")
-            motivo = _v234923_txt(row, "🎯 Motivo acierto")
-            riesgos = _v234923_txt(row, "Riesgos")
-            all_txt = " ".join([mercado, accion, aviso, motivo, riesgos, circuito_txt, superficie]).lower()
-
-            over18 = _v234923_prob(row, "Over 18.5")
-            over19 = _v234923_prob(row, "Over 19.5")
-
-            is_challenger = "challenger" in circuito_txt
-            is_wta = "wta" in circuito_txt
-            is_qualy = any(x in circuito_txt for x in ["qual", "qualy", "qualifying"])
-            is_grass = ("hierba" in superficie) or ("grass" in superficie)
-            is_over_market = "over" in mercado
-            is_player_games = any(x in mercado for x in ["+10.5", "+11.5", "juegos jugador", "jugador +", "12+ juegos"])
-            has_hard_danger = any(x in all_txt for x in [
-                "retir", "cancel", "no bet", "evitar", "sin datos", "datos pobres",
-                "no encontrado", "fallback", "paliza muy", "muchas palizas"
-            ])
-
-            notes = []
-
-            # 1) Congelar mercados de juegos jugador.
-            if is_player_games:
-                if "🎯 Acción final" in out.columns:
-                    out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
-                notes.append("Juegos jugador congelado: OBSERVAR hasta validar")
-
-            # 2) Challenger/qualy: prudencia. Si era JUGAR por Over pero con datos pobres/qualy, OBSERVAR.
-            if is_challenger and is_over_market:
-                if is_qualy or has_hard_danger:
-                    if "🎯 Acción final" in out.columns:
-                        out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
-                    notes.append("Challenger/qualy o datos débiles: Over queda OBSERVAR")
-
-            # 3) ATP/Tour: Over bueno vuelve a JUGAR. No aplica a WTA/Challenger/qualy.
-            is_atp_tour = (not is_challenger) and (not is_wta) and (not is_qualy)
-            if is_atp_tour and not has_hard_danger:
-                # En hierba estamos protegiendo los Over buenos del motor.
-                if is_grass and over18 >= 0.80:
-                    chosen_market = "Over 18.5"
-                    chosen_prob = over18
-                    if over18 >= 0.84 and over19 >= 0.76:
-                        # Solo subimos línea si la 19.5 también sale fuerte.
-                        chosen_market = "Over 19.5"
-                        chosen_prob = over19
-                    if "🎯 Acción final" in out.columns:
-                        out.at[idx, "🎯 Acción final"] = "✅ JUGAR"
-                    if "🎯 Mercado más probable" in out.columns:
-                        out.at[idx, "🎯 Mercado más probable"] = chosen_market
-                    if "🎯 Prob máxima" in out.columns:
-                        out.at[idx, "🎯 Prob máxima"] = f"{chosen_prob:.1%}"
-                    if "🎯 Decisión acierto" in out.columns:
-                        out.at[idx, "🎯 Decisión acierto"] = "🔥 Over ATP hierba protegido"
-                    if "🎯 Confianza acierto" in out.columns:
-                        out.at[idx, "🎯 Confianza acierto"] = "🔥 Muy alta" if chosen_prob >= 0.84 else "✅ Alta"
-                    old = _v234923_txt(row, "🎯 Aviso acierto")
-                    if "🎯 Aviso acierto" in out.columns:
-                        add = f"Selector v23.49.23: ATP hierba Over bueno protegido ({chosen_market} {chosen_prob:.1%}). TA solo avisa, no veta."
-                        out.at[idx, "🎯 Aviso acierto"] = (old + " | " if old else "") + add
-                    notes.append(f"ATP hierba Over bueno => JUGAR {chosen_market}")
-                elif (not is_grass) and over18 >= 0.84 and "over" in all_txt:
-                    # Más prudente fuera de hierba.
-                    if "🎯 Acción final" in out.columns:
-                        out.at[idx, "🎯 Acción final"] = "✅ JUGAR"
-                    if "🎯 Mercado más probable" in out.columns:
-                        out.at[idx, "🎯 Mercado más probable"] = "Over 18.5"
-                    if "🎯 Prob máxima" in out.columns:
-                        out.at[idx, "🎯 Prob máxima"] = f"{over18:.1%}"
-                    notes.append("ATP Over 18.5 >=84% => JUGAR")
-
-            if notes:
-                prev = _v234923_txt(row, "🧪 Selector v23.49.23")
-                out.at[idx, "🧪 Selector v23.49.23"] = (prev + " | " if prev else "") + " ; ".join(notes)
-        except Exception as e:
-            try:
-                out.at[idx, "🧪 Selector v23.49.23"] = f"error selector: {type(e).__name__}"
-            except Exception:
-                pass
-            continue
-    return out
-
 # =========================================================
 # v23.37.11 EXCEL LIMPIO 2 HOJAS
 # =========================================================
@@ -14851,7 +14873,7 @@ DETALLE_TECNICO_FIRST_COLS = [
     "🎯 Acción final", "🎯 Decisión acierto", "🎯 Mercado más probable", "🎯 Prob máxima",
     "🎯 Confianza acierto", "🎯 Aviso acierto", "🎯 Motivo acierto",
     "📥 Necesita Datos extra", "📥 Prioridad Datos extra", "📥 Estado Datos extra", "📥 Ajuste Datos extra", "📥 Qué mirar Datos extra", "📥 Motivo Datos extra",
-    "🧪 Selector v23.49.23", "🧠 CH Form J1", "🧠 CH Form J2", "🧠 CH Over18 combinado", "🧠 CH Set J1", "🧠 CH Set J2", "🧠 CH 3 sets", "🧠 CH Riesgo paliza", "🧠 CH Señal histórica",
+    "🧠 CH Form J1", "🧠 CH Form J2", "🧠 CH Over18 combinado", "🧠 CH Set J1", "🧠 CH Set J2", "🧠 CH 3 sets", "🧠 CH Riesgo paliza", "🧠 CH Señal histórica",
     "Recomendación", "Pick oficial", "Mercado recomendado", "Prob mercado recomendado",
     "Favorito modelo", "ML favorito", "Over 18.5", "Over 19.5", "Under 22.5",
     "Jugador gana set", "Prob gana set", "Favorito gana al menos 1 set",
@@ -18127,7 +18149,6 @@ Sebastián Baez - Roberto Carballés Baena"""
             # v23.37.26: aplicar Challenger Recent Form Engine antes de guardar.
             try:
                 ok = aplicar_challenger_recent_form_engine(ok)
-                ok = aplicar_selector_over_buenos_v234923(ok)
                 # v23.38.4: candado FINAL después del CH engine, porque CH podía recuperar Over 18.5.
                 ok = aplicar_grand_slam_bo5_selector_final(ok)
             except Exception:
@@ -18153,7 +18174,6 @@ Sebastián Baez - Roberto Carballés Baena"""
         ko_saved = st.session_state.get("batch_ko_df", pd.DataFrame())
         try:
             ok_saved = aplicar_challenger_recent_form_engine(ok_saved)
-            ok_saved = aplicar_selector_over_buenos_v234923(ok_saved)
             # v23.38.4: candado FINAL persistente después del CH engine.
             ok_saved = aplicar_grand_slam_bo5_selector_final(ok_saved)
             st.session_state["batch_ok_df"] = ok_saved
