@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.21-ta-cache-alias-permanent-fix"
+APP_VERSION = "v23.49.25-cache-ta-age-signal-over-buenos"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11926,6 +11926,47 @@ def _ta_profile_cache_age_label(uploaded_at):
     return f"subido hace {age} días"
 
 
+# =========================================================
+# v23.49.25 SEÑAL DE ACTUALIZACIÓN TA
+# No vuelve a pedir fichas existentes: solo avisa por antigüedad.
+# 0-7 días: OK · 8-14 días: revisar opcional · +14 días: actualizar recomendada.
+# No toca motor Over ni cálculos.
+# =========================================================
+
+def _ta_profile_cache_update_signal_v234925(item):
+    if not isinstance(item, dict):
+        return "🔴 Sin ficha", None
+    age = _ta_profile_cache_age_days(item.get("uploaded_at", ""))
+    if age is None:
+        return "🟡 Fecha desconocida · revisar", None
+    try:
+        age = int(age)
+    except Exception:
+        return "🟡 Fecha desconocida · revisar", None
+    if age <= 7:
+        return f"🟢 OK ({age}d)", age
+    if age <= 14:
+        return f"🟡 Revisar opcional ({age}d)", age
+    return f"🔴 Actualizar recomendada ({age}d)", age
+
+
+def _ta_profile_cache_status_with_age_v234925(item, base_status):
+    """Mantiene la ficha como OK si existe, pero añade señal visual de edad."""
+    signal, age = _ta_profile_cache_update_signal_v234925(item)
+    if not isinstance(item, dict):
+        return base_status, signal
+    # TA real/manual permanente no debe pasar a pendiente por estar vieja.
+    if _ta_profile_cache_is_ta_real_permanent(item):
+        if age is None:
+            return "✅ OK · 🟡 fecha desconocida", signal
+        if age > 14:
+            return "✅ OK · 🔴 actualizar", signal
+        if age > 7:
+            return "✅ OK · 🟡 revisar", signal
+        return base_status, signal
+    return base_status, signal
+
+
 
 
 def _ta_profile_cache_is_ta_real_permanent(item):
@@ -12779,7 +12820,7 @@ def _ta_match_cache_audit_rows_v23481(players):
             recent_used = int(detail.get("recent_used", 0) or 0)
             season_total = int(detail.get("season_total", 0) or 0)
             ref_n = int(detail.get("reference_n", 0) or 0)
-            if stale:
+            if stale and not _ta_profile_cache_is_ta_real_permanent(item):
                 status = "♻️ Caducada >7d"
             elif ref_n >= 8:
                 status = "✅ OK"
@@ -12787,6 +12828,7 @@ def _ta_match_cache_audit_rows_v23481(players):
                 status = "⚠️ Parcial"
             else:
                 status = "⚠️ Sin partidos"
+            status, update_signal = _ta_profile_cache_status_with_age_v234925(item, status)
             rows.append({
                 "Jugador detectado": detected,
                 "Nombre usado": canon,
@@ -12800,6 +12842,7 @@ def _ta_match_cache_audit_rows_v23481(players):
                 "Referencia datos": ref_n,
                 "Fuente conteo": detail.get("source_label", ""),
                 "Edad": _ta_profile_cache_age_label(item.get("uploaded_at", "")),
+                "Actualización": update_signal,
                 "Fecha ficha": item.get("uploaded_at", ""),
                 "Jugador ficha": item.get("player", ""),
                 "Nota": detail.get("note", ""),
@@ -12819,6 +12862,7 @@ def _ta_match_cache_audit_rows_v23481(players):
                 "Referencia datos": 0,
                 "Fuente conteo": "Sin ficha",
                 "Edad": "",
+                "Actualización": "🔴 Sin ficha",
                 "Fecha ficha": "",
                 "Jugador ficha": "",
                 "Nota": "No hay ficha en caché para este nombre/alias.",
@@ -14174,6 +14218,7 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                 b3.metric("📋 Manual", audit_sum.get("manual", 0))
                 b4.metric("🔴 Sin ficha", audit_sum.get("missing", 0))
                 st.caption(f"Cobertura de perfiles: {audit_sum.get('cobertura', 0):.1f}%. Ahora se distingue TA Real de Auto Recent. Auto Recent es útil como refuerzo local, pero NO equivale a ficha TennisAbstract completa. Si ves Auto Recent y quieres TA real, pega la ficha manual.")
+                st.info("Semáforo de actualización TA: 🟢 0-7 días OK · 🟡 8-14 días revisar opcional · 🔴 +14 días actualizar recomendada. Una TA Real guardada NO vuelve a pendiente solo por edad.")
 
                 # v23.49.24: backup/restore de TODA la caché TA.
                 # Streamlit Cloud NO sube automáticamente estos JSON a GitHub; por eso damos export/import.
@@ -14206,7 +14251,7 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                                 st.info("Después de fusionar, vuelve a analizar o pulsa Rerun para ver la tabla actualizada.")
                             else:
                                 st.error(msg_imp)
-                        st.caption("Uso recomendado: al terminar de pegar fichas nuevas, descarga la caché completa. Si Streamlit reinicia, vuelve a cargar ese JSON y recuperas todas las fichas.")
+                        st.caption("Uso recomendado: al terminar de pegar fichas nuevas, descarga la caché completa y súbela a GitHub como ta_profile_cache.json. Si Streamlit reinicia, también puedes cargar aquí ese JSON y recuperas todas las fichas.")
                 except Exception as e_cache_ui:
                     st.warning(f"Backup TA no disponible: {type(e_cache_ui).__name__}: {e_cache_ui}")
 
@@ -14216,7 +14261,7 @@ def render_datos_extra_reanalysis_panel(ok_saved):
 
                     # v23.48.5: pegado manual directo desde el auditor.
                     with st.expander("📋 Pegar ficha TennisAbstract manual", expanded=bool(audit_sum.get("missing", 0))):
-                        st.caption("Pega aquí la ficha completa copiada de TennisAbstract para sustituir Auto Recent o rellenar pendientes. Se guarda en caché permanente y NO recarga toda la app al guardar.")
+                        st.caption("Pega aquí solo si el jugador está Sin ficha, Auto Recent, o si la columna Actualización sale 🟡/🔴. Si ya está 🟢 TA Real Completa, no hace falta volver a pegarla.")
                         opciones_manual = []
                         for r in audit_rows:
                             label = f"{r.get('Jugador detectado','')} · {r.get('Fuente perfil','')} · {r.get('Estado ficha','')}"
@@ -14266,7 +14311,7 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                                 meta_cols[1].metric("Edad", _ta_profile_cache_age_label(cache_item.get("uploaded_at", "")))
                                 meta_cols[2].metric("Player", str(cache_item.get("player", ""))[:22])
                                 meta_cols[3].metric("Source", str(cache_item.get("source", ""))[:22])
-                                meta_cols[4].metric("Stale", "Sí" if bool(cache_item.get("stale", False)) else "No")
+                                meta_cols[4].metric("Actualización", _ta_profile_cache_update_signal_v234925(cache_item)[0])
 
                                 parsed_info = {}
                                 try:
