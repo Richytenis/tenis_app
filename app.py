@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.21-ta-cache-alias-permanent-fix"
+APP_VERSION = "v23.49.23-cache-portable-over-buenos"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -14055,6 +14055,10 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                 b3.metric("📋 Manual", audit_sum.get("manual", 0))
                 b4.metric("🔴 Sin ficha", audit_sum.get("missing", 0))
                 st.caption(f"Cobertura de perfiles: {audit_sum.get('cobertura', 0):.1f}%. Ahora se distingue TA Real de Auto Recent. Auto Recent es útil como refuerzo local, pero NO equivale a ficha TennisAbstract completa. Si ves Auto Recent y quieres TA real, pega la ficha manual.")
+                try:
+                    _render_ta_cache_portable_panel_v234922(context_key="batch_audit")
+                except Exception:
+                    pass
                 if audit_rows:
                     audit_df = pd.DataFrame(audit_rows)
                     st.dataframe(audit_df, width='stretch', hide_index=True)
@@ -14658,7 +14662,7 @@ def aplicar_challenger_recent_form_engine(df):
         return df
     out = df.copy()
     new_cols = [
-        "🧠 CH Form J1", "🧠 CH Form J2", "🧠 CH Over18 combinado", "🧠 CH Set J1", "🧠 CH Set J2",
+        "🧪 Selector v23.49.23", "🧠 CH Form J1", "🧠 CH Form J2", "🧠 CH Over18 combinado", "🧠 CH Set J1", "🧠 CH Set J2",
         "🧠 CH 3 sets", "🧠 CH Riesgo paliza", "🧠 CH Señal histórica"
     ]
     for c in new_cols:
@@ -14701,6 +14705,135 @@ def aplicar_challenger_recent_form_engine(df):
             continue
     return out
 
+
+# =========================================================
+# v23.49.23 SELECTOR OVER BUENO PROTEGIDO
+# No toca el motor Over ni probabilidades: solo decide qué filas pasan a JUGAR.
+# Basado en validación 10-16 junio: ATP hierba Over 18.5 sigue sólido;
+# Challenger/qualy y juegos jugador se dejan más prudentes.
+# =========================================================
+
+def _v234923_prob(row, col):
+    try:
+        return float(leer_porcentaje(row.get(col, 0), 0) or 0)
+    except Exception:
+        return 0.0
+
+
+def _v234923_txt(row, col):
+    try:
+        return str(row.get(col, "") or "")
+    except Exception:
+        return ""
+
+
+def aplicar_selector_over_buenos_v234923(df):
+    """Postprocesado de selector.
+    - ATP/Tour hierba: si Over 18.5 >=80%, vuelve/queda como ✅ JUGAR.
+    - ATP/Tour hierba: si Over 19.5 >=76% y Over18 >=84%, puede marcar Over 19.5.
+    - Challenger/qualy: no promociona a JUGAR salvo confirmación ya existente; baja juegos jugador.
+    - Juegos jugador +10.5/+11.5: siempre OBSERVAR hasta validar.
+    No recalcula nada: usa columnas ya calculadas.
+    """
+    if df is None or getattr(df, "empty", True):
+        return df
+    out = df.copy()
+    if "🧪 Selector v23.49.23" not in out.columns:
+        out["🧪 Selector v23.49.23"] = ""
+
+    for idx, row in out.iterrows():
+        try:
+            torneo = _v234923_txt(row, "Torneo").lower()
+            circuito_txt = " ".join([
+                torneo,
+                _v234923_txt(row, "Circuito").lower(),
+                _v234923_txt(row, "Categoría").lower(),
+                _v234923_txt(row, "Categoria").lower(),
+            ])
+            superficie = _v234923_txt(row, "Superficie").lower()
+            mercado = _v234923_txt(row, "🎯 Mercado más probable").lower()
+            accion = _v234923_txt(row, "🎯 Acción final").upper()
+            aviso = _v234923_txt(row, "🎯 Aviso acierto")
+            motivo = _v234923_txt(row, "🎯 Motivo acierto")
+            riesgos = _v234923_txt(row, "Riesgos")
+            all_txt = " ".join([mercado, accion, aviso, motivo, riesgos, circuito_txt, superficie]).lower()
+
+            over18 = _v234923_prob(row, "Over 18.5")
+            over19 = _v234923_prob(row, "Over 19.5")
+
+            is_challenger = "challenger" in circuito_txt
+            is_wta = "wta" in circuito_txt
+            is_qualy = any(x in circuito_txt for x in ["qual", "qualy", "qualifying"])
+            is_grass = ("hierba" in superficie) or ("grass" in superficie)
+            is_over_market = "over" in mercado
+            is_player_games = any(x in mercado for x in ["+10.5", "+11.5", "juegos jugador", "jugador +", "12+ juegos"])
+            has_hard_danger = any(x in all_txt for x in [
+                "retir", "cancel", "no bet", "evitar", "sin datos", "datos pobres",
+                "no encontrado", "fallback", "paliza muy", "muchas palizas"
+            ])
+
+            notes = []
+
+            # 1) Congelar mercados de juegos jugador.
+            if is_player_games:
+                if "🎯 Acción final" in out.columns:
+                    out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
+                notes.append("Juegos jugador congelado: OBSERVAR hasta validar")
+
+            # 2) Challenger/qualy: prudencia. Si era JUGAR por Over pero con datos pobres/qualy, OBSERVAR.
+            if is_challenger and is_over_market:
+                if is_qualy or has_hard_danger:
+                    if "🎯 Acción final" in out.columns:
+                        out.at[idx, "🎯 Acción final"] = "👀 OBSERVAR"
+                    notes.append("Challenger/qualy o datos débiles: Over queda OBSERVAR")
+
+            # 3) ATP/Tour: Over bueno vuelve a JUGAR. No aplica a WTA/Challenger/qualy.
+            is_atp_tour = (not is_challenger) and (not is_wta) and (not is_qualy)
+            if is_atp_tour and not has_hard_danger:
+                # En hierba estamos protegiendo los Over buenos del motor.
+                if is_grass and over18 >= 0.80:
+                    chosen_market = "Over 18.5"
+                    chosen_prob = over18
+                    if over18 >= 0.84 and over19 >= 0.76:
+                        # Solo subimos línea si la 19.5 también sale fuerte.
+                        chosen_market = "Over 19.5"
+                        chosen_prob = over19
+                    if "🎯 Acción final" in out.columns:
+                        out.at[idx, "🎯 Acción final"] = "✅ JUGAR"
+                    if "🎯 Mercado más probable" in out.columns:
+                        out.at[idx, "🎯 Mercado más probable"] = chosen_market
+                    if "🎯 Prob máxima" in out.columns:
+                        out.at[idx, "🎯 Prob máxima"] = f"{chosen_prob:.1%}"
+                    if "🎯 Decisión acierto" in out.columns:
+                        out.at[idx, "🎯 Decisión acierto"] = "🔥 Over ATP hierba protegido"
+                    if "🎯 Confianza acierto" in out.columns:
+                        out.at[idx, "🎯 Confianza acierto"] = "🔥 Muy alta" if chosen_prob >= 0.84 else "✅ Alta"
+                    old = _v234923_txt(row, "🎯 Aviso acierto")
+                    if "🎯 Aviso acierto" in out.columns:
+                        add = f"Selector v23.49.23: ATP hierba Over bueno protegido ({chosen_market} {chosen_prob:.1%}). TA solo avisa, no veta."
+                        out.at[idx, "🎯 Aviso acierto"] = (old + " | " if old else "") + add
+                    notes.append(f"ATP hierba Over bueno => JUGAR {chosen_market}")
+                elif (not is_grass) and over18 >= 0.84 and "over" in all_txt:
+                    # Más prudente fuera de hierba.
+                    if "🎯 Acción final" in out.columns:
+                        out.at[idx, "🎯 Acción final"] = "✅ JUGAR"
+                    if "🎯 Mercado más probable" in out.columns:
+                        out.at[idx, "🎯 Mercado más probable"] = "Over 18.5"
+                    if "🎯 Prob máxima" in out.columns:
+                        out.at[idx, "🎯 Prob máxima"] = f"{over18:.1%}"
+                    notes.append("ATP Over 18.5 >=84% => JUGAR")
+
+            if notes:
+                prev = _v234923_txt(row, "🧪 Selector v23.49.23")
+                out.at[idx, "🧪 Selector v23.49.23"] = (prev + " | " if prev else "") + " ; ".join(notes)
+        except Exception as e:
+            try:
+                out.at[idx, "🧪 Selector v23.49.23"] = f"error selector: {type(e).__name__}"
+            except Exception:
+                pass
+            continue
+    return out
+
 # =========================================================
 # v23.37.11 EXCEL LIMPIO 2 HOJAS
 # =========================================================
@@ -14718,7 +14851,7 @@ DETALLE_TECNICO_FIRST_COLS = [
     "🎯 Acción final", "🎯 Decisión acierto", "🎯 Mercado más probable", "🎯 Prob máxima",
     "🎯 Confianza acierto", "🎯 Aviso acierto", "🎯 Motivo acierto",
     "📥 Necesita Datos extra", "📥 Prioridad Datos extra", "📥 Estado Datos extra", "📥 Ajuste Datos extra", "📥 Qué mirar Datos extra", "📥 Motivo Datos extra",
-    "🧠 CH Form J1", "🧠 CH Form J2", "🧠 CH Over18 combinado", "🧠 CH Set J1", "🧠 CH Set J2", "🧠 CH 3 sets", "🧠 CH Riesgo paliza", "🧠 CH Señal histórica",
+    "🧪 Selector v23.49.23", "🧠 CH Form J1", "🧠 CH Form J2", "🧠 CH Over18 combinado", "🧠 CH Set J1", "🧠 CH Set J2", "🧠 CH 3 sets", "🧠 CH Riesgo paliza", "🧠 CH Señal histórica",
     "Recomendación", "Pick oficial", "Mercado recomendado", "Prob mercado recomendado",
     "Favorito modelo", "ML favorito", "Over 18.5", "Over 19.5", "Under 22.5",
     "Jugador gana set", "Prob gana set", "Favorito gana al menos 1 set",
@@ -17994,6 +18127,7 @@ Sebastián Baez - Roberto Carballés Baena"""
             # v23.37.26: aplicar Challenger Recent Form Engine antes de guardar.
             try:
                 ok = aplicar_challenger_recent_form_engine(ok)
+                ok = aplicar_selector_over_buenos_v234923(ok)
                 # v23.38.4: candado FINAL después del CH engine, porque CH podía recuperar Over 18.5.
                 ok = aplicar_grand_slam_bo5_selector_final(ok)
             except Exception:
@@ -18019,6 +18153,7 @@ Sebastián Baez - Roberto Carballés Baena"""
         ko_saved = st.session_state.get("batch_ko_df", pd.DataFrame())
         try:
             ok_saved = aplicar_challenger_recent_form_engine(ok_saved)
+            ok_saved = aplicar_selector_over_buenos_v234923(ok_saved)
             # v23.38.4: candado FINAL persistente después del CH engine.
             ok_saved = aplicar_grand_slam_bo5_selector_final(ok_saved)
             st.session_state["batch_ok_df"] = ok_saved
