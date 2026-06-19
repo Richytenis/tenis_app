@@ -7,7 +7,7 @@ import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
-st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.50.1 Manual + OCR", page_icon="🎾", layout="wide")
 
 APP_VERSION = "v23.50.0-estudio-over20-21-captura-sofascore"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
@@ -18014,9 +18014,9 @@ elif modo == "Analizador por lista":
         )
         formato_pegado = st.radio(
             "Formato SofaScore",
-            ["Sofascore día auto ATP/WTA/Challenger", "Sofascore resultados auto ATP/WTA/Challenger"],
+            ["SofaScore partidos pegados ATP/WTA/Challenger", "SofaScore resultados pegados ATP/WTA/Challenger"],
             index=0,
-            help="Pega todo el día junto y la app filtra según el circuito elegido en la barra lateral. Ignora dobles/cancelados/retirados."
+            help="Pega la lista manualmente o súbela por captura OCR. La app filtra según el circuito elegido en la barra lateral. Ignora dobles/cancelados/retirados."
         )
         usar_cuotas = False
         vista_resultados_simple = st.toggle(
@@ -18041,8 +18041,9 @@ M. Landaluce
 
 Sebastián Baez - Roberto Carballés Baena"""
 
-    render_sofascore_auto_extractor(circuito)
-    render_api_tennis_mobile_loader(circuito)
+    # v23.50.1 Limpieza UI:
+    # Quitadas de pantalla las cargas automáticas de SofaScore y API Tennis porque no son fiables.
+    # Se mantienen los parsers manuales y la captura OCR, sin tocar motor Over.
 
     with st.expander("📸 Subir captura de SofaScore (OCR)", expanded=False):
         st.caption("Sube una captura de la lista o resultados. La app intentará leerla y pegar el texto en el cuadro de abajo. Si el OCR falla, puedes seguir pegando manualmente.")
