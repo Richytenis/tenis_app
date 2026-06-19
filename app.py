@@ -15453,6 +15453,142 @@ def crear_estudio_over_superior_df_v23500(df):
             out[c] = out[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
     return out
 
+
+
+def _buscar_columna_contains_v23502(df, patrones):
+    """Devuelve la primera columna cuyo nombre contiene alguno de los patrones."""
+    if df is None or not hasattr(df, "columns"):
+        return None
+    pats = [limpiar(x) for x in patrones]
+    for c in df.columns:
+        cc = limpiar(c)
+        if any(p and p in cc for p in pats):
+            return c
+    return None
+
+
+def _bool_col_contains_v23502(df, col, texto):
+    if col not in df.columns:
+        return pd.Series([False] * len(df), index=df.index)
+    return df[col].astype(str).str.contains(texto, case=False, na=False)
+
+
+def _prob_series_v23502(df, posibles):
+    col = buscar_columna(df, posibles)
+    if col is None:
+        col = _buscar_columna_contains_v23502(df, posibles)
+    if col is None:
+        return pd.Series([np.nan] * len(df), index=df.index), None
+    return df[col].apply(lambda x: _pct_float_v23500(x, np.nan)), col
+
+
+def crear_adn_over_largo_estudio_v23502(df):
+    """Estudia qué TIPO de Over 18.5 llega a 22/23/24+ juegos.
+
+    Solo estadística: no cambia recomendaciones, no cambia motor Over.
+    Cruza juegos reales con probabilidad/confianza/señales disponibles en el Excel.
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame()
+    d = añadir_estudio_over_20_21_v23500(df).copy()
+    total_col = "Total games real" if "Total games real" in d.columns else ("GS Juegos reales" if "GS Juegos reales" in d.columns else None)
+    if total_col is None:
+        return pd.DataFrame()
+    d["__games"] = pd.to_numeric(d[total_col], errors="coerce")
+    d = d[d["__games"].notna()].copy()
+    if d.empty:
+        return pd.DataFrame()
+
+    p18, c18 = _prob_series_v23502(d, ["Prob Over 18.5", "Over 18.5"])
+    p19, c19 = _prob_series_v23502(d, ["Prob Over 19.5", "Over 19.5"])
+    p20, c20 = _prob_series_v23502(d, ["Prob Over 20.5", "Over 20.5"])
+    p3s, c3s = _prob_series_v23502(d, ["Prob 3 sets", "3 sets", "Tres sets"])
+    ptb, ctb = _prob_series_v23502(d, ["Tie break", "Tie-break", "TB"])
+
+    accion_col = "🎯 Acción final" if "🎯 Acción final" in d.columns else _buscar_columna_contains_v23502(d, ["Accion final", "Acción final", "Accion"])
+    mercado_col = "Mercado recomendado" if "Mercado recomendado" in d.columns else _buscar_columna_contains_v23502(d, ["Mercado recomendado", "Mercado"])
+    pick_col = "Pick oficial" if "Pick oficial" in d.columns else _buscar_columna_contains_v23502(d, ["Pick oficial"])
+    confianza_col = _buscar_columna_contains_v23502(d, ["Confianza", "Confidence", "fiabilidad"])
+    riesgo_col = _buscar_columna_contains_v23502(d, ["Riesgos", "Riesgo"])
+    motivo_col = _buscar_columna_contains_v23502(d, ["Motivo", "Reason"])
+
+    masks = {}
+    masks["Todos con resultado"] = pd.Series([True] * len(d), index=d.index)
+    if accion_col:
+        masks["Acción JUGAR"] = _bool_col_contains_v23502(d, accion_col, "JUGAR")
+    if pick_col:
+        masks["Pick oficial"] = d[pick_col].astype(str).str.strip().ne("") & ~d[pick_col].astype(str).str.upper().isin(["NAN", "NONE", "N/D"])
+    if mercado_col:
+        mtxt = d[mercado_col].astype(str)
+        masks["Mercado Over 18.5"] = mtxt.str.contains("OVER 18.5", case=False, na=False)
+        masks["Over 18.5 fuerte"] = mtxt.str.contains("OVER 18.5", case=False, na=False) & mtxt.str.contains("FUERTE|🔥|ALTA|MUY", case=False, na=False)
+        masks["Over 18.5 apto"] = mtxt.str.contains("OVER 18.5", case=False, na=False) & mtxt.str.contains("APTO|✅|MEDIA", case=False, na=False)
+    if c18:
+        masks["Prob O18.5 >= 75%"] = p18 >= 0.75
+        masks["Prob O18.5 >= 80%"] = p18 >= 0.80
+        masks["Prob O18.5 >= 85%"] = p18 >= 0.85
+    if c19:
+        masks["Prob O19.5 >= 60%"] = p19 >= 0.60
+        masks["Prob O19.5 >= 65%"] = p19 >= 0.65
+    if c20:
+        masks["Prob O20.5 >= 55%"] = p20 >= 0.55
+        masks["Prob O20.5 >= 60%"] = p20 >= 0.60
+    if c3s:
+        masks["3 sets alto >= 35%"] = p3s >= 0.35
+        masks["3 sets muy alto >= 40%"] = p3s >= 0.40
+    if ctb:
+        masks["Tie-break alto >= 30%"] = ptb >= 0.30
+    if confianza_col:
+        ctxt = d[confianza_col].astype(str)
+        masks["Confianza alta"] = ctxt.str.contains("ALTA|🔥|🟢|BUENA|FUERTE", case=False, na=False)
+        masks["Confianza media/alta"] = ctxt.str.contains("MEDIA|ALTA|✅|🟢|BUENA|FUERTE", case=False, na=False)
+    # Señales por texto técnico/motivos/riesgo, si existen.
+    joined = pd.Series([""] * len(d), index=d.index)
+    for col in [mercado_col, motivo_col, riesgo_col]:
+        if col and col in d.columns:
+            joined = joined + " " + d[col].astype(str)
+    masks["Texto big server/hold"] = joined.str.contains("BIG SERVER|ELITE SERVER|HOLD|SAQUE|SERV", case=False, na=False)
+    masks["Texto igualdad/resistencia"] = joined.str.contains("IGUAL|RESIST|EQUIL|COMPITE|DOG|SET", case=False, na=False)
+    masks["Texto tie-break"] = joined.str.contains("TIE|TB|TIEBREAK", case=False, na=False)
+
+    rows = []
+    for nombre, mask in masks.items():
+        try:
+            mask = mask.fillna(False)
+        except Exception:
+            continue
+        sub = d[mask].copy()
+        if len(sub) < 2:
+            continue
+        g = pd.to_numeric(sub["__games"], errors="coerce")
+        rows.append({
+            "Filtro / tipo de Over 18.5": nombre,
+            "Casos": int(len(sub)),
+            "Media juegos": float(g.mean()),
+            "Mediana": float(g.median()),
+            "22+ juegos": float((g >= 22).mean()),
+            "23+ juegos": float((g >= 23).mean()),
+            "24+ juegos": float((g >= 24).mean()),
+            "Over 20.5": float((g > 20.5).mean()),
+            "Over 21.5": float((g > 21.5).mean()),
+            "Media Prob O18.5": float(p18.loc[sub.index].mean()) if c18 else np.nan,
+            "Media Prob O19.5": float(p19.loc[sub.index].mean()) if c19 else np.nan,
+            "Media Prob O20.5": float(p20.loc[sub.index].mean()) if c20 else np.nan,
+        })
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    out["Score Over Largo"] = (out["22+ juegos"] * 0.45 + out["23+ juegos"] * 0.25 + out["24+ juegos"] * 0.20 + np.minimum(out["Casos"], 20) / 20 * 0.10)
+    out = out.sort_values(["Score Over Largo", "Casos"], ascending=[False, False]).reset_index(drop=True)
+    pct_cols = ["22+ juegos", "23+ juegos", "24+ juegos", "Over 20.5", "Over 21.5", "Media Prob O18.5", "Media Prob O19.5", "Media Prob O20.5", "Score Over Largo"]
+    for c in pct_cols:
+        if c in out.columns:
+            out[c] = out[c].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "")
+    for c in ["Media juegos", "Mediana"]:
+        if c in out.columns:
+            out[c] = out[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
+    return out
+
 def batch_excel_bytes(df):
     """Exporta Excel limpio: hoja diaria + detalle técnico."""
     output = io.BytesIO()
@@ -15466,6 +15602,7 @@ def batch_excel_bytes(df):
             crear_combinada_recomendada_df_v23467(picks_df).to_excel(writer, index=False, sheet_name="COMBINADA RECOMENDADA")
             crear_juegos_jugador_df_v23480(detalle_df).to_excel(writer, index=False, sheet_name="JUEGOS_JUGADOR")
             crear_estudio_over_superior_df_v23500(detalle_df).to_excel(writer, index=False, sheet_name="ESTUDIO OVER 20-21")
+            crear_adn_over_largo_estudio_v23502(detalle_df).to_excel(writer, index=False, sheet_name="ADN OVER LARGO")
         except Exception:
             pass
         detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
@@ -15495,6 +15632,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
             crear_combinada_recomendada_df_v23467(picks_df).to_excel(writer, index=False, sheet_name="COMBINADA RECOMENDADA")
             crear_juegos_jugador_df_v23480(detalle_df).to_excel(writer, index=False, sheet_name="JUEGOS_JUGADOR")
             crear_estudio_over_superior_df_v23500(detalle_df).to_excel(writer, index=False, sheet_name="ESTUDIO OVER 20-21")
+            crear_adn_over_largo_estudio_v23502(detalle_df).to_excel(writer, index=False, sheet_name="ADN OVER LARGO")
         except Exception:
             pass
         detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
@@ -18466,6 +18604,11 @@ Sebastián Baez - Roberto Carballés Baena"""
                     st.subheader("📊 Estudio Over 20.5 / 21.5")
                     st.caption("Modo estudio: no cambia recomendaciones. Sirve para ver si los Over buenos pueden subirse de línea.")
                     st.dataframe(_over_estudio, width='stretch', hide_index=True)
+                    _adn_over_largo = crear_adn_over_largo_estudio_v23502(ok_saved)
+                    if _adn_over_largo is not None and not _adn_over_largo.empty:
+                        st.subheader("🧬 ADN Over Largo")
+                        st.caption("Solo estadísticas: detecta qué tipo de Over 18.5 llega a 22/23/24+ juegos. No cambia picks ni motor Over.")
+                        st.dataframe(_adn_over_largo, width='stretch', hide_index=True)
             except Exception as _e_ov:
                 st.caption(f"Estudio Over 20.5/21.5 no disponible: {type(_e_ov).__name__}: {_e_ov}")
 
