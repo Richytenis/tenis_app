@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.25.8 Fallback Lectura", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.49.25-cache-ta-age-signal-over-buenos"
+APP_VERSION = "v23.50.0-estudio-over20-21-captura-sofascore"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -7955,6 +7955,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         over18_raw = sum(x > 18.5 for x in games)/sims if sims else 0
         over19_raw = sum(x > 19.5 for x in games)/sims if sims else 0
         over20_raw = sum(x > 20.5 for x in games)/sims if sims else 0
+        over21_raw = sum(x > 21.5 for x in games)/sims if sims else 0
         over22_raw = sum(x > 22.5 for x in games)/sims if sims else 0
         caps = aplicar_market_sanity_caps(sim, circuito_calc, match_surface, over18_raw, over19_raw, over20_raw, over22_raw)
         over18, over19, over20, over22 = caps["over18"], caps["over19"], caps["over20"], caps["over22"]
@@ -7965,6 +7966,7 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         sim["market_over18"] = over18
         sim["market_over19"] = over19
         sim["market_over20"] = over20
+        sim["market_over21_study"] = over21_raw
         sim["market_over22"] = over22
         sim["market_cap_notes"] = caps.get("notes", [])
 
@@ -8075,6 +8077,8 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Over 17.5": f"{over17:.1%}" if circuito_calc == "WTA" else "",
             "Over 18.5": f"{over18:.1%}",
             "Over 19.5": f"{over19:.1%}",
+            "Over 20.5": f"{over20:.1%}",
+            "Over 21.5 estudio": f"{over21_raw:.1%}",
             "Under 22.5": f"{under22:.1%}",
             "🏆 GS 5 sets activo": "Sí" if gs5 else "",
             "🏆 Mercado GS 5 sets": gs5.get("best_label", "") if gs5 else "",
@@ -15335,9 +15339,124 @@ def crear_juegos_jugador_df_v23480(df):
     return out
 
 
+
+def _si_no_from_bool_v23500(v, disponible=True):
+    if not disponible:
+        return "N/D"
+    try:
+        return "Sí" if bool(v) else "No"
+    except Exception:
+        return "N/D"
+
+
+def _pct_float_v23500(v, default=None):
+    try:
+        if pd.isna(v):
+            return default
+        s = str(v).replace("%", "").replace(",", ".").strip()
+        if s == "" or s.upper() in ["N/D", "NONE", "NAN"]:
+            return default
+        x = float(s)
+        return x / 100.0 if x > 1 else x
+    except Exception:
+        return default
+
+
+def añadir_estudio_over_20_21_v23500(df):
+    """Añade columnas de estudio Over 20.5 y 21.5 sin tocar el motor Over ni el selector.
+    Sirve para backtesting: qué habría pasado si subimos línea desde Over 18.5/19.5.
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return df
+    out = df.copy()
+
+    # Total real leído desde resultados SofaScore.
+    if "Total games real" in out.columns:
+        total_real = pd.to_numeric(out["Total games real"], errors="coerce")
+    elif "GS Juegos reales" in out.columns:
+        total_real = pd.to_numeric(out["GS Juegos reales"], errors="coerce")
+    else:
+        total_real = pd.Series([np.nan] * len(out), index=out.index)
+
+    disponible = total_real.notna()
+    out["Over 20.5 real"] = np.where(disponible, np.where(total_real > 20.5, "Sí", "No"), "N/D")
+    out["Over 21.5 real"] = np.where(disponible, np.where(total_real > 21.5, "Sí", "No"), "N/D")
+    out["Margen Over 20.5"] = np.where(disponible, total_real - 20.5, np.nan)
+    out["Margen Over 21.5"] = np.where(disponible, total_real - 21.5, np.nan)
+
+    if "Over 20.5" in out.columns:
+        prob20 = out["Over 20.5"].apply(lambda x: _pct_float_v23500(x, None))
+    else:
+        prob20 = pd.Series([None] * len(out), index=out.index)
+    out["Acierta Over 20.5 estudio"] = [
+        "Sí" if pd.notna(total_real.loc[i]) and p is not None and ((p >= 0.50) == (total_real.loc[i] > 20.5))
+        else "No" if pd.notna(total_real.loc[i]) and p is not None
+        else "N/D"
+        for i, p in prob20.items()
+    ]
+
+    # Over 21.5 queda como mercado de estudio puro: real + línea máxima, sin recomendarlo.
+    def linea_maxima(g):
+        if pd.isna(g): return "N/D"
+        if g > 21.5: return "Over 21.5 ✅"
+        if g > 20.5: return "Over 20.5 ✅"
+        if g > 19.5: return "Over 19.5 ✅"
+        if g > 18.5: return "Over 18.5 ✅"
+        return "No llega a Over 18.5"
+    out["Línea máxima acertada estudio"] = total_real.apply(linea_maxima)
+
+    return out
+
+
+def crear_estudio_over_superior_df_v23500(df):
+    """Resumen para estudiar si conviene subir de 18.5/19.5 a 20.5/21.5."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame()
+    d = añadir_estudio_over_20_21_v23500(df)
+    if d is None or d.empty or "Total games real" not in d.columns:
+        return pd.DataFrame()
+    total_real = pd.to_numeric(d["Total games real"], errors="coerce")
+    valid = d[total_real.notna()].copy()
+    if valid.empty:
+        return pd.DataFrame()
+    total_real = pd.to_numeric(valid["Total games real"], errors="coerce")
+
+    grupos = []
+    masks = {
+        "Todos con resultado": pd.Series([True] * len(valid), index=valid.index),
+        "Solo Acción JUGAR": valid.get("🎯 Acción final", "").astype(str).str.contains("JUGAR", case=False, na=False) if "🎯 Acción final" in valid.columns else pd.Series([False] * len(valid), index=valid.index),
+        "Solo Pick oficial": valid.get("Pick oficial", "").astype(str).str.strip().ne("") if "Pick oficial" in valid.columns else pd.Series([False] * len(valid), index=valid.index),
+        "Over 18.5 fuerte/apto": valid.get("Mercado recomendado", "").astype(str).str.contains("OVER 18.5|Over 18.5", case=False, na=False) if "Mercado recomendado" in valid.columns else pd.Series([False] * len(valid), index=valid.index),
+    }
+    for nombre, mask in masks.items():
+        sub = valid[mask].copy()
+        if sub.empty:
+            continue
+        g = pd.to_numeric(sub["Total games real"], errors="coerce")
+        grupos.append({
+            "Grupo": nombre,
+            "Casos": int(len(sub)),
+            "Over 18.5 real": float((g > 18.5).mean()),
+            "Over 19.5 real": float((g > 19.5).mean()),
+            "Over 20.5 real": float((g > 20.5).mean()),
+            "Over 21.5 real": float((g > 21.5).mean()),
+            "Games media real": float(g.mean()),
+            "Games mediana real": float(g.median()),
+            "Partidos 24+ games": float((g >= 24).mean()),
+        })
+    out = pd.DataFrame(grupos)
+    for c in ["Over 18.5 real", "Over 19.5 real", "Over 20.5 real", "Over 21.5 real", "Partidos 24+ games"]:
+        if c in out.columns:
+            out[c] = out[c].apply(lambda x: f"{x:.1%}" if pd.notna(x) else "")
+    for c in ["Games media real", "Games mediana real"]:
+        if c in out.columns:
+            out[c] = out[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
+    return out
+
 def batch_excel_bytes(df):
     """Exporta Excel limpio: hoja diaria + detalle técnico."""
     output = io.BytesIO()
+    df = añadir_estudio_over_20_21_v23500(df)
     picks_df = crear_picks_limpios_df(df)
     detalle_df = crear_detalle_tecnico_df(df)
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -15346,6 +15465,7 @@ def batch_excel_bytes(df):
             crear_top_apuestas_df_v23467(picks_df, n=10).to_excel(writer, index=False, sheet_name="TOP APUESTAS")
             crear_combinada_recomendada_df_v23467(picks_df).to_excel(writer, index=False, sheet_name="COMBINADA RECOMENDADA")
             crear_juegos_jugador_df_v23480(detalle_df).to_excel(writer, index=False, sheet_name="JUEGOS_JUGADOR")
+            crear_estudio_over_superior_df_v23500(detalle_df).to_excel(writer, index=False, sheet_name="ESTUDIO OVER 20-21")
         except Exception:
             pass
         detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
@@ -15365,7 +15485,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
     """Exporta Excel con 2 hojas útiles + no encontrados si existen."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        ok_sheet = ok_df.copy() if ok_df is not None else pd.DataFrame()
+        ok_sheet = añadir_estudio_over_20_21_v23500(ok_df.copy() if ok_df is not None else pd.DataFrame())
         ko_sheet = enrich_not_found_with_suggestions(ko_df, db) if ko_df is not None and not ko_df.empty else pd.DataFrame()
         picks_df = crear_picks_limpios_df(ok_sheet)
         detalle_df = crear_detalle_tecnico_df(ok_sheet)
@@ -15374,6 +15494,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
             crear_top_apuestas_df_v23467(picks_df, n=10).to_excel(writer, index=False, sheet_name="TOP APUESTAS")
             crear_combinada_recomendada_df_v23467(picks_df).to_excel(writer, index=False, sheet_name="COMBINADA RECOMENDADA")
             crear_juegos_jugador_df_v23480(detalle_df).to_excel(writer, index=False, sheet_name="JUEGOS_JUGADOR")
+            crear_estudio_over_superior_df_v23500(detalle_df).to_excel(writer, index=False, sheet_name="ESTUDIO OVER 20-21")
         except Exception:
             pass
         detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
@@ -17381,6 +17502,7 @@ elif modo == "Predictor":
         sim["market_over18"] = over18
         sim["market_over19"] = over19
         sim["market_over20"] = over20
+        sim["market_over21_study"] = over21_raw
         sim["market_over22"] = over22
         sim["market_cap_notes"] = market_caps.get("notes", [])
 
@@ -17922,6 +18044,26 @@ Sebastián Baez - Roberto Carballés Baena"""
     render_sofascore_auto_extractor(circuito)
     render_api_tennis_mobile_loader(circuito)
 
+    with st.expander("📸 Subir captura de SofaScore (OCR)", expanded=False):
+        st.caption("Sube una captura de la lista o resultados. La app intentará leerla y pegar el texto en el cuadro de abajo. Si el OCR falla, puedes seguir pegando manualmente.")
+        sofa_img = st.file_uploader(
+            "Captura SofaScore",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="sofa_screenshot_uploader_v23500"
+        )
+        if sofa_img is not None:
+            if st.button("🔎 Leer captura y pegar texto", key="sofa_screenshot_ocr_btn_v23500"):
+                txt_ocr, err_ocr = _ocr_datos_extra_image(sofa_img)
+                if err_ocr:
+                    st.warning(err_ocr)
+                if txt_ocr:
+                    st.session_state["sofa_raw_batch"] = txt_ocr
+                    st.success("Captura leída. Revisa el texto pegado abajo antes de analizar.")
+                    with st.expander("Ver texto OCR detectado", expanded=False):
+                        st.text(txt_ocr[:6000])
+                else:
+                    st.error("No he podido sacar texto útil de la captura. Prueba una captura más grande o pega la lista manualmente.")
+
     raw_batch = st.text_area(
         "Pega aquí los partidos/resultados de SofaScore",
         height=260,
@@ -18170,6 +18312,8 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "ML favorito",
                     "Ganador real",
                     "Resultado sets",
+                    "Marcador games",
+                    "Total games real",
                     "Acierta ML modelo",
                     "Mejor mercado WTA",
                     "WTA Over17 Priority",
@@ -18179,6 +18323,12 @@ Sebastián Baez - Roberto Carballés Baena"""
                     "Over 18.5",
                     "Over 18.5 real",
                     "Acierta Over 18.5",
+                    "Over 20.5",
+                    "Over 21.5 estudio",
+                    "Over 20.5 real",
+                    "Over 21.5 real",
+                    "Acierta Over 20.5 estudio",
+                    "Línea máxima acertada estudio",
                     "WTA Watchlist",
                     "Signal Trust",
                     "Recomendación",
@@ -18203,6 +18353,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                     pass
 
             # v23.5: guardar resultado para que descargar Excel/CSV no limpie pantalla tras rerun.
+            ok = añadir_estudio_over_20_21_v23500(ok)
             st.session_state["batch_ok_df"] = ok
             st.session_state["batch_ko_df"] = ko
             st.session_state["batch_last_ready"] = True
@@ -18221,6 +18372,7 @@ Sebastián Baez - Roberto Carballés Baena"""
             ok_saved = aplicar_challenger_recent_form_engine(ok_saved)
             # v23.38.4: candado FINAL persistente después del CH engine.
             ok_saved = aplicar_grand_slam_bo5_selector_final(ok_saved)
+            ok_saved = añadir_estudio_over_20_21_v23500(ok_saved)
             st.session_state["batch_ok_df"] = ok_saved
         except Exception:
             try:
@@ -18304,6 +18456,17 @@ Sebastián Baez - Roberto Carballés Baena"""
                     st.dataframe(_jg_view.head(20), width='stretch', hide_index=True)
             except Exception as _e_jg:
                 st.caption(f"Juegos jugador no disponible: {type(_e_jg).__name__}: {_e_jg}")
+
+
+
+            try:
+                _over_estudio = crear_estudio_over_superior_df_v23500(ok_saved)
+                if _over_estudio is not None and not _over_estudio.empty:
+                    st.subheader("📊 Estudio Over 20.5 / 21.5")
+                    st.caption("Modo estudio: no cambia recomendaciones. Sirve para ver si los Over buenos pueden subirse de línea.")
+                    st.dataframe(_over_estudio, width='stretch', hide_index=True)
+            except Exception as _e_ov:
+                st.caption(f"Estudio Over 20.5/21.5 no disponible: {type(_e_ov).__name__}: {_e_ov}")
 
             st.subheader("🔥 Resumen ordenado completo")
             _hide_cols_v23480 = [c for c in ["Cuota pegada", "Jugador cuota", "Cuota justa", "Edge"] if c in ok_saved.columns]
