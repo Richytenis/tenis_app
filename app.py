@@ -11749,37 +11749,82 @@ TA_PROFILE_MAX_AGE_DAYS = 7  # v23.47.3: refrescar fichas TA antiguas
 # Guarda fichas TA/Flashscore por jugador con fecha de subida para no pegarlas cada día.
 # =========================================================
 
+def _ta_profile_cache_candidate_paths():
+    """Rutas posibles de la caché TA.
+
+    En GitHub/Streamlit el archivo real está en la raíz del repo:
+        ta_profile_cache.json
+
+    Mantenemos también compatibilidad con versiones antiguas que lo buscaban en:
+        datos/ta_profile_cache.json
+    """
+    return [
+        "ta_profile_cache.json",
+        os.path.join("datos", "ta_profile_cache.json"),
+    ]
+
+
 def _ta_profile_cache_path():
+    """Ruta principal de trabajo para la caché TA.
+
+    Prioridad: raíz del repositorio.
+    Así la app lee automáticamente el archivo que ya tienes subido junto a app.py.
+    """
     try:
         os.makedirs("datos", exist_ok=True)
-        return os.path.join("datos", "ta_profile_cache.json")
     except Exception:
-        return "ta_profile_cache.json"
+        pass
+
+    for path in _ta_profile_cache_candidate_paths():
+        try:
+            if os.path.exists(path):
+                return path
+        except Exception:
+            pass
+    return "ta_profile_cache.json"
 
 
 def _ta_profile_cache_load():
     import json
-    path = _ta_profile_cache_path()
-    if not os.path.exists(path):
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    # Lee la primera caché válida encontrada. Primero raíz, luego datos/.
+    for path in _ta_profile_cache_candidate_paths():
+        try:
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            continue
+    return {}
 
 
 def _ta_profile_cache_save(cache):
     import json
-    path = _ta_profile_cache_path()
-    try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(cache or {}, f, ensure_ascii=False, indent=2)
-        return True, path
-    except Exception as e:
-        return False, str(e)
+    primary_path = _ta_profile_cache_path()
+    saved_paths = []
+    errors = []
+
+    # Guarda en la ruta principal y deja copia espejo en la otra ruta.
+    # Esto evita que una versión lea raíz y otra lea datos/ con cachés distintas.
+    paths = []
+    for p in [primary_path] + _ta_profile_cache_candidate_paths():
+        if p not in paths:
+            paths.append(p)
+
+    for path in paths:
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(cache or {}, f, ensure_ascii=False, indent=2)
+            saved_paths.append(path)
+        except Exception as e:
+            errors.append(f"{path}: {type(e).__name__}: {e}")
+
+    if saved_paths:
+        return True, ", ".join(saved_paths)
+    return False, " | ".join(errors) if errors else "no se pudo guardar la caché TA"
 
 
 # =========================================================
