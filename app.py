@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.50.1 Manual + OCR", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.50.0-estudio-over20-21-captura-sofascore"
+APP_VERSION = "v23.50.2-ta-cache-una-lectura-raiz"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11745,86 +11745,76 @@ def _invalidar_lectura_si_no_coincide(d, jugador_esperado):
 TA_PROFILE_MAX_AGE_DAYS = 7  # v23.47.3: refrescar fichas TA antiguas
 
 # =========================================================
-# v23.37.24 TENNIS ABSTRACT PROFILE CACHE
-# Guarda fichas TA/Flashscore por jugador con fecha de subida para no pegarlas cada día.
+# v23.50.2 TENNIS ABSTRACT CACHE BOOT FIX
+# Lee ta_profile_cache.json UNA VEZ al arrancar la sesión.
+# Prioridad: raíz del repo /app.py -> datos/ta_profile_cache.json.
+# Al guardar, escribe en ambas rutas para mantener copia.
+# No toca motor Over ni cálculos.
 # =========================================================
 
 def _ta_profile_cache_candidate_paths():
-    """Rutas posibles de la caché TA.
-
-    En GitHub/Streamlit el archivo real está en la raíz del repo:
-        ta_profile_cache.json
-
-    Mantenemos también compatibilidad con versiones antiguas que lo buscaban en:
-        datos/ta_profile_cache.json
-    """
     return [
+        os.path.join(os.getcwd(), "ta_profile_cache.json"),
         "ta_profile_cache.json",
         os.path.join("datos", "ta_profile_cache.json"),
     ]
 
 
 def _ta_profile_cache_path():
-    """Ruta principal de trabajo para la caché TA.
-
-    Prioridad: raíz del repositorio.
-    Así la app lee automáticamente el archivo que ya tienes subido junto a app.py.
-    """
-    try:
-        os.makedirs("datos", exist_ok=True)
-    except Exception:
-        pass
-
-    for path in _ta_profile_cache_candidate_paths():
-        try:
-            if os.path.exists(path):
-                return path
-        except Exception:
-            pass
+    # Ruta principal de tu GitHub: raíz, junto a app.py.
     return "ta_profile_cache.json"
 
 
-def _ta_profile_cache_load():
+def _ta_profile_cache_load_from_disk_once():
     import json
-    # Lee la primera caché válida encontrada. Primero raíz, luego datos/.
+    best_data = {}
+    best_path = ""
+    best_size = -1
     for path in _ta_profile_cache_candidate_paths():
         try:
             if not os.path.exists(path):
                 continue
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, dict):
-                return data
+            if isinstance(data, dict) and len(data) > best_size:
+                best_data = data
+                best_path = path
+                best_size = len(data)
         except Exception:
             continue
-    return {}
+    st.session_state["ta_profile_cache_loaded_path"] = best_path or "NO ENCONTRADO"
+    st.session_state["ta_profile_cache_loaded_keys"] = len(best_data) if isinstance(best_data, dict) else 0
+    return best_data if isinstance(best_data, dict) else {}
+
+
+def _ta_profile_cache_load(force_reload=False):
+    # Clave del arreglo: durante la sesión usa memoria y NO relee el JSON
+    # cada vez que se analiza una lista o se abre el backup/uploader.
+    if force_reload or "ta_profile_cache_memory" not in st.session_state:
+        st.session_state["ta_profile_cache_memory"] = _ta_profile_cache_load_from_disk_once()
+    cache = st.session_state.get("ta_profile_cache_memory", {})
+    return cache if isinstance(cache, dict) else {}
 
 
 def _ta_profile_cache_save(cache):
     import json
-    primary_path = _ta_profile_cache_path()
-    saved_paths = []
+    cache = cache or {}
+    st.session_state["ta_profile_cache_memory"] = cache
+    saved = []
     errors = []
-
-    # Guarda en la ruta principal y deja copia espejo en la otra ruta.
-    # Esto evita que una versión lea raíz y otra lea datos/ con cachés distintas.
-    paths = []
-    for p in [primary_path] + _ta_profile_cache_candidate_paths():
-        if p not in paths:
-            paths.append(p)
-
-    for path in paths:
+    for path in ["ta_profile_cache.json", os.path.join("datos", "ta_profile_cache.json")]:
         try:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(cache or {}, f, ensure_ascii=False, indent=2)
-            saved_paths.append(path)
+                json.dump(cache, f, ensure_ascii=False, indent=2)
+            saved.append(path)
         except Exception as e:
-            errors.append(f"{path}: {type(e).__name__}: {e}")
-
-    if saved_paths:
-        return True, ", ".join(saved_paths)
-    return False, " | ".join(errors) if errors else "no se pudo guardar la caché TA"
+            errors.append(f"{path}: {e}")
+    if saved:
+        st.session_state["ta_profile_cache_loaded_path"] = saved[0]
+        st.session_state["ta_profile_cache_loaded_keys"] = len(cache)
+        return True, " + ".join(saved)
+    return False, " | ".join(errors) if errors else "no guardado"
 
 
 # =========================================================
@@ -11912,10 +11902,8 @@ def _ta_profile_cache_import_merge_v234924(uploaded_bytes):
         ok, info = _ta_profile_cache_save(current)
         if not ok:
             return False, f"no se pudo guardar caché fusionada: {info}"
-        try:
-            st.cache_data.clear()
-        except Exception:
-            pass
+        # No limpiamos st.cache_data aquí: antes forzaba recargas grandes al analizar.
+        # La caché TA ya queda actualizada en st.session_state por _ta_profile_cache_save().
         return True, f"Caché TA fusionada: {added} añadidas, {updated} actualizadas, {kept} mantenidas. Total claves: {len(current)}"
     except Exception as e:
         return False, f"error importando caché: {type(e).__name__}: {e}"
