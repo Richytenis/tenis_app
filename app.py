@@ -17659,6 +17659,7 @@ elif modo == "Predictor":
         over18_raw = sum(x > 18.5 for x in games)/sims
         over19_raw = sum(x > 19.5 for x in games)/sims
         over20_raw = sum(x > 20.5 for x in games)/sims
+        over21_raw = sum(x > 21.5 for x in games)/sims
         over22_raw = sum(x > 22.5 for x in games)/sims
 
         market_caps = aplicar_market_sanity_caps(sim, circuito, surface, over18_raw, over19_raw, over20_raw, over22_raw)
