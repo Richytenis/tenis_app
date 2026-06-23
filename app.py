@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.50.1 Manual + OCR", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.50.2-ta-cache-una-lectura-raiz"
+APP_VERSION = "v23.50.3-ta-cache-entries-fix"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11765,6 +11765,24 @@ def _ta_profile_cache_path():
     return "ta_profile_cache.json"
 
 
+def _ta_profile_cache_extract_entries(data):
+    """Devuelve SOLO las fichas reales del JSON TA.
+
+    Soporta los dos formatos que ya usa la app:
+    1) formato directo: {PLAYERKEY: ficha, ...}
+    2) formato export/backup: {schema, app_version, exported_at, entries:{PLAYERKEY: ficha, ...}}
+
+    El fallo de 'Claves caché = 4' venía de leer el formato backup como si las
+    4 claves schema/app_version/exported_at/entries fueran fichas.
+    """
+    if not isinstance(data, dict):
+        return {}
+    entries = data.get("entries")
+    if isinstance(entries, dict):
+        return entries
+    return data
+
+
 def _ta_profile_cache_load_from_disk_once():
     import json
     best_data = {}
@@ -11775,7 +11793,8 @@ def _ta_profile_cache_load_from_disk_once():
             if not os.path.exists(path):
                 continue
             with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+                raw_data = json.load(f)
+            data = _ta_profile_cache_extract_entries(raw_data)
             if isinstance(data, dict) and len(data) > best_size:
                 best_data = data
                 best_path = path
@@ -11792,7 +11811,10 @@ def _ta_profile_cache_load(force_reload=False):
     # cada vez que se analiza una lista o se abre el backup/uploader.
     if force_reload or "ta_profile_cache_memory" not in st.session_state:
         st.session_state["ta_profile_cache_memory"] = _ta_profile_cache_load_from_disk_once()
-    cache = st.session_state.get("ta_profile_cache_memory", {})
+    cache = _ta_profile_cache_extract_entries(st.session_state.get("ta_profile_cache_memory", {}))
+    if cache is not st.session_state.get("ta_profile_cache_memory"):
+        st.session_state["ta_profile_cache_memory"] = cache
+        st.session_state["ta_profile_cache_loaded_keys"] = len(cache) if isinstance(cache, dict) else 0
     return cache if isinstance(cache, dict) else {}
 
 
