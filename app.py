@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.50.1 Manual + OCR", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.50.5-ta-cache-flat-alias-fix"
+APP_VERSION = "v23.50.6-ta-cache-alias-sin-duplicar"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11766,90 +11766,166 @@ def _ta_profile_cache_path():
 
 
 def _ta_profile_cache_extract_entries(data):
-    """Devuelve SOLO las fichas reales del JSON TA.
+    """Devuelve SOLO fichas reales del JSON TA, aunque venga anidado.
 
     Soporta:
-    1) formato directo: {PLAYERKEY: ficha, ...}
-    2) formato backup: {schema, app_version, exported_at, entries:{PLAYERKEY: ficha, ...}}
-    3) backups anidados varias veces: {entries:{entries:{entries:{PLAYERKEY:ficha}}}}
-
-    Importante: el JSON de backup puede pesar mucho por el raw_text, aunque tenga pocas
-    fichas reales. Esta función baja hasta el nivel donde están las fichas.
+    - {PLAYERKEY: ficha}
+    - {schema, app_version, exported_at, entries:{PLAYERKEY: ficha}}
+    - backups dentro de backups: entries -> entries -> entries.
+    Además compacta duplicados: la ficha grande se guarda una vez y los alias
+    quedan como referencias pequeñas {"alias_to": "CLAVE_CANONICA"}.
     """
     if not isinstance(data, dict):
         return {}
 
     current = data
     for _ in range(20):
-        entries = current.get("entries") if isinstance(current, dict) else None
-        if not isinstance(entries, dict):
+        if not isinstance(current, dict):
+            return {}
+        entries = current.get("entries")
+        if isinstance(entries, dict):
+            # Si entries aún parece un backup, bajamos otro nivel.
+            if "entries" in entries or ("schema" in entries and len(entries) <= 8):
+                current = entries
+                continue
+            current = entries
             break
-        # Si current es claramente un wrapper de exportación, baja un nivel.
-        current_keys = set(current.keys())
-        if {"schema", "app_version", "exported_at", "entries"} & current_keys:
-            current = entries
-            continue
-        # Si entries también es wrapper, baja otro nivel.
-        if isinstance(entries.get("entries"), dict) or "schema" in entries:
-            current = entries
-            continue
         break
 
-    if isinstance(current, dict) and isinstance(current.get("entries"), dict):
-        return current.get("entries")
-    return current if isinstance(current, dict) else {}
+    if not isinstance(current, dict):
+        return {}
+
+    return _ta_profile_cache_compact_alias_refs(current)
 
 
-def _ta_profile_cache_add_alias_keys(cache):
-    """Añade claves espejo para nombres equivalentes sin duplicar fichas reales.
+def _ta_profile_cache_is_alias_ref(item):
+    return isinstance(item, dict) and bool(item.get("alias_to")) and "raw_text" not in item
 
-    Ejemplos:
-    - FELIXAUGERALIASSIME / AUGERALIASSIMEF
-    - A. Zverev / Alexander Zverev
-    - nombre player / expected_player / ta_player_detected
 
-    No inventa fichas: solo permite encontrar las que ya existen en el JSON.
+def _ta_profile_cache_deref(cache, key_or_item, max_depth=5):
+    """Devuelve la ficha real si key_or_item es alias_to."""
+    if not isinstance(cache, dict):
+        return key_or_item if isinstance(key_or_item, dict) else None
+
+    if isinstance(key_or_item, str):
+        key = key_or_item
+        item = cache.get(key)
+    else:
+        item = key_or_item
+        key = None
+
+    seen = set()
+    for _ in range(max_depth):
+        if not isinstance(item, dict):
+            return item
+        alias_to = item.get("alias_to")
+        if not alias_to:
+            return item
+        alias_to = str(alias_to)
+        if alias_to in seen:
+            return item
+        seen.add(alias_to)
+        nxt = cache.get(alias_to)
+        if not isinstance(nxt, dict):
+            return item
+        item = nxt
+    return item
+
+
+def _ta_profile_cache_canonical_key_from_item(item, fallback_key=""):
+    if not isinstance(item, dict):
+        return _ta_profile_cache_key(fallback_key)
+    for nm in [item.get("player", ""), item.get("expected_player", ""), item.get("ta_player_detected", ""), fallback_key]:
+        kk = _ta_profile_cache_key(nm)
+        if kk:
+            return kk
+    return _ta_profile_cache_key(fallback_key)
+
+
+def _ta_profile_cache_compact_alias_refs(cache):
+    """Evita que una misma ficha TA se duplique entera bajo 3-5 alias.
+
+    Mantiene una entrada completa por jugador y convierte las demás claves en
+    referencias pequeñas. Esto baja muchísimo el tamaño del JSON.
     """
     if not isinstance(cache, dict):
         return {}
 
-    out = dict(cache)
-    for k, item in list(cache.items()):
+    # 1) Limpia backups anidados accidentales que puedan quedar como claves.
+    raw_cache = {}
+    for k, v in cache.items():
+        if k in ["schema", "app_version", "exported_at", "entries"] and not isinstance(v, dict):
+            continue
+        if k == "entries" and isinstance(v, dict):
+            nested = _ta_profile_cache_extract_entries(v)
+            if isinstance(nested, dict):
+                raw_cache.update(nested)
+            continue
+        raw_cache[k] = v
+
+    full_by_sig = {}
+    canonical_for_sig = {}
+    out = {}
+
+    def sig_for(item):
+        if not isinstance(item, dict):
+            return None
+        if _ta_profile_cache_is_alias_ref(item):
+            return None
+        raw = str(item.get("raw_text", "") or "")
+        player = _ta_profile_cache_key(item.get("player", "") or item.get("expected_player", ""))
+        if raw:
+            return "raw:" + hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
+        if player:
+            return "player:" + player
+        return None
+
+    # Primero elegimos clave canónica por ficha.
+    for k, item in raw_cache.items():
         if not isinstance(item, dict):
             continue
-        names = [
-            k,
-            item.get("player", ""),
-            item.get("expected_player", ""),
-            item.get("ta_player_detected", ""),
-        ]
-        raw = str(item.get("raw_text", "") or "")
-        # A veces la primera línea del raw_text trae el nombre TA exacto.
-        first_line = normalizar_texto(raw.splitlines()[0] if raw else "")
-        if first_line:
-            names.append(first_line)
+        if _ta_profile_cache_is_alias_ref(item):
+            continue
+        sig = sig_for(item)
+        if not sig:
+            continue
+        canon = _ta_profile_cache_canonical_key_from_item(item, k)
+        # Si la clave natural existe en el cache, preferirla.
+        if canon not in raw_cache and k:
+            canon = _ta_profile_cache_key(k) or canon
+        if sig not in canonical_for_sig:
+            canonical_for_sig[sig] = canon
+            full_by_sig[sig] = item.copy()
+        else:
+            # Conserva la ficha mejor si aparece duplicada.
+            old = full_by_sig[sig]
+            if _ta_profile_cache_should_replace(old, item, force_manual=False):
+                full_by_sig[sig] = item.copy()
 
-        for nm in names:
-            nm = normalizar_texto(nm)
-            if not nm:
-                continue
-            variants = [nm, _ta_alias_resolve(nm), apellido_inicial_key(nm)]
-            toks = tokens(nm)
-            if len(toks) >= 2:
-                first, last = toks[0], toks[-1]
-                variants.extend([
-                    f"{last} {first}",
-                    f"{last} {first[0]}",
-                    f"{first[0]} {last}",
-                    f"{last}{first[0]}",
-                    f"{first[0]}{last}",
-                ])
-            for v in variants:
-                kk = _ta_profile_cache_key(v)
-                if not kk:
-                    continue
-                # No pisar una ficha distinta ya existente.
-                out.setdefault(kk, item)
+    # Escribe fichas completas una sola vez.
+    for sig, canon in canonical_for_sig.items():
+        item = full_by_sig[sig].copy()
+        out[canon] = item
+
+    # Convierte claves duplicadas a alias_to.
+    for k, item in raw_cache.items():
+        kk = _ta_profile_cache_key(k)
+        if not kk:
+            continue
+        if isinstance(item, dict) and _ta_profile_cache_is_alias_ref(item):
+            target = _ta_profile_cache_key(item.get("alias_to", ""))
+            if target:
+                out.setdefault(kk, {"alias_to": target, "player": item.get("player", ""), "source": "Alias"})
+            continue
+        sig = sig_for(item)
+        if sig and sig in canonical_for_sig:
+            canon = canonical_for_sig[sig]
+            if kk != canon:
+                pname = item.get("player", "") or item.get("expected_player", "") if isinstance(item, dict) else ""
+                out[kk] = {"alias_to": canon, "player": pname, "source": "Alias"}
+        elif isinstance(item, dict):
+            out[kk] = item.copy()
+
     return out
 
 
@@ -11864,7 +11940,7 @@ def _ta_profile_cache_load_from_disk_once():
                 continue
             with open(path, "r", encoding="utf-8") as f:
                 raw_data = json.load(f)
-            data = _ta_profile_cache_add_alias_keys(_ta_profile_cache_extract_entries(raw_data))
+            data = _ta_profile_cache_extract_entries(raw_data)
             if isinstance(data, dict) and len(data) > best_size:
                 best_data = data
                 best_path = path
@@ -11881,25 +11957,30 @@ def _ta_profile_cache_load(force_reload=False):
     # cada vez que se analiza una lista o se abre el backup/uploader.
     if force_reload or "ta_profile_cache_memory" not in st.session_state:
         st.session_state["ta_profile_cache_memory"] = _ta_profile_cache_load_from_disk_once()
-    cache = _ta_profile_cache_add_alias_keys(_ta_profile_cache_extract_entries(st.session_state.get("ta_profile_cache_memory", {})))
-    if isinstance(cache, dict):
+    cache = _ta_profile_cache_extract_entries(st.session_state.get("ta_profile_cache_memory", {}))
+    if cache is not st.session_state.get("ta_profile_cache_memory"):
         st.session_state["ta_profile_cache_memory"] = cache
-        st.session_state["ta_profile_cache_loaded_keys"] = len(cache)
-        return cache
-    return {}
+        st.session_state["ta_profile_cache_loaded_keys"] = len(cache) if isinstance(cache, dict) else 0
+    return cache if isinstance(cache, dict) else {}
 
 
 def _ta_profile_cache_save(cache):
     import json
-    cache = cache or {}
+    cache = _ta_profile_cache_compact_alias_refs(cache or {})
     st.session_state["ta_profile_cache_memory"] = cache
     saved = []
     errors = []
     for path in ["ta_profile_cache.json", os.path.join("datos", "ta_profile_cache.json")]:
         try:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            payload = {
+                "schema": "tennis_ia_ta_profile_cache",
+                "app_version": APP_VERSION,
+                "exported_at": _ta_profile_cache_today(),
+                "entries": cache,
+            }
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(cache, f, ensure_ascii=False, indent=2)
+                json.dump(payload, f, ensure_ascii=False, indent=2)
             saved.append(path)
         except Exception as e:
             errors.append(f"{path}: {e}")
@@ -11943,12 +12024,12 @@ def _ta_profile_cache_import_merge_v234924(uploaded_bytes):
             raw = raw.decode("utf-8")
         data = json.loads(str(raw or "{}"))
 
-        # Soporta formato nuevo, formato antiguo y backups anidados.
+        # Soporta formato nuevo, antiguo y backups anidados.
         incoming = _ta_profile_cache_extract_entries(data) if isinstance(data, dict) else {}
         if not isinstance(incoming, dict) or not incoming:
             return False, "el JSON no contiene fichas TA"
 
-        current = _ta_profile_cache_load()
+        current = _ta_profile_cache_compact_alias_refs(_ta_profile_cache_load())
         if not isinstance(current, dict):
             current = {}
 
@@ -12186,6 +12267,9 @@ def _ta_profile_cache_find(player_name, allow_stale=False):
         if key and key in cache:
             item = cache[key]
             if isinstance(item, dict):
+                item = _ta_profile_cache_deref(cache, key)
+                if not isinstance(item, dict):
+                    continue
                 item = item.copy()
                 item["cache_key"] = key
                 item["match_score"] = 1.0
@@ -12198,6 +12282,7 @@ def _ta_profile_cache_find(player_name, allow_stale=False):
     # 2) Fuzzy robusto contra todos los nombres guardados.
     best_key, best_item, best_score, best_reason = "", None, 0.0, ""
     for k, item in cache.items():
+        item = _ta_profile_cache_deref(cache, k)
         if not isinstance(item, dict):
             continue
 
@@ -12374,16 +12459,34 @@ def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
         "expires_policy": "permanent_use_stale_only_warning",
     }
 
-    cache = _ta_profile_cache_load()
+    cache = _ta_profile_cache_compact_alias_refs(_ta_profile_cache_load())
+
+    # v23.50.6: guardar la ficha grande UNA sola vez.
+    # Las demás claves son alias pequeños para no multiplicar el raw_text.
+    canonical_key = _ta_profile_cache_canonical_key_from_item(new_item, keys[0] if keys else expected_player)
+    if not canonical_key:
+        canonical_key = keys[0]
+    old_item = _ta_profile_cache_deref(cache, canonical_key) if canonical_key in cache else cache.get(canonical_key)
+
     replaced = 0
     skipped = 0
+    if _ta_profile_cache_should_replace(old_item, new_item, force_manual=True):
+        cache[canonical_key] = new_item.copy()
+        replaced += 1
+    else:
+        skipped += 1
+
     for key in keys:
-        old_item = cache.get(key)
-        if _ta_profile_cache_should_replace(old_item, new_item, force_manual=True):
-            cache[key] = new_item.copy()
-            replaced += 1
-        else:
-            skipped += 1
+        if key == canonical_key:
+            continue
+        # Si la clave ya contiene una ficha mejor propia, no la pisamos.
+        old_alias_item = cache.get(key)
+        if isinstance(old_alias_item, dict) and not _ta_profile_cache_is_alias_ref(old_alias_item):
+            if not _ta_profile_cache_should_replace(old_alias_item, new_item, force_manual=True):
+                skipped += 1
+                continue
+        cache[key] = {"alias_to": canonical_key, "player": new_item.get("player", player or expected_player), "source": "Alias"}
+        replaced += 1
 
     ok_save, info = _ta_profile_cache_save(cache)
     if not ok_save:
