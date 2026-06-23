@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.50.1 Manual + OCR", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.50.3-ta-cache-entries-fix"
+APP_VERSION = "v23.50.4-ta-cache-flatten-fix"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11766,21 +11766,71 @@ def _ta_profile_cache_path():
 
 
 def _ta_profile_cache_extract_entries(data):
-    """Devuelve SOLO las fichas reales del JSON TA.
+    """Devuelve SOLO fichas reales del JSON TA, aunque el backup venga anidado.
 
-    Soporta los dos formatos que ya usa la app:
-    1) formato directo: {PLAYERKEY: ficha, ...}
-    2) formato export/backup: {schema, app_version, exported_at, entries:{PLAYERKEY: ficha, ...}}
+    Arregla dos casos detectados:
+    1) {schema, app_version, exported_at, entries:{PLAYERKEY: ficha}}
+    2) backups anidados varias veces: entries -> entries -> entries,
+       conservando también jugadores que estén como hermanos de otro entries.
 
-    El fallo de 'Claves caché = 4' venía de leer el formato backup como si las
-    4 claves schema/app_version/exported_at/entries fueran fichas.
+    No toca cálculos ni motor Over: solo normaliza la lectura de caché TA.
     """
     if not isinstance(data, dict):
         return {}
-    entries = data.get("entries")
-    if isinstance(entries, dict):
-        return entries
-    return data
+
+    meta_keys = {"schema", "app_version", "exported_at", "entries"}
+    out = {}
+
+    def is_profile_dict(v):
+        if not isinstance(v, dict):
+            return False
+        profile_markers = {
+            "player", "expected_player", "raw_text", "uploaded_at",
+            "source", "tennisabstract", "flashscore", "ta_player_detected",
+            "recent_profile", "largos", "palizas"
+        }
+        return bool(profile_markers & set(v.keys()))
+
+    def walk(obj, depth=0):
+        if not isinstance(obj, dict) or depth > 20:
+            return
+        for k, v in obj.items():
+            if k == "entries" and isinstance(v, dict):
+                walk(v, depth + 1)
+                continue
+            if k in meta_keys:
+                continue
+            if is_profile_dict(v):
+                kk = _ta_profile_cache_key(k) if "_ta_profile_cache_key" in globals() else limpiar(k)
+                if kk:
+                    out[kk] = v
+                # Añade también claves robustas por nombres internos de la ficha.
+                for nm in [v.get("player", ""), v.get("expected_player", ""), v.get("ta_player_detected", "")]:
+                    nm = normalizar_texto(nm)
+                    if not nm:
+                        continue
+                    for nm2 in [nm, _ta_alias_resolve(nm), apellido_inicial_key(nm)]:
+                        kk2 = _ta_profile_cache_key(nm2) if "_ta_profile_cache_key" in globals() else limpiar(nm2)
+                        if kk2:
+                            out.setdefault(kk2, v)
+            elif isinstance(v, dict):
+                # Por seguridad, si hubiera otro contenedor interno, seguimos bajando.
+                walk(v, depth + 1)
+
+    walk(data)
+
+    if out:
+        return out
+
+    # Fallback para cachés antiguas directas sin marcadores claros.
+    clean = {}
+    for k, v in data.items():
+        if k in meta_keys or not isinstance(v, dict):
+            continue
+        kk = _ta_profile_cache_key(k) if "_ta_profile_cache_key" in globals() else limpiar(k)
+        if kk:
+            clean[kk] = v
+    return clean
 
 
 def _ta_profile_cache_load_from_disk_once():
@@ -11872,8 +11922,8 @@ def _ta_profile_cache_import_merge_v234924(uploaded_bytes):
             raw = raw.decode("utf-8")
         data = json.loads(str(raw or "{}"))
 
-        # Soporta formato nuevo {entries:{...}} y formato antiguo directo {KEY:{...}}.
-        incoming = data.get("entries", data) if isinstance(data, dict) else {}
+        # Soporta formato directo, backup y backup anidado.
+        incoming = _ta_profile_cache_extract_entries(data) if isinstance(data, dict) else {}
         if not isinstance(incoming, dict) or not incoming:
             return False, "el JSON no contiene fichas TA"
 
