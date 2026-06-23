@@ -7,9 +7,9 @@ import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
-st.set_page_config(page_title="Tennis IA v23.52 Excel práctico + TA", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.54 TA cobertura total", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.52.0-excel-practico-ta-adn"
+APP_VERSION = "v23.58.0-ta-alias-oconnell"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -76,6 +76,44 @@ def similitud_nombre(a, b):
 TA_ALIASES_PATH = os.path.join("datos", "ta_aliases.json")
 
 
+
+# =========================================================
+# v23.58.0 TA BUILTIN ALIAS FIXES
+# Alias internos para abreviaturas habituales de SofaScore/Flashscore.
+# No toca pronósticos ni motor Over: solo ayuda a encontrar la ficha TA real.
+# =========================================================
+
+def _ta_builtin_aliases_v23580():
+    pairs = {
+        # Caso detectado por Richy: el feed trae C. O'Connell, TA usa Christopher O'Connell.
+        "C. O'Connell": "Christopher O'Connell",
+        "C O'Connell": "Christopher O'Connell",
+        "C Oconnell": "Christopher O'Connell",
+        "O'Connell C": "Christopher O'Connell",
+        "Oconnell C": "Christopher O'Connell",
+
+        # Alias útiles ya vistos en listas anteriores.
+        "Y. Bu": "Bu Yunchaokete",
+        "Y Bu": "Bu Yunchaokete",
+        "Bu Y": "Bu Yunchaokete",
+        "R. Carballes Baena": "Roberto Carballes Baena",
+        "R Carballes Baena": "Roberto Carballes Baena",
+        "Carballes Baena R": "Roberto Carballes Baena",
+        "A. Moro Canas": "Alejandro Moro Canas",
+        "A Moro Canas": "Alejandro Moro Canas",
+        "S. Kwon": "Soon Woo Kwon",
+        "S Kwon": "Soon Woo Kwon",
+        "T. Kokkinakis": "Thanasi Kokkinakis",
+        "T Kokkinakis": "Thanasi Kokkinakis",
+    }
+    out = {}
+    for k, v in pairs.items():
+        kk = limpiar(k)
+        vv = normalizar_texto(v)
+        if kk and vv:
+            out[kk] = vv
+    return out
+
 def _ta_alias_ensure_dir():
     try:
         os.makedirs(os.path.dirname(TA_ALIASES_PATH), exist_ok=True)
@@ -136,7 +174,17 @@ def _ta_alias_resolve(name):
     raw = normalizar_texto(name)
     if not raw:
         return raw
-    aliases = _ta_alias_load_cached()
+    # Primero alias internos conocidos; después alias manuales del usuario.
+    # Si el usuario guarda uno manual, tiene prioridad sobre el interno.
+    aliases = {}
+    try:
+        aliases.update(_ta_builtin_aliases_v23580())
+    except Exception:
+        pass
+    try:
+        aliases.update(_ta_alias_load_cached())
+    except Exception:
+        pass
     seen = set()
     cur = raw
     # Permite alias encadenados sin bucles.
@@ -937,6 +985,107 @@ def apellido_inicial_key(nombre):
     return f"{surname}_{initial}" if surname and initial else ""
 
 
+
+# =========================================================
+# v23.54.0 TA NAME SIGNATURES / COBERTURA TOTAL
+# Mejora solo la capa de nombres/fichas TennisAbstract.
+# No toca el motor Over, simulación ni fórmulas de mercados.
+# =========================================================
+
+def _ta_name_signature_keys_v23540(nombre):
+    """Claves robustas para emparejar nombres abreviados con fichas TA.
+
+    Arregla casos habituales:
+    - C. O'Connell <-> Christopher O'Connell  => CONNELL_C / OCONNELL_C
+    - Y. Bu <-> Bu Yunchaokete               => BU_Y
+    - Carballes Baena R. / R. Carballes Baena
+    - nombres con apóstrofes, guiones, acentos o apellido compuesto.
+
+    Estas claves SOLO se usan para resolver fichas/alias TA. No cambian picks.
+    """
+    toks = [limpiar(t) for t in tokens(nombre) if limpiar(t)]
+    out = []
+
+    def add(surname, initial):
+        surname = limpiar(surname)
+        initial = limpiar(initial)[:1]
+        if surname and initial:
+            k = f"{surname}_{initial}"
+            if k not in out:
+                out.append(k)
+
+    if len(toks) < 2:
+        return out
+
+    first = toks[0]
+    last = toks[-1]
+
+    # Formato occidental normal: Alexander Zverev / A. Zverev -> ZVEREV_A
+    add(last, first)
+
+    # Formato apellido primero: Bu Yunchaokete / Y. Bu -> BU_Y
+    add(first, last)
+
+    # Si el último token es una inicial: Bublik A. / Carballes Baena R.
+    if len(last) == 1:
+        add(first, last)
+        if len(toks) >= 3:
+            add("".join(toks[:-1]), last)      # CARBALLESBAENA_R
+            add(toks[-2], last)                # BAENA_R
+
+    # Si el primero es una inicial: C. O'Connell / R. Carballes Baena
+    if len(first) == 1:
+        add(last, first)                        # CONNELL_C / BAENA_R
+        if len(toks) >= 3:
+            add("".join(toks[1:]), first)      # OCONNELL_C / CARBALLESBAENA_R
+            add(toks[1], first)                # CARBALLES_R como apoyo suave
+
+    # Apellido compuesto en nombre completo: Roberto Carballes Baena -> CARBALLESBAENA_R y BAENA_R
+    if len(toks) >= 3 and len(first) > 1 and len(last) > 1:
+        add("".join(toks[1:]), first)
+        add(toks[-2] + toks[-1], first)
+
+    return out
+
+
+def _ta_name_all_lookup_keys_v23540(nombre):
+    """Nombres/claves que conviene guardar y buscar en caché TA."""
+    raw = normalizar_texto(nombre)
+    vals = []
+    for nm in [raw, _ta_alias_resolve(raw)]:
+        nm = normalizar_texto(nm)
+        if nm and nm not in vals:
+            vals.append(nm)
+        ai = apellido_inicial_key(nm)
+        if ai and ai not in vals:
+            vals.append(ai)
+        for sig in _ta_name_signature_keys_v23540(nm):
+            if sig and sig not in vals:
+                vals.append(sig)
+    return vals
+
+
+def _ta_profile_is_ta_real_like_v23540(item):
+    """True si la entrada parece ficha TA real/manual TA, no Auto Recent local."""
+    if not isinstance(item, dict) or not str(item.get("raw_text", "") or "").strip():
+        return False
+    kind, _label = _ta_profile_source_kind_v23485(item) if '_ta_profile_source_kind_v23485' in globals() else ("", "")
+    src = str(item.get("source", "") or "")
+    raw = str(item.get("raw_text", "") or "")[:2500]
+    low = (src + "\n" + raw).lower()
+    if "auto recent" in low or "auto challenger recent" in low or "historico local" in low or "histórico local" in low:
+        return False
+    try:
+        if int(item.get("ta_full_score", 0) or 0) >= 3:
+            return True
+    except Exception:
+        pass
+    if kind == "ta":
+        return True
+    if kind == "manual" and ("tennis abstract" in low or "tennisabstract" in low or "recent results" in low or "last 52 weeks" in low):
+        return True
+    return False
+
 def surname_key(nombre):
     toks = tokens(nombre)
     if not toks:
@@ -1723,11 +1872,17 @@ def _ta_match_urls_from_elo_leaderboard_v23493(name, circuito="ATP", min_score=0
                 if not player or not pu:
                     continue
                 sc = max(similitud_nombre(target, player), similitud_nombre(name, player))
-                # Refuerzo apellido+inicial para nombres abreviados tipo N. Kyrgios.
+                # Refuerzo apellido+inicial y firmas robustas para abreviados/orden asiático.
                 try:
+                    sig1 = set(_ta_name_signature_keys_v23540(target) + _ta_name_signature_keys_v23540(name))
+                    sig2 = set(_ta_name_signature_keys_v23540(player))
                     ai1 = apellido_inicial_key(target)
                     ai2 = apellido_inicial_key(player)
-                    if ai1 and ai2 and ai1 == ai2:
+                    if ai1:
+                        sig1.add(ai1)
+                    if ai2:
+                        sig2.add(ai2)
+                    if sig1 and sig2 and (sig1 & sig2):
                         sc = max(sc, 0.99)
                 except Exception:
                     pass
@@ -12440,7 +12595,7 @@ def _ta_profile_cache_import_merge_v234924(uploaded_bytes):
                 nm = normalizar_texto(nm)
                 if not nm:
                     continue
-                for nm2 in [nm, _ta_alias_resolve(nm), apellido_inicial_key(nm)]:
+                for nm2 in _ta_name_all_lookup_keys_v23540(nm):
                     kk = _ta_profile_cache_key(nm2)
                     if kk and kk not in keys:
                         keys.append(kk)
@@ -12644,9 +12799,10 @@ def _ta_profile_cache_find(player_name, allow_stale=False):
     alias_name = _ta_alias_resolve(raw_name)
     search_names = []
     for nm in [raw_name, alias_name]:
-        nm = normalizar_texto(nm)
-        if nm and nm not in search_names:
-            search_names.append(nm)
+        for nm2 in _ta_name_all_lookup_keys_v23540(nm):
+            nm2 = normalizar_texto(nm2)
+            if nm2 and nm2 not in search_names:
+                search_names.append(nm2)
 
     # 1) Exacto por clave directa y clave alias.
     for nm in search_names:
@@ -12684,20 +12840,32 @@ def _ta_profile_cache_find(player_name, allow_stale=False):
             item.get("expected_player", ""),
             item.get("ta_player_detected", ""),
         ]
-        # Quita vacíos y duplicados manteniendo orden.
+        # Quita vacíos y duplicados manteniendo orden, añadiendo firmas robustas.
         clean_candidates = []
         for cand in candidates:
-            cand = normalizar_texto(cand)
-            if cand and cand not in clean_candidates:
-                clean_candidates.append(cand)
+            for cand2 in _ta_name_all_lookup_keys_v23540(cand):
+                cand2 = normalizar_texto(cand2)
+                if cand2 and cand2 not in clean_candidates:
+                    clean_candidates.append(cand2)
+
+        search_sigs = set()
+        for nm_sig in search_names:
+            search_sigs.update(_ta_name_signature_keys_v23540(nm_sig))
+            ai = apellido_inicial_key(nm_sig)
+            if ai:
+                search_sigs.add(ai)
 
         for nm in search_names:
             for cand in clean_candidates:
                 sc, reason = nombre_score_quality_direct(nm, cand)
-                # Refuerzo adicional para inicial + apellido.
-                if apellido_inicial_key(nm) and apellido_inicial_key(cand) and apellido_inicial_key(nm) == apellido_inicial_key(cand):
+                cand_sigs = set(_ta_name_signature_keys_v23540(cand))
+                ai_c = apellido_inicial_key(cand)
+                if ai_c:
+                    cand_sigs.add(ai_c)
+                # Refuerzo adicional para inicial + apellido y apellidos en orden asiático/compuesto.
+                if search_sigs and cand_sigs and (search_sigs & cand_sigs):
                     sc = max(sc, 0.995)
-                    reason = "apellido+inicial cache"
+                    reason = "firma nombre cache"
                 if sc > best_score:
                     best_key, best_item, best_score, best_reason = k, item, float(sc), reason
 
@@ -12800,12 +12968,10 @@ def _ta_profile_cache_upsert_from_raw(expected_player, raw_text, parsed=None):
     keys = []
     key_names = []
     for nm in [expected_player, player, _ta_alias_resolve(expected_player), _ta_alias_resolve(player)]:
-        nm = normalizar_texto(nm)
-        if nm and nm not in key_names:
-            key_names.append(nm)
-        ai = apellido_inicial_key(nm)
-        if ai and ai not in key_names:
-            key_names.append(ai)
+        for nm2 in _ta_name_all_lookup_keys_v23540(nm):
+            nm2 = normalizar_texto(nm2)
+            if nm2 and nm2 not in key_names:
+                key_names.append(nm2)
 
     for nm in key_names:
         k = _ta_profile_cache_key(nm)
@@ -13144,9 +13310,11 @@ def _ta_match_profile_urls_v23432(name):
     name0 = normalizar_texto(name)
     name1 = _ta_alias_resolve(name0)
     for nm in [name1, name0]:
-        for u in _ta_match_urls_from_elo_leaderboard_v23493(nm, circuito="ATP", min_score=0.88):
-            if u and u not in urls:
-                urls.append(u)
+        # Intentar ATP y WTA: si el circuito no se pasa aquí, así no dejamos WTA fuera.
+        for circ_lookup in ["ATP", "WTA"]:
+            for u in _ta_match_urls_from_elo_leaderboard_v23493(nm, circuito=circ_lookup, min_score=0.88):
+                if u and u not in urls:
+                    urls.append(u)
 
     # 1) Generador existente.
     for nm in [name1, name0]:
@@ -13164,13 +13332,19 @@ def _ta_match_profile_urls_v23432(name):
             continue
         title_tokens = [str(t).title() for t in toks]
         variants = []
-        variants.append("".join(title_tokens))              # AlexanderZverev
+        variants.append("".join(title_tokens))              # AlexanderZverev / BuYunchaokete
         variants.append("-".join(title_tokens))             # Alexander-Zverev
         variants.append("".join(toks).title())              # NZverev / NKyrgios si abreviado
-        # Si viene "Apellido Inicial" o "Inicial Apellido", probamos apellido+inicial, pero no como única opción.
         if len(toks) >= 2:
+            # Orden invertido por si TA usa nombre-apellido y el feed trae apellido-nombre, o al revés.
+            variants.append("".join([str(t).title() for t in toks[::-1]]))
+            variants.append("-".join([str(t).title() for t in toks[::-1]]))
             variants.append(toks[-1].title() + toks[0][0].title())
             variants.append(toks[0][0].title() + toks[-1].title())
+        if len(toks) >= 3:
+            # Apellidos compuestos / O'Connell: ChristopherOConnell, OConnellC, etc.
+            variants.append(("".join(toks[1:]) + toks[0][0]).title())
+            variants.append((toks[0][0] + "".join(toks[1:])).title())
         for v in variants:
             if not v:
                 continue
@@ -13275,12 +13449,13 @@ def _ta_match_players_from_extra_candidates_v23432(cand_df):
     return out
 
 
-def _ta_match_cache_status_counts_v23432(players):
+def _ta_match_cache_status_counts_v23432(players, require_ta_real=False):
     ok, missing = [], []
     for n in players or []:
         canon = _ta_alias_resolve(n)
-        item = _ta_profile_cache_find(canon) or _ta_profile_cache_find(n)
-        if item and str(item.get("raw_text", "")).strip():
+        item = _ta_profile_cache_find(canon, allow_stale=True) or _ta_profile_cache_find(n, allow_stale=True)
+        has_raw = bool(isinstance(item, dict) and str(item.get("raw_text", "") or "").strip())
+        if has_raw and (not require_ta_real or _ta_profile_is_ta_real_like_v23540(item)):
             ok.append(n)
         else:
             missing.append(n)
@@ -13510,6 +13685,382 @@ def _ta_match_cache_audit_summary_v23481(players):
         "ta_real": ta_real, "auto_recent": auto_recent, "manual": manual, "otros": otros
     }
 
+
+
+
+def _ta_extract_matches_from_df_v23550(df):
+    """Extrae partidos únicos J1 vs J2 de cualquier tabla de análisis.
+    v23.56 añade ranking/mercado para priorizar fichas faltantes en TOP APUESTAS.
+    Solo visualiza cobertura TA; no cambia motor Over ni recomendaciones.
+    """
+    out, seen = [], set()
+    try:
+        if df is None or getattr(df, "empty", True) or "Partido" not in df.columns:
+            return out
+        for idx, row in df.iterrows():
+            partido = str(row.get("Partido", "") or "").strip()
+            if " vs " not in partido:
+                continue
+            p1, p2 = [x.strip() for x in partido.split(" vs ", 1)]
+            if not p1 or not p2:
+                continue
+            key = limpiar(f"{p1} vs {p2}")
+            if key in seen:
+                continue
+            seen.add(key)
+            rank_num = _ta_parse_rank_num_v23560(row.get("Ranking apuesta", idx + 1))
+            if not rank_num:
+                rank_num = int(len(out) + 1)
+            out.append({
+                "idx": idx,
+                "orden": int(len(out) + 1),
+                "rank_num": int(rank_num),
+                "ranking": str(row.get("Ranking apuesta", f"#{rank_num}") or f"#{rank_num}"),
+                "prioridad": str(row.get("Prioridad apuesta", "") or ""),
+                "score": row.get("Score apuesta", ""),
+                "accion": str(row.get("Acción", row.get("🎯 Acción final", "")) or ""),
+                "mercado": str(row.get("Mercado", row.get("🎯 Mercado más probable", row.get("Mercado recomendado", ""))) or ""),
+                "prob": str(row.get("Prob.", row.get("🎯 Prob máxima", row.get("Prob mercado recomendado", ""))) or ""),
+                "partido": f"{p1} vs {p2}",
+                "j1": p1,
+                "j2": p2,
+            })
+    except Exception:
+        return out
+    return out
+
+
+def _ta_parse_rank_num_v23560(value):
+    try:
+        m = re.search(r"(\d+)", str(value or ""))
+        return int(m.group(1)) if m else 0
+    except Exception:
+        return 0
+
+
+def _ta_priority_bucket_v23560(row, top_n=12):
+    """Agrupa partidos para saber qué fichas atacar primero."""
+    try:
+        rank_num = int(row.get("Ranking num", row.get("rank_num", 9999)) or 9999)
+    except Exception:
+        rank_num = 9999
+    action_txt = limpiar(str(row.get("Acción", "") or ""))
+    prio_txt = limpiar(str(row.get("Prioridad apuesta", "") or ""))
+    mercado_txt = limpiar(str(row.get("Mercado", "") or ""))
+    if rank_num <= int(top_n) or "jugar" in action_txt or "jugar" in prio_txt:
+        return "🚨 TOP APUESTAS"
+    if "over" in mercado_txt or rank_num <= max(int(top_n) + 8, 20):
+        return "🟡 Partidos útiles"
+    return "⚪ Secundarios"
+
+
+def _ta_player_coverage_info_v23550(name):
+    """Devuelve estado visual de un jugador contra caché TA.
+    Distingue TA Real/Manual de Auto Recent para que no parezca ficha completa.
+    """
+    detected = normalizar_texto(name)
+    canon = _ta_alias_resolve(detected)
+    item = _ta_profile_cache_find(canon, allow_stale=True) or _ta_profile_cache_find(detected, allow_stale=True)
+    alias_used = canon != detected
+    base = {
+        "detected": detected,
+        "canon": canon,
+        "alias_used": alias_used,
+        "found_any": False,
+        "strong": False,
+        "kind": "sin",
+        "label": "🔴 Sin ficha",
+        "estado": "🔴 Sin ficha",
+        "quality": "⚪ Sin datos",
+        "recent_used": 0,
+        "season_total": 0,
+        "reference_n": 0,
+        "age": "",
+        "update": "🔴 Sin ficha",
+        "cache_key": "",
+        "player_cache": "",
+    }
+    if not isinstance(item, dict) or not str(item.get("raw_text", "") or "").strip():
+        return base
+    try:
+        kind, label = _ta_profile_source_kind_v23485(item)
+    except Exception:
+        kind, label = "otro", "⚪ Perfil guardado"
+    try:
+        detail = _ta_profile_audit_detail_v23483(item)
+    except Exception:
+        detail = {}
+    try:
+        strong = bool(_ta_profile_is_ta_real_like_v23540(item)) or kind in ["ta", "manual"]
+    except Exception:
+        strong = kind in ["ta", "manual"]
+    ref_n = int((detail or {}).get("reference_n", 0) or 0)
+    recent_used = int((detail or {}).get("recent_used", 0) or 0)
+    season_total = int((detail or {}).get("season_total", 0) or 0)
+    if strong:
+        estado = "🟢 TA Real/Manual"
+    elif kind == "auto":
+        estado = "🟠 Auto Recent"
+    else:
+        estado = "🟡 Perfil parcial"
+    try:
+        _status, update_signal = _ta_profile_cache_status_with_age_v234925(item, estado)
+    except Exception:
+        update_signal = _ta_profile_cache_update_signal_v234925(item)[0] if '_ta_profile_cache_update_signal_v234925' in globals() else ""
+    base.update({
+        "found_any": True,
+        "strong": bool(strong),
+        "kind": kind,
+        "label": label,
+        "estado": estado,
+        "quality": (detail or {}).get("quality", ""),
+        "recent_used": recent_used,
+        "season_total": season_total,
+        "reference_n": ref_n,
+        "age": _ta_profile_cache_age_label(item.get("uploaded_at", "")),
+        "update": update_signal,
+        "cache_key": item.get("cache_key", ""),
+        "player_cache": item.get("player", ""),
+    })
+    return base
+
+
+def _ta_build_match_coverage_rows_v23550(df):
+    matches = _ta_extract_matches_from_df_v23550(df)
+    rows = []
+    for m in matches:
+        j1 = _ta_player_coverage_info_v23550(m.get("j1", ""))
+        j2 = _ta_player_coverage_info_v23550(m.get("j2", ""))
+        strong_n = int(bool(j1.get("strong"))) + int(bool(j2.get("strong")))
+        any_n = int(bool(j1.get("found_any"))) + int(bool(j2.get("found_any")))
+        missing_players = []
+        weak_players = []
+        for player_name, info in [(m.get("j1", ""), j1), (m.get("j2", ""), j2)]:
+            if not info.get("strong"):
+                if info.get("found_any"):
+                    weak_players.append(f"{player_name} (mejorar {info.get('estado','')})")
+                else:
+                    missing_players.append(player_name)
+        if strong_n == 2:
+            estado_partido = "🟢 Completo"
+            orden_estado = 0
+            faltan = ""
+            siguiente = "Listo para TA"
+        elif any_n == 0:
+            estado_partido = "🔴 Pendiente"
+            orden_estado = 2
+            faltan = " / ".join([m.get("j1", ""), m.get("j2", "")])
+            siguiente = "Buscar las 2 fichas"
+        else:
+            estado_partido = "🟡 Parcial"
+            orden_estado = 1
+            faltan = " · ".join([x for x in (missing_players + weak_players) if x])
+            siguiente = "Completar/mejorar ficha pendiente"
+        rows.append({
+            "_orden_estado": orden_estado,
+            "Orden lista": int(m.get("orden", 0) or 0),
+            "Ranking num": int(m.get("rank_num", 9999) or 9999),
+            "Ranking": m.get("ranking", ""),
+            "Prioridad apuesta": m.get("prioridad", ""),
+            "Score apuesta": m.get("score", ""),
+            "Acción": m.get("accion", ""),
+            "Mercado": m.get("mercado", ""),
+            "Prob.": m.get("prob", ""),
+            "Partido": m.get("partido", ""),
+            "J1": j1.get("detected", ""),
+            "Estado J1": j1.get("estado", ""),
+            "Fuente J1": j1.get("label", ""),
+            "Datos J1": int(j1.get("reference_n", 0) or 0),
+            "J2": j2.get("detected", ""),
+            "Estado J2": j2.get("estado", ""),
+            "Fuente J2": j2.get("label", ""),
+            "Datos J2": int(j2.get("reference_n", 0) or 0),
+            "Estado partido": estado_partido,
+            "Falta / revisar": faltan,
+            "Jugadores sin TA fuerte": "\n".join([x for x in (missing_players + weak_players) if x]),
+            "Siguiente paso": siguiente,
+            "Alias usados": "Sí" if (j1.get("alias_used") or j2.get("alias_used")) else "No",
+            "Jugador ficha J1": j1.get("player_cache", ""),
+            "Jugador ficha J2": j2.get("player_cache", ""),
+            "Actualización J1": j1.get("update", ""),
+            "Actualización J2": j2.get("update", ""),
+        })
+    return rows
+
+
+def _ta_unique_players_from_rows_v23560(rows_df):
+    out, seen = [], set()
+    try:
+        for _, r in rows_df.iterrows():
+            for col_name, state_col in [("J1", "Estado J1"), ("J2", "Estado J2")]:
+                name = str(r.get(col_name, "") or "").strip()
+                state = str(r.get(state_col, "") or "")
+                if name and not state.startswith("🟢"):
+                    k = limpiar(name)
+                    if k and k not in seen:
+                        seen.add(k); out.append(name)
+    except Exception:
+        pass
+    return out
+
+
+def _ta_textarea_copy_players_v23560(label, players, key):
+    if not players:
+        return
+    st.text_area(label, value="\n".join(players), height=min(220, max(90, 22 * len(players))), key=key)
+
+
+def render_ta_list_coverage_panel_v23550(df, expanded=True):
+    """Panel visual para saber si todos los jugadores de todos los partidos tienen ficha TA.
+    v23.56 separa faltantes por TOP APUESTAS, parciales y secundarios.
+    Este bloque solo diagnostica cobertura; no toca motor Over.
+    """
+    try:
+        if df is None or getattr(df, "empty", True) or "Partido" not in df.columns:
+            return
+        rows = _ta_build_match_coverage_rows_v23550(df)
+        if not rows:
+            return
+        cov_df = pd.DataFrame(rows)
+        total_matches = int(len(cov_df))
+        complete_matches = int((cov_df["Estado partido"] == "🟢 Completo").sum())
+        partial_matches = int((cov_df["Estado partido"] == "🟡 Parcial").sum())
+        pending_matches = int((cov_df["Estado partido"] == "🔴 Pendiente").sum())
+
+        players = []
+        for r in rows:
+            players.append((r.get("J1", ""), r.get("Estado J1", ""), r.get("Fuente J1", "")))
+            players.append((r.get("J2", ""), r.get("Estado J2", ""), r.get("Fuente J2", "")))
+        seen = set(); unique_players = []
+        for name, estado, fuente in players:
+            k = limpiar(name)
+            if k and k not in seen:
+                seen.add(k); unique_players.append((name, estado, fuente))
+        total_players = len(unique_players)
+        strong_players = sum(1 for _n, estado, _fuente in unique_players if str(estado).startswith("🟢"))
+        any_players = sum(1 for _n, estado, _fuente in unique_players if not str(estado).startswith("🔴"))
+        cov_strong = (100.0 * strong_players / total_players) if total_players else 0.0
+        cov_any = (100.0 * any_players / total_players) if total_players else 0.0
+        cov_matches = (100.0 * complete_matches / total_matches) if total_matches else 0.0
+
+        if cov_matches >= 80 and cov_strong >= 85:
+            readiness = "🟢 Lista lista para analizar con TA"
+            readiness_msg = "Cobertura fuerte: puedes fiarte mucho más del cruce TA partido a partido."
+        elif cov_matches >= 50 or cov_strong >= 65:
+            readiness = "🟡 Lista casi lista"
+            readiness_msg = "Hay base, pero conviene completar los parciales/pendientes antes de buscar Over 20.5/21.5."
+        else:
+            readiness = "🔴 Lista todavía no lista"
+            readiness_msg = "Faltan demasiadas fichas TA reales/manuales. Prioriza completar jugadores antes de pronosticar."
+
+        st.subheader("🧩 Cobertura TA de toda la lista")
+        st.caption("Semáforo visual por partido: 🟢 los dos jugadores tienen TA Real/Manual · 🟡 falta o hay Auto Recent/parcial · 🔴 faltan las dos fichas. No toca el motor Over.")
+        with st.expander("Ver cobertura TennisAbstract partido por partido", expanded=expanded):
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Partidos", total_matches)
+            m2.metric("🟢 Completos", complete_matches)
+            m3.metric("🟡 Parciales", partial_matches)
+            m4.metric("🔴 Pendientes", pending_matches)
+            m5.metric("Jugadores TA Real", f"{strong_players}/{total_players}")
+
+            st.markdown(f"**{readiness}**  ")
+            st.caption(readiness_msg)
+            st.progress(max(0.0, min(1.0, cov_strong / 100.0)), text=f"Cobertura TA Real/Manual: {cov_strong:.1f}% · Encontrados de cualquier tipo: {cov_any:.1f}%")
+            st.progress(max(0.0, min(1.0, cov_matches / 100.0)), text=f"Partidos completos 2/2: {cov_matches:.1f}%")
+
+            top_default = min(12, total_matches) if total_matches else 1
+            top_n = st.slider(
+                "Cuántos partidos trato como TOP APUESTAS para completar fichas primero",
+                min_value=3,
+                max_value=max(3, min(25, total_matches)),
+                value=max(3, top_default),
+                step=1,
+                key="ta_list_top_n_v23560",
+                help="La app usará este corte para separar las fichas urgentes de las secundarias.",
+            )
+            cov_df["Grupo prioridad"] = cov_df.apply(lambda r: _ta_priority_bucket_v23560(r, top_n=top_n), axis=1)
+            cov_df["Falta TA fuerte"] = cov_df["Estado partido"] != "🟢 Completo"
+
+            top_bad = cov_df[(cov_df["Grupo prioridad"] == "🚨 TOP APUESTAS") & (cov_df["Falta TA fuerte"])].copy()
+            partial_bad = cov_df[(cov_df["Estado partido"] == "🟡 Parcial") & (cov_df["Grupo prioridad"] != "🚨 TOP APUESTAS")].copy()
+            secondary_bad = cov_df[(cov_df["Estado partido"] == "🔴 Pendiente") & (cov_df["Grupo prioridad"] != "🚨 TOP APUESTAS")].copy()
+
+            top_players = _ta_unique_players_from_rows_v23560(top_bad)
+            partial_players = _ta_unique_players_from_rows_v23560(partial_bad)
+            secondary_players = _ta_unique_players_from_rows_v23560(secondary_bad)
+
+            ordered_missing, ordered_seen = [], set()
+            for group in [top_players, partial_players, secondary_players]:
+                for p in group:
+                    k = limpiar(p)
+                    if k and k not in ordered_seen:
+                        ordered_seen.add(k); ordered_missing.append(p)
+            st.session_state["ta_priority_missing_players_v23560"] = ordered_missing
+            st.session_state["ta_list_all_players_v23560"] = [n for n, _estado, _fuente in unique_players]
+
+            st.markdown("### 🎯 Prioridad real de fichas")
+            pc1, pc2, pc3 = st.columns(3)
+            pc1.metric("🚨 TOP con faltas", len(top_bad))
+            pc2.metric("🟡 Parciales no TOP", len(partial_bad))
+            pc3.metric("⚪ Pendientes secundarios", len(secondary_bad))
+
+            priority_cols = [
+                "Grupo prioridad", "Ranking", "Estado partido", "Partido",
+                "Falta / revisar", "Acción", "Mercado", "Prob.",
+                "Estado J1", "Estado J2", "Datos J1", "Datos J2",
+            ]
+            if not top_bad.empty:
+                st.error("🚨 Faltan fichas en TOP APUESTAS. Estas van primero, antes que pronosticar.")
+                st.dataframe(top_bad.sort_values(["Ranking num"])[[c for c in priority_cols if c in top_bad.columns]], width='stretch', hide_index=True)
+                _ta_textarea_copy_players_v23560("Copiar/pegar jugadores TOP a completar primero", top_players, "ta_top_missing_copy_v23560")
+            else:
+                st.success("🚨 TOP APUESTAS cubiertas: no faltan fichas fuertes en el bloque principal.")
+
+            with st.expander("🟡 Fichas parciales a mejorar después", expanded=bool(not partial_bad.empty)):
+                if partial_bad.empty:
+                    st.success("No hay parciales fuera del TOP.")
+                else:
+                    st.dataframe(partial_bad.sort_values(["Ranking num"])[[c for c in priority_cols if c in partial_bad.columns]], width='stretch', hide_index=True)
+                    _ta_textarea_copy_players_v23560("Jugadores parciales/no TOP a mejorar", partial_players, "ta_partial_missing_copy_v23560")
+
+            with st.expander("⚪ Fichas secundarias pendientes", expanded=False):
+                if secondary_bad.empty:
+                    st.success("No hay pendientes secundarios.")
+                else:
+                    st.dataframe(secondary_bad.sort_values(["Ranking num"])[[c for c in priority_cols if c in secondary_bad.columns]], width='stretch', hide_index=True)
+                    _ta_textarea_copy_players_v23560("Jugadores secundarios pendientes", secondary_players, "ta_secondary_missing_copy_v23560")
+
+            vista = st.radio(
+                "Filtro visual completo",
+                ["Pendientes y parciales", "Solo pendientes", "Solo parciales", "Solo completos", "Todos"],
+                index=0,
+                horizontal=True,
+                key="ta_list_coverage_filter_v23550",
+            )
+            show_df = cov_df.copy()
+            if vista == "Pendientes y parciales":
+                show_df = show_df[show_df["Estado partido"].isin(["🔴 Pendiente", "🟡 Parcial"])]
+            elif vista == "Solo pendientes":
+                show_df = show_df[show_df["Estado partido"] == "🔴 Pendiente"]
+            elif vista == "Solo parciales":
+                show_df = show_df[show_df["Estado partido"] == "🟡 Parcial"]
+            elif vista == "Solo completos":
+                show_df = show_df[show_df["Estado partido"] == "🟢 Completo"]
+            show_df = show_df.sort_values(["_orden_estado", "Ranking num", "Partido"], ascending=[True, True, True])
+            view_cols = [
+                "Grupo prioridad", "Estado partido", "Ranking", "Partido",
+                "J1", "Estado J1", "Datos J1",
+                "J2", "Estado J2", "Datos J2",
+                "Falta / revisar", "Siguiente paso", "Alias usados",
+            ]
+            st.dataframe(show_df[[c for c in view_cols if c in show_df.columns]], width='stretch', hide_index=True)
+
+            if ordered_missing:
+                st.warning("Orden recomendado de fichas: primero TOP APUESTAS, luego parciales, luego secundarias.")
+            else:
+                st.success("Todos los jugadores de la lista tienen TA Real/Manual. Lista cubierta 2/2.")
+    except Exception as e:
+        st.warning(f"No se pudo mostrar cobertura TA visual: {type(e).__name__}: {e}")
 
 def _inferir_jugador_mercado(row):
     """Intenta saber qué jugador es el elegido en mercados tipo 'X gana al menos 1 set'."""
@@ -14815,12 +15366,60 @@ def render_datos_extra_reanalysis_panel(ok_saved):
 
     # v23.43.2: antes de pedir pegado manual, intenta rellenar las fichas TA en bloque.
     try:
-        players_extra = _ta_match_players_from_extra_candidates_v23432(cand)
-        ok_cached, missing_cached = _ta_match_cache_status_counts_v23432(players_extra)
+        coverage_scope = st.radio(
+            "Alcance de fichas TA",
+            ["Todos los partidos de la lista", "Solo picks prioritarios"],
+            index=0,
+            horizontal=True,
+            key="ta_coverage_scope_v23540",
+            help="Para completar la base TA rápido, usa todos los partidos. Para ir más ligero, usa solo los picks prioritarios."
+        )
+        ta_require_real = st.checkbox(
+            "Exigir TA Real/Manual TA; Auto Recent sigue pendiente",
+            value=True,
+            key="ta_require_real_v23540",
+            help="Activado: las fichas Auto Recent no cuentan como completas y el botón intentará mejorarlas a TennisAbstract real."
+        )
+        players_source_df = ok_saved if coverage_scope.startswith("Todos") else cand
+        players_extra = _ta_match_players_from_extra_candidates_v23432(players_source_df)
+        ok_cached, missing_cached = _ta_match_cache_status_counts_v23432(players_extra, require_ta_real=ta_require_real)
+        # v23.56: respeta el orden visual de prioridad: TOP APUESTAS incompletas -> parciales -> secundarios.
+        try:
+            priority_missing = st.session_state.get("ta_priority_missing_players_v23560", []) or []
+            if priority_missing:
+                merged_missing, seen_missing = [], set()
+                for name in list(priority_missing) + list(missing_cached):
+                    k = limpiar(name)
+                    if k and k not in seen_missing:
+                        seen_missing.add(k); merged_missing.append(name)
+                missing_cached = merged_missing
+        except Exception:
+            pass
         cta1, cta2, cta3 = st.columns(3)
         cta1.metric("Jugadores a reforzar", len(players_extra))
         cta2.metric("Fichas TA en caché", len(ok_cached))
         cta3.metric("Fichas TA pendientes", len(missing_cached))
+
+        # v23.57: que se vea ARRIBA, sin tener que buscar en la tabla, exactamente qué ficha falta.
+        try:
+            if missing_cached:
+                _missing_preview = ", ".join([str(x) for x in missing_cached[:12]])
+                _extra_missing = len(missing_cached) - min(len(missing_cached), 12)
+                if _extra_missing > 0:
+                    _missing_preview += f" … +{_extra_missing} más"
+                st.error(f"🔴 Fichas TA que faltan ahora mismo: {_missing_preview}")
+                with st.expander("Ver lista copiables de fichas pendientes", expanded=True):
+                    st.dataframe(pd.DataFrame({"Jugador pendiente TA": missing_cached}), width='stretch', hide_index=True)
+                    st.text_area(
+                        "Copiar jugadores pendientes",
+                        value="\n".join([str(x) for x in missing_cached]),
+                        height=min(260, max(90, 24 * len(missing_cached))),
+                        key="ta_missing_players_visible_copy_v23570",
+                    )
+            else:
+                st.success("🟢 No faltan fichas TA fuertes en este bloque: todos los jugadores detectados tienen TA Real/Manual o una ficha válida según el filtro actual.")
+        except Exception as _e_missing_visible:
+            st.caption(f"No se pudo mostrar listado visible de fichas pendientes: {type(_e_missing_visible).__name__}: {_e_missing_visible}")
 
         # v23.48.1: panel de auditoría general para saber si las fichas están realmente entrando.
         try:
@@ -14837,6 +15436,25 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                 b2.metric("🟠 Auto Recent", audit_sum.get("auto_recent", 0))
                 b3.metric("📋 Manual", audit_sum.get("manual", 0))
                 b4.metric("🔴 Sin ficha", audit_sum.get("missing", 0))
+
+                # v23.57: dentro del auditor, filtra automáticamente las filas con ficha pendiente/parcial.
+                try:
+                    if audit_rows:
+                        _audit_visible_df = pd.DataFrame(audit_rows)
+                        _missing_mask = _audit_visible_df.get("Estado ficha", pd.Series([], dtype=str)).astype(str).str.contains("Pendiente|Sin ficha|❌", case=False, na=False)
+                        _weak_mask = _audit_visible_df.get("Estado ficha", pd.Series([], dtype=str)).astype(str).str.contains("Parcial|Auto Recent|caduc", case=False, na=False)
+                        _missing_df = _audit_visible_df[_missing_mask].copy()
+                        _weak_df = _audit_visible_df[~_missing_mask & _weak_mask].copy()
+                        _show_cols_missing = [c for c in ["Jugador detectado", "Nombre usado", "Alias", "Estado ficha", "Fuente perfil", "Tipo fuente", "Calidad", "Recientes usados", "Total temporada TA", "Referencia datos"] if c in _audit_visible_df.columns]
+                        if not _missing_df.empty:
+                            st.error("🔴 Fichas pendientes detectadas en esta lista")
+                            st.dataframe(_missing_df[_show_cols_missing], width='stretch', hide_index=True)
+                        if not _weak_df.empty:
+                            with st.expander("🟡 Fichas parciales / Auto Recent a mejorar", expanded=False):
+                                st.dataframe(_weak_df[_show_cols_missing], width='stretch', hide_index=True)
+                except Exception as _e_audit_filter:
+                    st.caption(f"No se pudo filtrar pendientes TA: {type(_e_audit_filter).__name__}: {_e_audit_filter}")
+
                 st.caption(f"Cobertura de perfiles: {audit_sum.get('cobertura', 0):.1f}%. Ahora se distingue TA Real de Auto Recent. Auto Recent es útil como refuerzo local, pero NO equivale a ficha TennisAbstract completa. Si ves Auto Recent y quieres TA real, pega la ficha manual.")
                 st.info("Semáforo de actualización TA: 🟢 0-7 días OK · 🟡 8-14 días revisar opcional · 🔴 +14 días actualizar recomendada. Una TA Real guardada NO vuelve a pendiente solo por edad.")
 
@@ -14969,13 +15587,13 @@ def render_datos_extra_reanalysis_panel(ok_saved):
             st.warning(f"No se pudo mostrar auditoría TA: {type(e).__name__}: {e}")
 
         with st.expander("🔎 Auto extraer fichas TennisAbstract para estos picks", expanded=bool(missing_cached)):
-            st.caption("Esto intenta leer la ficha TA de los jugadores de estos picks Over y guardarla en caché. Si funciona, no tienes que pegarla a mano.")
+            st.caption("Esto intenta leer la ficha TA de los jugadores pendientes y guardarla en caché. Modo recomendado: Todos los partidos + exigir TA Real, para ir cerrando cobertura día a día.")
             if missing_cached:
                 st.dataframe(pd.DataFrame({"Jugador pendiente": missing_cached}), width='stretch', hide_index=True)
             else:
                 st.success("Todas las fichas de estos picks ya están en caché.")
-            timeout_auto = st.slider("Timeout por ficha TA", 12, 35, 22, 1, key="ta_auto_timeout_v23432")
-            max_auto = st.slider("Máximo fichas a intentar ahora", 2, 30, min(20, max(2, len(missing_cached) if missing_cached else 2)), 1, key="ta_auto_max_v23432")
+            timeout_auto = st.slider("Timeout por ficha TA", 12, 60, 28, 1, key="ta_auto_timeout_v23432")
+            max_auto = st.slider("Máximo fichas a intentar ahora", 2, 80, min(40, max(2, len(missing_cached) if missing_cached else 2)), 1, key="ta_auto_max_v23432")
             if st.button("🔎 Extraer fichas TA pendientes y guardar caché", key="ta_auto_fetch_v23432", use_container_width=True, disabled=not bool(missing_cached)):
                 results = []
                 with st.spinner("Extrayendo fichas TennisAbstract en bloque..."):
@@ -14986,7 +15604,7 @@ def render_datos_extra_reanalysis_panel(ok_saved):
                     st.dataframe(pd.DataFrame(results), width='stretch', hide_index=True)
                     saved_n = sum(1 for r in results if r.get("OK") == "Sí")
                     if saved_n:
-                        st.success(f"Guardadas {saved_n} fichas. Pulsa Rerun o vuelve a analizar para que se apliquen al reanálisis.")
+                        st.success(f"Guardadas/mejoradas {saved_n} fichas. Descarga la caché completa TA y vuelve a analizar para que se apliquen.")
                     else:
                         st.warning("No se pudo guardar ninguna ficha automática. Puede ser timeout, nombre distinto o página TA sin resultados recientes parseables.")
                 try:
@@ -19537,6 +20155,11 @@ Sebastián Baez - Roberto Carballés Baena"""
 
             with st.expander("📲 Enviar picks a Telegram", expanded=False):
                 render_telegram_sender_panel(ok_saved)
+
+            try:
+                render_ta_list_coverage_panel_v23550(ok_saved, expanded=True)
+            except Exception as _e_ta_cov:
+                st.caption(f"Cobertura TA visual no disponible: {type(_e_ta_cov).__name__}: {_e_ta_cov}")
 
             render_datos_extra_reanalysis_panel(ok_saved)
 
