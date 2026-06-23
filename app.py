@@ -7,9 +7,9 @@ import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
-st.set_page_config(page_title="Tennis IA v23.52 Excel práctico + TA", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.53 TA52 Over Largo", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.52.0-excel-practico-ta-adn"
+APP_VERSION = "v23.53.0-ta52-over-largo"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -21,6 +21,15 @@ QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 # =========================================================
 OVER_ENGINE_LOCKED = True
 OVER_ENGINE_LOCK_NOTE = "Over blindado: no tocar matemáticas ni lógica de Over sin orden explícita."
+
+# =========================================================
+# v23.53.0 TA52 OVER LARGO
+# Regla: no usar solo n=12 para TA Intelligence.
+# Se parsean hasta 52 resultados recientes cuando TA los trae y se cruzan
+# con splits Last 52 Weeks por superficie. No toca el motor Over.
+# =========================================================
+TA_RECENT_MAX_MATCHES = 52
+TA_RECENT_STRONG_MATCHES = 20
 
 # v23.21: WTA Over17 Export Fix + Watchlist Tight + Strict Surname Fix.
 # v23.39.1: WTA Reason Fix - corrige motivos ML vs gana al menos 1 set sin tocar cálculos.
@@ -7954,6 +7963,33 @@ def _ta_int_pct_from_summary(summary, label, n_default=0):
     return None
 
 
+def _ta_int_tb_per_match_from_wl(tb_wl, matches):
+    """Convierte TB W-L de TA en frecuencia real de tie-breaks por partido.
+    Importante: TB% de TennisAbstract es % de tie-breaks ganados, NO frecuencia de tie-break.
+    """
+    try:
+        m = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*$", str(tb_wl or ""))
+        if not m:
+            return None
+        total_tb = int(m.group(1)) + int(m.group(2))
+        n = int(float(matches or 0))
+        if n <= 0:
+            return None
+        return total_tb / max(1, n)
+    except Exception:
+        return None
+
+
+def _ta_int_surface_sample_target(surface):
+    """Muestra razonable por superficie para no castigar hierba, donde hay menos partidos."""
+    sf = str(surface or '').title()
+    if sf == 'Grass':
+        return 8
+    if sf == 'Clay':
+        return 12
+    return 16
+
+
 def _ta_int_surface_stats(item, surface):
     """Prioriza Last52 en superficie; si no hay, usa best/career."""
     if not isinstance(item, dict):
@@ -7984,7 +8020,7 @@ def _ta_int_profile(player_name, surface='Hard'):
 
     parsed = None
     raw = str(item.get('raw_text','') or '')
-    if raw and (item.get('over19_rate') is None or item.get('avg_games') is None or item.get('tb_sets') is None):
+    if raw and (item.get('over19_rate') is None or item.get('over20_rate') is None or item.get('over21_rate') is None or item.get('avg_games') is None or item.get('tb_sets') is None):
         try:
             parsed = _parse_tennisabstract_player_profile(raw)
         except Exception:
@@ -7997,6 +8033,15 @@ def _ta_int_profile(player_name, surface='Hard'):
     over19 = _ta_int_float(src.get('over19_rate', item.get('over19_rate')), None)
     if over19 is None:
         over19 = _ta_int_pct_from_summary(summary, 'Over19')
+    over20 = _ta_int_float(src.get('over20_rate', item.get('over20_rate')), None)
+    if over20 is None:
+        over20 = _ta_int_pct_from_summary(summary, 'Over20')
+    over21 = _ta_int_float(src.get('over21_rate', item.get('over21_rate')), None)
+    if over21 is None:
+        over21 = _ta_int_pct_from_summary(summary, 'Over21')
+    over22 = _ta_int_float(src.get('over22_rate', item.get('over22_rate')), None)
+    if over22 is None:
+        over22 = _ta_int_pct_from_summary(summary, 'Over22')
     three = _ta_int_float(src.get('three_rate', item.get('three_rate')), None)
     set_rate = _ta_int_float(src.get('set_rate', item.get('set_rate')), None)
     lost02 = _ta_int_float(src.get('lost02_rate', item.get('lost02_rate')), None)
@@ -8015,35 +8060,44 @@ def _ta_int_profile(player_name, surface='Hard'):
     tb_pct = _ta_int_float(surf.get('tb_pct'), None)
     dr = _ta_int_num(surf.get('dr'), None)
     surface_matches = int(_ta_int_num(surf.get('matches'), 0) or 0)
+    tb_per_match_52 = _ta_int_tb_per_match_from_wl(surf.get('tb_wl'), surface_matches)
+    tb_freq_signal = _ta_int_avg([tb_per_match, tb_per_match_52], None)
 
     year = item.get('ta_year_current') or {}
     elo_general = _ta_int_num((year or {}).get('elo'), None) or _ta_int_num(src.get('elo', item.get('elo')), None)
     sf_elo_key = {'Hard':'hElo', 'Clay':'cElo', 'Grass':'gElo'}.get(surface, 'hElo')
     elo_surface = _ta_int_num((year or {}).get(sf_elo_key), None)
 
-    sample_score = min(1.0, (n / 12.0) * 0.65 + (surface_matches / 20.0) * 0.35)
-    if int(item.get('ta_full_score', 0) or 0) >= 3:
-        sample_score = max(sample_score, 0.70)
+    recent_component = min(1.0, n / max(1, TA_RECENT_STRONG_MATCHES))
+    surface_target = _ta_int_surface_sample_target(surface)
+    surface_component = min(1.0, surface_matches / max(1, surface_target))
+    full_component = 1.0 if int(item.get('ta_full_score', 0) or 0) >= 7 else 0.65 if int(item.get('ta_full_score', 0) or 0) >= 3 else 0.30
+    sample_score = recent_component * 0.38 + surface_component * 0.42 + full_component * 0.20
     if item.get('stale'):
         sample_score -= 0.05
     sample_score = float(np.clip(sample_score, 0.10, 1.00))
 
     # Scores jugador 0-100. Son señales, no picks.
     over_score = 0.0
-    if over18 is not None: over_score += over18 * 34
-    if over19 is not None: over_score += over19 * 26
-    if avg_games is not None: over_score += np.clip((avg_games - 18) / 12, 0, 1) * 18
-    if three is not None: over_score += three * 14
-    if tb_per_match is not None: over_score += np.clip(tb_per_match / 0.75, 0, 1) * 8
+    if over18 is not None: over_score += over18 * 24
+    if over19 is not None: over_score += over19 * 20
+    if over20 is not None: over_score += over20 * 16
+    if over21 is not None: over_score += over21 * 10
+    if avg_games is not None: over_score += np.clip((avg_games - 18) / 12, 0, 1) * 16
+    if three is not None: over_score += three * 8
+    if tb_freq_signal is not None: over_score += np.clip(tb_freq_signal / 0.85, 0, 1) * 6
     over_score = float(np.clip(over_score, 0, 100))
 
     long_score = 0.0
-    if avg_games is not None: long_score += np.clip((avg_games - 20) / 11, 0, 1) * 28
-    if over19 is not None: long_score += over19 * 22
-    if hold is not None: long_score += np.clip((hold - 0.78) / 0.16, 0, 1) * 18
-    if brk is not None: long_score += np.clip((0.26 - brk) / 0.18, 0, 1) * 13
-    if tb_pct is not None: long_score += np.clip(tb_pct / 0.70, 0, 1) * 9
-    if tb_per_match is not None: long_score += np.clip(tb_per_match / 0.80, 0, 1) * 10
+    if avg_games is not None: long_score += np.clip((avg_games - 20) / 11, 0, 1) * 22
+    if over20 is not None: long_score += over20 * 20
+    elif over19 is not None: long_score += over19 * 12
+    if over21 is not None: long_score += over21 * 18
+    if over22 is not None: long_score += over22 * 8
+    if hold is not None: long_score += np.clip((hold - 0.78) / 0.16, 0, 1) * 14
+    if brk is not None: long_score += np.clip((0.26 - brk) / 0.18, 0, 1) * 8
+    if three is not None: long_score += three * 6
+    if tb_freq_signal is not None: long_score += np.clip(tb_freq_signal / 0.90, 0, 1) * 8
     long_score = float(np.clip(long_score, 0, 100))
 
     set_score = 0.0
@@ -8071,6 +8125,9 @@ def _ta_int_profile(player_name, surface='Hard'):
         'sample_score': sample_score,
         'over18': over18,
         'over19': over19,
+        'over20': over20,
+        'over21': over21,
+        'over22': over22,
         'three': three,
         'set_rate': set_rate,
         'lost02': lost02,
@@ -8083,6 +8140,8 @@ def _ta_int_profile(player_name, surface='Hard'):
         'ace': ace,
         'df': df,
         'tb_pct': tb_pct,
+        'tb_per_match_52': tb_per_match_52,
+        'tb_freq_signal': tb_freq_signal,
         'dr': dr,
         'surface_matches': surface_matches,
         'elo': elo_general,
@@ -8114,11 +8173,15 @@ def ta_intelligence_match(p1_name, p2_name, surface, model_over18=None, model_ov
     avg_set = _ta_int_avg([a.get('set_score'), b.get('set_score')], 0.0)
     avg_over18 = _ta_int_avg([a.get('over18'), b.get('over18')], None)
     avg_over19 = _ta_int_avg([a.get('over19'), b.get('over19')], None)
+    avg_over20 = _ta_int_avg([a.get('over20'), b.get('over20')], None)
+    avg_over21 = _ta_int_avg([a.get('over21'), b.get('over21')], None)
+    avg_over22 = _ta_int_avg([a.get('over22'), b.get('over22')], None)
     avg_games = _ta_int_avg([a.get('avg_games'), b.get('avg_games')], None)
     avg_three = _ta_int_avg([a.get('three'), b.get('three')], None)
     avg_hold = _ta_int_avg([a.get('hold'), b.get('hold')], None)
     avg_break = _ta_int_avg([a.get('break'), b.get('break')], None)
     avg_tb = _ta_int_avg([a.get('tb_pct'), b.get('tb_pct')], None)
+    avg_tb_match = _ta_int_avg([a.get('tb_freq_signal'), b.get('tb_freq_signal')], None)
     sample = _ta_int_avg([a.get('sample_score'), b.get('sample_score')], 0.35)
 
     # Ajuste de partido: si ambos son sacadores/hold alto, sube long; si hay mucha paliza/easy, resta.
@@ -8128,6 +8191,8 @@ def ta_intelligence_match(p1_name, p2_name, surface, model_over18=None, model_ov
         style_bonus += 6
     if avg_hold is not None and avg_break is not None and avg_hold >= 0.84 and avg_break <= 0.19:
         style_bonus += 8
+    if avg_tb_match is not None and avg_tb_match >= 0.65:
+        style_bonus += 5
     easy_avg = _ta_int_avg([a.get('easy'), b.get('easy')], 0.20)
     long_match_score = float(np.clip(avg_long + style_bonus - max(0, easy_avg - 0.25) * 25, 0, 100))
 
@@ -8137,27 +8202,39 @@ def ta_intelligence_match(p1_name, p2_name, surface, model_over18=None, model_ov
     model_support = max(model20, model21 * 0.92, model22 * 0.85)
     combined_long = float(np.clip(long_match_score * 0.78 + model_support * 100 * 0.22, 0, 100))
 
-    if found_count == 2 and combined_long >= 78 and sample >= 0.58:
-        perfil = '🔥 TA OVER LARGO'
-        recomendacion = 'OBSERVAR Over 20.5 / 21.5'
+    linea_sugerida = ''
+    if found_count == 2 and combined_long >= 82 and sample >= 0.58 and (avg_over21 is None or avg_over21 >= 0.52):
+        perfil = '🔥 TA 21.5 fuerte'
+        recomendacion = 'OBSERVAR Over 21.5'
+        linea_sugerida = 'Over 21.5'
+    elif found_count == 2 and combined_long >= 74 and sample >= 0.52 and (avg_over20 is None or avg_over20 >= 0.56):
+        perfil = '🔥 TA 20.5 fuerte'
+        recomendacion = 'OBSERVAR Over 20.5 / estudiar 21.5'
+        linea_sugerida = 'Over 20.5'
     elif combined_long >= 68 and sample >= 0.48:
         perfil = '✅ TA largo interesante'
-        recomendacion = 'OBSERVAR si Over18 oficial'
+        recomendacion = 'OBSERVAR si Over18 oficial; no subir línea sin cuota buena'
+        linea_sugerida = 'Mantener 18.5/19.5'
     elif avg_set >= 78 and sample >= 0.50:
         perfil = '🎾 TA set competitivo'
         recomendacion = 'OBSERVAR gana set'
+        linea_sugerida = 'Gana set'
     else:
         perfil = '👀 TA neutro'
         recomendacion = 'Solo apoyo informativo'
+        linea_sugerida = ''
 
     motivos = []
     if avg_over18 is not None: motivos.append(f"Over18 TA {avg_over18:.0%}")
     if avg_over19 is not None: motivos.append(f"Over19 TA {avg_over19:.0%}")
+    if avg_over20 is not None: motivos.append(f"Over20 TA {avg_over20:.0%}")
+    if avg_over21 is not None: motivos.append(f"Over21 TA {avg_over21:.0%}")
     if avg_games is not None: motivos.append(f"media juegos TA {avg_games:.1f}")
     if avg_three is not None: motivos.append(f"3 sets TA {avg_three:.0%}")
     if avg_hold is not None: motivos.append(f"Hold {avg_hold:.0%}")
     if avg_break is not None: motivos.append(f"Break {avg_break:.0%}")
-    if avg_tb is not None: motivos.append(f"TB% {avg_tb:.0%}")
+    if avg_tb_match is not None: motivos.append(f"TB/partido {avg_tb_match:.2f}")
+    elif avg_tb is not None: motivos.append(f"TB win% {avg_tb:.0%}")
     motivos.append(f"muestra {sample:.0%}, fichas {found_count}/2")
 
     return {
@@ -8167,7 +8244,11 @@ def ta_intelligence_match(p1_name, p2_name, surface, model_over18=None, model_ov
         'TA_SET_SCORE': round(avg_set, 1),
         'TA_PERFIL': perfil,
         'TA_RECOMENDACION': recomendacion,
-        'TA_MOTIVO': ' · '.join(motivos[:8]),
+        'TA_LINEA_SUGERIDA': linea_sugerida,
+        'TA_OVER20_RATE': f"{avg_over20:.0%}" if avg_over20 is not None else '',
+        'TA_OVER21_RATE': f"{avg_over21:.0%}" if avg_over21 is not None else '',
+        'TA_TB_MATCH': round(avg_tb_match, 2) if avg_tb_match is not None else '',
+        'TA_MOTIVO': ' · '.join(motivos[:10]),
         'TA_J1_SCORE': round(a.get('long_score', 0.0), 1) if a.get('found') else '',
         'TA_J2_SCORE': round(b.get('long_score', 0.0), 1) if b.get('found') else '',
         'TA_J1_ESTILO': a.get('style','') if a.get('found') else '',
@@ -8229,7 +8310,8 @@ def crear_ta_intelligence_ranking_df_v23510(detalle_df):
     cols = [c for c in [
         'Hora','Fecha','Circuito cálculo','Torneo','Superficie','Partido','🎯 Acción final','Pick oficial','Mercado recomendado',
         'Señal TA limpia','ADN Over Largo','Línea larga estudio','Over 18.5','Over 19.5','Over 20.5','Over 21.5 estudio',
-        'TA_PERFIL','TA_RECOMENDACION','TA_LONG_MATCH_SCORE','TA_OVER_SCORE','TA_SET_SCORE','TA_MOTIVO',
+        'TA_PERFIL','TA_RECOMENDACION','TA_LINEA_SUGERIDA','TA_LONG_MATCH_SCORE','TA_OVER_SCORE','TA_SET_SCORE',
+        'TA_OVER20_RATE','TA_OVER21_RATE','TA_TB_MATCH','TA_MOTIVO',
         'TA_J1_SCORE','TA_J2_SCORE','TA_J1_ESTILO','TA_J2_ESTILO','Partido a 3 sets','Jugador gana set','Prob gana set'
     ] if c in df.columns]
     out = df.sort_values('_ta_score_final', ascending=False)[cols + ['_ta_score_final']].head(80).copy()
@@ -8241,6 +8323,10 @@ def crear_ta_intelligence_ranking_df_v23510(detalle_df):
         'Over 21.5 estudio': 'Over 21.5',
         'TA_PERFIL': 'Perfil TA',
         'TA_RECOMENDACION': 'TA observar',
+        'TA_LINEA_SUGERIDA': 'TA línea sugerida',
+        'TA_OVER20_RATE': 'TA Over20 real',
+        'TA_OVER21_RATE': 'TA Over21 real',
+        'TA_TB_MATCH': 'TA TB/partido',
         'TA_LONG_MATCH_SCORE': 'TA largo',
         'TA_OVER_SCORE': 'TA over',
         'TA_SET_SCORE': 'TA set',
@@ -8449,6 +8535,10 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "TA_SET_SCORE": ta_intel.get("TA_SET_SCORE", ""),
             "TA_PERFIL": ta_intel.get("TA_PERFIL", ""),
             "TA_RECOMENDACION": ta_intel.get("TA_RECOMENDACION", ""),
+            "TA_LINEA_SUGERIDA": ta_intel.get("TA_LINEA_SUGERIDA", ""),
+            "TA_OVER20_RATE": ta_intel.get("TA_OVER20_RATE", ""),
+            "TA_OVER21_RATE": ta_intel.get("TA_OVER21_RATE", ""),
+            "TA_TB_MATCH": ta_intel.get("TA_TB_MATCH", ""),
             "TA_MOTIVO": ta_intel.get("TA_MOTIVO", ""),
             "TA_J1_SCORE": ta_intel.get("TA_J1_SCORE", ""),
             "TA_J2_SCORE": ta_intel.get("TA_J2_SCORE", ""),
@@ -13339,7 +13429,7 @@ def _ta_profile_cache_upsert_manual_v23485(expected_player, raw_text):
 
 def _ta_profile_audit_detail_v23483(item):
     """v23.48.3: auditoría honesta de fuente.
-    - matches/recent_used = últimos partidos parseados y usados por el modelo (máx. 12).
+    - matches/recent_used = últimos partidos parseados y usados por TA Intelligence (máx. 52 si TA los trae).
     - challenger_2026_matches = total temporada Challenger 2026 si la ficha TA lo trae.
     - No inventa histórico total si la ficha no lo aporta.
     """
@@ -14090,11 +14180,12 @@ def _parse_tennisabstract_player_profile(raw_text):
             "date": date, "surface": surface, "tournament": tournament,
             "win": win, "pairs": pairs, "games": games,
             "over18": games >= 19, "over19": games >= 20,
+            "over20": games >= 21, "over21": games >= 22, "over22": games >= 23,
             "three_sets": three_sets, "set_won": set_won,
             "lost_0_2": lost_0_2, "lost_0_2_easy": lost_0_2_easy,
             "easy_short": easy_short, "long_sets": long_sets, "tb_sets": tb_sets,
         })
-        if len(matches) >= 12:
+        if len(matches) >= TA_RECENT_MAX_MATCHES:
             break
 
     if not matches and elo is None and not ch_2026 and not (isinstance(ta_full, dict) and ta_full.get('full_score', 0) > 0):
@@ -14103,6 +14194,9 @@ def _parse_tennisabstract_player_profile(raw_text):
     wins = sum(m["win"] for m in matches)
     overs18 = sum(m["over18"] for m in matches)
     overs19 = sum(m["over19"] for m in matches)
+    overs20 = sum(m.get("over20", False) for m in matches)
+    overs21 = sum(m.get("over21", False) for m in matches)
+    overs22 = sum(m.get("over22", False) for m in matches)
     threes = sum(m["three_sets"] for m in matches)
     set_won = sum(m["set_won"] for m in matches)
     lost02 = sum(m["lost_0_2"] for m in matches)
@@ -14118,6 +14212,9 @@ def _parse_tennisabstract_player_profile(raw_text):
 
     over_rate = overs18 / max(n, 1)
     over19_rate = overs19 / max(n, 1)
+    over20_rate = overs20 / max(n, 1)
+    over21_rate = overs21 / max(n, 1)
+    over22_rate = overs22 / max(n, 1)
     set_rate = set_won / max(n, 1)
     three_rate = threes / max(n, 1)
     lost02_rate = lost02 / max(n, 1)
@@ -14139,12 +14236,16 @@ def _parse_tennisabstract_player_profile(raw_text):
 
     summary = (
         f"TA {player_name}: n={n}, W={wins}/{n}, Over18={overs18}/{n}, Over19={overs19}/{n}, "
+        f"Over20={overs20}/{n}, Over21={overs21}/{n}, Over22={overs22}/{n}, "
         f"3sets={threes}/{n}, set ganado={set_won}/{n}, perdió 0-2={lost02}/{n}, "
         f"media juegos={avg_games:.1f}, Elo={elo or 'N/A'}"
     )
     return {
         "source": "Tennis Abstract", "player": player_name, "matches": n, "wins": wins,
         "overs": overs18, "over_rate": over_rate, "overs19": overs19, "over19_rate": over19_rate,
+        "overs20": overs20, "over20_rate": over20_rate,
+        "overs21": overs21, "over21_rate": over21_rate,
+        "overs22": overs22, "over22_rate": over22_rate,
         "three_sets": threes, "three_rate": three_rate,
         "set_won": set_won, "set_rate": set_rate,
         "lost02": lost02, "lost02_rate": lost02_rate, "lost02_easy": lost02easy,
