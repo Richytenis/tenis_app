@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.50.1 Manual + OCR", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.50.8-excel-over-oficial-priority"
+APP_VERSION = "v23.51.0-ta-intelligence-observar"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -7894,6 +7894,306 @@ def _fmt_pct_gs(markets, label):
     except Exception:
         return ""
 
+
+
+# =========================================================
+# v23.51.0 TA INTELLIGENCE - MODO OBSERVAR
+# Capa nueva de lectura avanzada TennisAbstract.
+# NO toca motor Over, simulación, guards ni picks oficiales.
+# Solo añade señales de estudio/export para detectar Over Largo y gana-set.
+# =========================================================
+
+def _ta_int_float(v, default=None):
+    try:
+        if v is None:
+            return default
+        if isinstance(v, str):
+            s = v.replace('%','').replace(',','.').strip()
+            if s == '' or s.lower() in ['nan','none','n/d','-']:
+                return default
+            x = float(s)
+            # si parece porcentaje en 0-100, devolver 0-1
+            return x / 100.0 if x > 1.5 else x
+        if pd.isna(v):
+            return default
+        x = float(v)
+        return x / 100.0 if x > 1.5 else x
+    except Exception:
+        return default
+
+
+def _ta_int_num(v, default=None):
+    try:
+        if v is None:
+            return default
+        if isinstance(v, str):
+            s = v.replace('%','').replace(',','.').strip()
+            if s == '' or s.lower() in ['nan','none','n/d','-']:
+                return default
+            return float(s)
+        if pd.isna(v):
+            return default
+        return float(v)
+    except Exception:
+        return default
+
+
+def _ta_int_pct_from_summary(summary, label, n_default=0):
+    """Lee patrones tipo Over19=11/12 o media juegos=30.3 del summary TA."""
+    s = str(summary or '')
+    try:
+        if label == 'avg_games':
+            m = re.search(r"media juegos\s*=\s*([0-9]+(?:[\.,][0-9]+)?)", s, flags=re.I)
+            return float(m.group(1).replace(',','.')) if m else None
+        m = re.search(re.escape(label) + r"\s*=\s*(\d+)\s*/\s*(\d+)", s, flags=re.I)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            return a / max(1, b)
+    except Exception:
+        return None
+    return None
+
+
+def _ta_int_surface_stats(item, surface):
+    """Prioriza Last52 en superficie; si no hay, usa best/career."""
+    if not isinstance(item, dict):
+        return {}
+    sf = surface if surface in ['Hard','Clay','Grass'] else 'Hard'
+    candidates = []
+    last52 = item.get('last52_stats') or {}
+    career = item.get('career_stats') or {}
+    if isinstance(last52, dict):
+        candidates.append(last52.get(sf, {}))
+    candidates.append(item.get(f"ta_best_{sf.lower()}", {}))
+    if isinstance(career, dict):
+        candidates.append(career.get(sf, {}))
+    for c in candidates:
+        if isinstance(c, dict) and c:
+            return c
+    return {}
+
+
+def _ta_int_profile(player_name, surface='Hard'):
+    """Devuelve ADN TA de un jugador desde caché. Robusto aunque el JSON sea antiguo."""
+    try:
+        item = _ta_profile_cache_find(player_name, allow_stale=True)
+    except Exception:
+        item = None
+    if not isinstance(item, dict):
+        return {"found": False, "player": normalizar_texto(player_name)}
+
+    parsed = None
+    raw = str(item.get('raw_text','') or '')
+    if raw and (item.get('over19_rate') is None or item.get('avg_games') is None or item.get('tb_sets') is None):
+        try:
+            parsed = _parse_tennisabstract_player_profile(raw)
+        except Exception:
+            parsed = None
+    src = parsed if isinstance(parsed, dict) else item
+    summary = str(src.get('summary', item.get('summary','')) or '')
+
+    n = int(_ta_int_num(src.get('matches', item.get('matches', 0)), 0) or 0)
+    over18 = _ta_int_float(src.get('over_rate', item.get('over_rate')), None)
+    over19 = _ta_int_float(src.get('over19_rate', item.get('over19_rate')), None)
+    if over19 is None:
+        over19 = _ta_int_pct_from_summary(summary, 'Over19')
+    three = _ta_int_float(src.get('three_rate', item.get('three_rate')), None)
+    set_rate = _ta_int_float(src.get('set_rate', item.get('set_rate')), None)
+    lost02 = _ta_int_float(src.get('lost02_rate', item.get('lost02_rate')), None)
+    easy = _ta_int_float(src.get('easy_rate', item.get('easy_rate')), None)
+    avg_games = _ta_int_num(src.get('avg_games', item.get('avg_games')), None)
+    if avg_games is None:
+        avg_games = _ta_int_pct_from_summary(summary, 'avg_games')
+    tb_sets = _ta_int_num(src.get('tb_sets', item.get('tb_sets')), None)
+    tb_per_match = (tb_sets / max(1, n)) if tb_sets is not None else None
+
+    surf = _ta_int_surface_stats(item, surface)
+    hold = _ta_int_float(surf.get('hold_pct'), None)
+    brk = _ta_int_float(surf.get('break_pct'), None)
+    ace = _ta_int_float(surf.get('ace_pct'), None)
+    df = _ta_int_float(surf.get('df_pct'), None)
+    tb_pct = _ta_int_float(surf.get('tb_pct'), None)
+    dr = _ta_int_num(surf.get('dr'), None)
+    surface_matches = int(_ta_int_num(surf.get('matches'), 0) or 0)
+
+    year = item.get('ta_year_current') or {}
+    elo_general = _ta_int_num((year or {}).get('elo'), None) or _ta_int_num(src.get('elo', item.get('elo')), None)
+    sf_elo_key = {'Hard':'hElo', 'Clay':'cElo', 'Grass':'gElo'}.get(surface, 'hElo')
+    elo_surface = _ta_int_num((year or {}).get(sf_elo_key), None)
+
+    sample_score = min(1.0, (n / 12.0) * 0.65 + (surface_matches / 20.0) * 0.35)
+    if int(item.get('ta_full_score', 0) or 0) >= 3:
+        sample_score = max(sample_score, 0.70)
+    if item.get('stale'):
+        sample_score -= 0.05
+    sample_score = float(np.clip(sample_score, 0.10, 1.00))
+
+    # Scores jugador 0-100. Son señales, no picks.
+    over_score = 0.0
+    if over18 is not None: over_score += over18 * 34
+    if over19 is not None: over_score += over19 * 26
+    if avg_games is not None: over_score += np.clip((avg_games - 18) / 12, 0, 1) * 18
+    if three is not None: over_score += three * 14
+    if tb_per_match is not None: over_score += np.clip(tb_per_match / 0.75, 0, 1) * 8
+    over_score = float(np.clip(over_score, 0, 100))
+
+    long_score = 0.0
+    if avg_games is not None: long_score += np.clip((avg_games - 20) / 11, 0, 1) * 28
+    if over19 is not None: long_score += over19 * 22
+    if hold is not None: long_score += np.clip((hold - 0.78) / 0.16, 0, 1) * 18
+    if brk is not None: long_score += np.clip((0.26 - brk) / 0.18, 0, 1) * 13
+    if tb_pct is not None: long_score += np.clip(tb_pct / 0.70, 0, 1) * 9
+    if tb_per_match is not None: long_score += np.clip(tb_per_match / 0.80, 0, 1) * 10
+    long_score = float(np.clip(long_score, 0, 100))
+
+    set_score = 0.0
+    if set_rate is not None: set_score += set_rate * 46
+    if lost02 is not None: set_score += (1 - lost02) * 24
+    if three is not None: set_score += three * 18
+    if easy is not None: set_score += (1 - easy) * 12
+    set_score = float(np.clip(set_score, 0, 100))
+
+    estilo = 'normal'
+    if hold is not None and brk is not None:
+        if hold >= 0.88 and brk <= 0.16:
+            estilo = 'sacador_over'
+        elif hold >= 0.84 and brk <= 0.20:
+            estilo = 'hold_alto'
+        elif hold <= 0.78 and brk >= 0.25:
+            estilo = 'restador/caos'
+        elif hold >= 0.82 and brk >= 0.22:
+            estilo = 'dominador'
+
+    return {
+        'found': True,
+        'player': item.get('player') or src.get('player') or player_name,
+        'n': n,
+        'sample_score': sample_score,
+        'over18': over18,
+        'over19': over19,
+        'three': three,
+        'set_rate': set_rate,
+        'lost02': lost02,
+        'easy': easy,
+        'avg_games': avg_games,
+        'tb_sets': tb_sets,
+        'tb_per_match': tb_per_match,
+        'hold': hold,
+        'break': brk,
+        'ace': ace,
+        'df': df,
+        'tb_pct': tb_pct,
+        'dr': dr,
+        'surface_matches': surface_matches,
+        'elo': elo_general,
+        'elo_surface': elo_surface,
+        'over_score': over_score,
+        'long_score': long_score,
+        'set_score': set_score,
+        'style': estilo,
+        'source_type': item.get('profile_source_type', item.get('source','')),
+        'uploaded_at': item.get('uploaded_at',''),
+    }
+
+
+def _ta_int_avg(vals, default=None):
+    xs = [float(v) for v in vals if v is not None and not pd.isna(v)]
+    return float(np.mean(xs)) if xs else default
+
+
+def ta_intelligence_match(p1_name, p2_name, surface, model_over18=None, model_over19=None, model_over20=None, model_over21=None, model_over22=None, sim=None):
+    """Cruza dos perfiles TA y devuelve señales en modo observar."""
+    a = _ta_int_profile(p1_name, surface)
+    b = _ta_int_profile(p2_name, surface)
+    found_count = int(bool(a.get('found'))) + int(bool(b.get('found')))
+    if found_count == 0:
+        return {'found_count': 0, 'TA_OVER_SCORE': '', 'TA_LONG_MATCH_SCORE': '', 'TA_SET_SCORE': '', 'TA_PERFIL': 'Sin TA', 'TA_RECOMENDACION': '', 'TA_MOTIVO': 'Sin fichas TA aplicables'}
+
+    avg_over_score = _ta_int_avg([a.get('over_score'), b.get('over_score')], 0.0)
+    avg_long = _ta_int_avg([a.get('long_score'), b.get('long_score')], 0.0)
+    avg_set = _ta_int_avg([a.get('set_score'), b.get('set_score')], 0.0)
+    avg_over18 = _ta_int_avg([a.get('over18'), b.get('over18')], None)
+    avg_over19 = _ta_int_avg([a.get('over19'), b.get('over19')], None)
+    avg_games = _ta_int_avg([a.get('avg_games'), b.get('avg_games')], None)
+    avg_three = _ta_int_avg([a.get('three'), b.get('three')], None)
+    avg_hold = _ta_int_avg([a.get('hold'), b.get('hold')], None)
+    avg_break = _ta_int_avg([a.get('break'), b.get('break')], None)
+    avg_tb = _ta_int_avg([a.get('tb_pct'), b.get('tb_pct')], None)
+    sample = _ta_int_avg([a.get('sample_score'), b.get('sample_score')], 0.35)
+
+    # Ajuste de partido: si ambos son sacadores/hold alto, sube long; si hay mucha paliza/easy, resta.
+    style_bonus = 0
+    styles = [a.get('style'), b.get('style')]
+    if styles.count('sacador_over') >= 1 and any(x in styles for x in ['sacador_over','hold_alto']):
+        style_bonus += 6
+    if avg_hold is not None and avg_break is not None and avg_hold >= 0.84 and avg_break <= 0.19:
+        style_bonus += 8
+    easy_avg = _ta_int_avg([a.get('easy'), b.get('easy')], 0.20)
+    long_match_score = float(np.clip(avg_long + style_bonus - max(0, easy_avg - 0.25) * 25, 0, 100))
+
+    model20 = _ta_int_float(model_over20, 0.0) or 0.0
+    model21 = _ta_int_float(model_over21, 0.0) or 0.0
+    model22 = _ta_int_float(model_over22, 0.0) or 0.0
+    model_support = max(model20, model21 * 0.92, model22 * 0.85)
+    combined_long = float(np.clip(long_match_score * 0.78 + model_support * 100 * 0.22, 0, 100))
+
+    if found_count == 2 and combined_long >= 78 and sample >= 0.58:
+        perfil = '🔥 TA OVER LARGO'
+        recomendacion = 'OBSERVAR Over 20.5 / 21.5'
+    elif combined_long >= 68 and sample >= 0.48:
+        perfil = '✅ TA largo interesante'
+        recomendacion = 'OBSERVAR si Over18 oficial'
+    elif avg_set >= 78 and sample >= 0.50:
+        perfil = '🎾 TA set competitivo'
+        recomendacion = 'OBSERVAR gana set'
+    else:
+        perfil = '👀 TA neutro'
+        recomendacion = 'Solo apoyo informativo'
+
+    motivos = []
+    if avg_over18 is not None: motivos.append(f"Over18 TA {avg_over18:.0%}")
+    if avg_over19 is not None: motivos.append(f"Over19 TA {avg_over19:.0%}")
+    if avg_games is not None: motivos.append(f"media juegos TA {avg_games:.1f}")
+    if avg_three is not None: motivos.append(f"3 sets TA {avg_three:.0%}")
+    if avg_hold is not None: motivos.append(f"Hold {avg_hold:.0%}")
+    if avg_break is not None: motivos.append(f"Break {avg_break:.0%}")
+    if avg_tb is not None: motivos.append(f"TB% {avg_tb:.0%}")
+    motivos.append(f"muestra {sample:.0%}, fichas {found_count}/2")
+
+    return {
+        'found_count': found_count,
+        'TA_OVER_SCORE': round(avg_over_score, 1),
+        'TA_LONG_MATCH_SCORE': round(combined_long, 1),
+        'TA_SET_SCORE': round(avg_set, 1),
+        'TA_PERFIL': perfil,
+        'TA_RECOMENDACION': recomendacion,
+        'TA_MOTIVO': ' · '.join(motivos[:8]),
+        'TA_J1_SCORE': round(a.get('long_score', 0.0), 1) if a.get('found') else '',
+        'TA_J2_SCORE': round(b.get('long_score', 0.0), 1) if b.get('found') else '',
+        'TA_J1_ESTILO': a.get('style','') if a.get('found') else '',
+        'TA_J2_ESTILO': b.get('style','') if b.get('found') else '',
+    }
+
+
+def crear_ta_intelligence_ranking_df_v23510(detalle_df):
+    """Hoja de estudio para Excel: partidos ordenados por TA Long Match."""
+    if detalle_df is None or len(detalle_df) == 0:
+        return pd.DataFrame()
+    df = detalle_df.copy()
+    if 'TA_LONG_MATCH_SCORE' not in df.columns:
+        return pd.DataFrame()
+    def num(x):
+        try: return float(str(x).replace(',','.'))
+        except Exception: return -1.0
+    df['_ta_long_num'] = df['TA_LONG_MATCH_SCORE'].apply(num)
+    cols = [c for c in [
+        'Partido','Circuito cálculo','Superficie','🎯 Acción final','Pick oficial','Mercado recomendado',
+        'Over 18.5','Over 19.5','Over 20.5','Over 21.5 estudio','TA_PERFIL','TA_RECOMENDACION',
+        'TA_LONG_MATCH_SCORE','TA_OVER_SCORE','TA_SET_SCORE','TA_MOTIVO','TA_J1_SCORE','TA_J2_SCORE','TA_J1_ESTILO','TA_J2_ESTILO'
+    ] if c in df.columns]
+    out = df.sort_values('_ta_long_num', ascending=False)[cols].head(60).copy()
+    return out
+
 def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, progress_callback=None):
     rows = []
     total = len(parsed_matches)
@@ -8036,6 +8336,13 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         gs_market_label = gs5.get("best_label", "") if gs5 else ""
         gs_acierto = acierta_mercado_gs_bo5(gs_market_label, gs_reales) if gs5 else ""
 
+        # v23.51.0 TA Intelligence: capa OBSERVAR, no altera el pick ni el motor Over.
+        ta_intel = ta_intelligence_match(
+            p1_key, p2_key, match_surface,
+            model_over18=over18, model_over19=over19, model_over20=over20,
+            model_over21=over21_raw, model_over22=over22, sim=sim
+        )
+
         rows.append({
             "Versión app": APP_VERSION,
             "Fecha": m.get("date", ""),
@@ -8079,6 +8386,16 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Over 19.5": f"{over19:.1%}",
             "Over 20.5": f"{over20:.1%}",
             "Over 21.5 estudio": f"{over21_raw:.1%}",
+            "TA_OVER_SCORE": ta_intel.get("TA_OVER_SCORE", ""),
+            "TA_LONG_MATCH_SCORE": ta_intel.get("TA_LONG_MATCH_SCORE", ""),
+            "TA_SET_SCORE": ta_intel.get("TA_SET_SCORE", ""),
+            "TA_PERFIL": ta_intel.get("TA_PERFIL", ""),
+            "TA_RECOMENDACION": ta_intel.get("TA_RECOMENDACION", ""),
+            "TA_MOTIVO": ta_intel.get("TA_MOTIVO", ""),
+            "TA_J1_SCORE": ta_intel.get("TA_J1_SCORE", ""),
+            "TA_J2_SCORE": ta_intel.get("TA_J2_SCORE", ""),
+            "TA_J1_ESTILO": ta_intel.get("TA_J1_ESTILO", ""),
+            "TA_J2_ESTILO": ta_intel.get("TA_J2_ESTILO", ""),
             "Under 22.5": f"{under22:.1%}",
             "🏆 GS 5 sets activo": "Sí" if gs5 else "",
             "🏆 Mercado GS 5 sets": gs5.get("best_label", "") if gs5 else "",
@@ -11625,6 +11942,18 @@ def prepare_batch_display_table(ok_df):
         "3 sets real",
         "Acierta 3 sets",
         "Over 19.5",
+        "Over 20.5",
+        "Over 21.5 estudio",
+        "TA_PERFIL",
+        "TA_RECOMENDACION",
+        "TA_LONG_MATCH_SCORE",
+        "TA_OVER_SCORE",
+        "TA_SET_SCORE",
+        "TA_MOTIVO",
+        "TA_J1_SCORE",
+        "TA_J2_SCORE",
+        "TA_J1_ESTILO",
+        "TA_J2_ESTILO",
         "Under 22.5",
         "Jugador gana set",
         "Prob gana set",
@@ -15959,6 +16288,9 @@ def batch_excel_bytes(df):
             crear_juegos_jugador_df_v23480(detalle_df).to_excel(writer, index=False, sheet_name="JUEGOS_JUGADOR")
             crear_estudio_over_superior_df_v23500(detalle_df).to_excel(writer, index=False, sheet_name="ESTUDIO OVER 20-21")
             crear_adn_over_largo_estudio_v23502(detalle_df).to_excel(writer, index=False, sheet_name="ADN OVER LARGO")
+            ta_rank = crear_ta_intelligence_ranking_df_v23510(detalle_df)
+            if ta_rank is not None and not ta_rank.empty:
+                ta_rank.to_excel(writer, index=False, sheet_name="TA INTELLIGENCE")
         except Exception:
             pass
         detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
@@ -15989,6 +16321,9 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
             crear_juegos_jugador_df_v23480(detalle_df).to_excel(writer, index=False, sheet_name="JUEGOS_JUGADOR")
             crear_estudio_over_superior_df_v23500(detalle_df).to_excel(writer, index=False, sheet_name="ESTUDIO OVER 20-21")
             crear_adn_over_largo_estudio_v23502(detalle_df).to_excel(writer, index=False, sheet_name="ADN OVER LARGO")
+            ta_rank = crear_ta_intelligence_ranking_df_v23510(detalle_df)
+            if ta_rank is not None and not ta_rank.empty:
+                ta_rank.to_excel(writer, index=False, sheet_name="TA INTELLIGENCE")
         except Exception:
             pass
         detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
