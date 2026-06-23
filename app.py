@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.50.1 Manual + OCR", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.50.7-ta-cache-alias-sin-duplicar-hashlib-fix"
+APP_VERSION = "v23.50.8-excel-over-oficial-priority"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -15194,26 +15194,34 @@ def _clasificar_estrategia_apuesta_v23467(row):
     is_gana_set = ("set" in mercado and ("gana" in mercado or "al menos" in mercado))
     is_over18 = ("over" in mercado and "18" in mercado)
     is_over19 = ("over" in mercado and "19" in mercado)
+    is_over20 = ("over" in mercado and "20" in mercado)
+    is_over21 = ("over" in mercado and "21" in mercado)
     is_ml = ("ganador" in mercado or "ml" in mercado or "gana partido" in mercado)
 
-    # Priorización basada en el backtest que hemos visto: ganar 1 set > Over 18.5 > ML fuerte.
-    if is_jugar and is_gana_set:
-        return "🥇 Gana 1 set JUGAR", 100
+    # v23.50.8: ranking SOLO de Excel. El motor Over no se toca.
+    # Si el exportador ya trae Pick oficial/Mercado recomendado Over, el TOP debe enseñarlo
+    # por delante de gana-set para no tapar los Overs fuertes del día.
     if is_jugar and is_over18:
-        return "🥈 Over 18.5 JUGAR", 92
-    if is_jugar and is_ml:
-        return "🥉 ML favorito JUGAR", 84
+        return "🥇 Over 18.5 JUGAR", 106
     if is_jugar and is_over19:
-        return "⚡ Over 19.5 JUGAR", 78
+        return "🥈 Over 19.5 JUGAR", 98
+    if is_jugar and (is_over20 or is_over21):
+        return "🧪 Over superior estudio", 90
+    if is_jugar and is_gana_set:
+        return "🥉 Gana 1 set JUGAR", 86
+    if is_jugar and is_ml:
+        return "✅ ML favorito JUGAR", 78
     if is_jugar:
         return "✅ Otro JUGAR", 70
 
-    if is_obs and is_gana_set:
-        return "👀 Gana 1 set OBSERVAR", 56
     if is_obs and is_over18:
-        return "👀 Over 18.5 OBSERVAR", 52
+        return "👀 Over 18.5 OBSERVAR", 58
+    if is_obs and is_over19:
+        return "👀 Over 19.5 OBSERVAR", 54
+    if is_obs and is_gana_set:
+        return "👀 Gana 1 set OBSERVAR", 48
     if is_obs and is_ml:
-        return "👀 ML OBSERVAR", 46
+        return "👀 ML OBSERVAR", 42
     if is_obs:
         return "👀 Otro OBSERVAR", 35
 
@@ -15368,14 +15376,15 @@ def crear_combinada_recomendada_df_v23467(picks_df):
     gana_set = jugar[mercado.loc[jugar.index].str.contains("set", na=False) & (mercado.loc[jugar.index].str.contains("gana|al menos", regex=True, na=False))]
     over18 = jugar[mercado.loc[jugar.index].str.contains("over", na=False) & mercado.loc[jugar.index].str.contains("18", na=False)]
 
-    seleccion = _sin_repetir_partido(gana_set)
-    estrategia = "A: 2 x Gana 1 set JUGAR"
+    # v23.50.8: combinada del Excel prioriza Over oficial si existe. No cambia motores.
+    seleccion = _sin_repetir_partido(over18)
+    estrategia = "A: 2 x Over 18.5 JUGAR"
     if len(seleccion) < 2:
-        seleccion = _sin_repetir_partido(pd.concat([gana_set, over18], ignore_index=False))
-        estrategia = "B: Gana 1 set JUGAR + mejor Over 18.5 JUGAR"
+        seleccion = _sin_repetir_partido(pd.concat([over18, gana_set], ignore_index=False))
+        estrategia = "B: mejor Over 18.5 JUGAR + Gana 1 set"
     if len(seleccion) < 2:
-        seleccion = _sin_repetir_partido(over18)
-        estrategia = "C: 2 x Over 18.5 JUGAR"
+        seleccion = _sin_repetir_partido(gana_set)
+        estrategia = "C: 2 x Gana 1 set JUGAR"
 
     if len(seleccion) < 2:
         return pd.DataFrame([{
@@ -15390,6 +15399,107 @@ def crear_combinada_recomendada_df_v23467(picks_df):
     out.insert(1, "Estrategia", estrategia)
     out.insert(2, "Estado", "COMBINADA RECOMENDADA")
     return out
+
+
+def _excel_pick_export_over_priority_v23508(row):
+    """Presentación para Excel únicamente.
+
+    No cambia simulaciones, probabilidades ni motor Over. Evita que PICKS LIMPIOS/TOP
+    oculten un Pick oficial Over detrás del mercado visual 🎯 (por ejemplo gana-set).
+    Prioridad de presentación:
+      1) Pick oficial si contiene Over.
+      2) Mercado recomendado si contiene Over.
+      3) Pick oficial no vacío.
+      4) Mercado visual 🎯 original.
+    """
+    def s(col):
+        try:
+            v = row.get(col, "")
+            if pd.isna(v):
+                return ""
+            return str(v).strip()
+        except Exception:
+            return ""
+
+    visual_market = s("🎯 Mercado más probable")
+    visual_prob = s("🎯 Prob máxima")
+    visual_action = s("🎯 Acción final")
+    visual_conf = s("🎯 Confianza acierto")
+    visual_motivo = s("🎯 Motivo acierto")
+
+    pick_oficial = s("Pick oficial")
+    mercado_rec = s("Mercado recomendado")
+    prob_rec = s("Prob mercado recomendado")
+    motivo_rec = s("Motivo Market Selector")
+    recomendacion = s("Recomendación")
+
+    candidatos = []
+    if pick_oficial:
+        candidatos.append((pick_oficial, "pick", "Pick oficial"))
+    if mercado_rec:
+        candidatos.append((mercado_rec, "reco", "Mercado recomendado"))
+    if recomendacion:
+        candidatos.append((recomendacion, "reco", "Recomendación"))
+    if visual_market:
+        candidatos.append((visual_market, "visual", "Selector visual"))
+
+    def is_over(txt):
+        t = str(txt).upper()
+        return "OVER" in t and any(x in t for x in ["17.5", "18.5", "19.5", "20.5", "21.5", "17", "18", "19", "20", "21"])
+
+    chosen = None
+    for cand in candidatos:
+        if is_over(cand[0]):
+            chosen = cand
+            break
+    if chosen is None:
+        for cand in candidatos:
+            if cand[0] and cand[0].upper() not in ["NAN", "NONE", "N/D", "NO BET"]:
+                chosen = cand
+                break
+    if chosen is None:
+        chosen = (visual_market, "visual", "Selector visual")
+
+    mercado, tipo, origen = chosen
+    mercado_u = str(mercado).upper()
+
+    # Probabilidad que acompaña al mercado elegido. Si el mercado viene de oficial/reco,
+    # usar Prob mercado recomendado cuando exista; si no, extraer porcentaje del texto.
+    prob = visual_prob
+    if tipo in ["pick", "reco"]:
+        prob = prob_rec or visual_prob
+        m = re.search(r"(\d+(?:[\.,]\d+)?)\s*%", str(mercado))
+        if m:
+            prob = m.group(1).replace(",", ".") + "%"
+
+    accion = visual_action
+    confianza = visual_conf
+    motivo = visual_motivo
+
+    # Si es pick oficial Over, mostrarlo como JUGAR en Excel siempre que no sea NO BET.
+    # Esto NO modifica el cálculo: solo evita que la hoja lo tape con gana-set.
+    if is_over(mercado) and "NO BET" not in mercado_u:
+        if "OBSERV" in mercado_u and "JUGAR" not in mercado_u:
+            accion = "👀 OBSERVAR"
+        else:
+            accion = "✅ JUGAR"
+        if any(x in mercado_u for x in ["🔥", "FUERTE", "MUY ALTO", "ALTA"]):
+            confianza = confianza or "🔥 Alta"
+        else:
+            confianza = confianza or "✅ Media-alta"
+        motivo = (motivo_rec or visual_motivo or "Excel prioriza Pick oficial/Mercado recomendado Over para no taparlo con otro mercado.")
+        motivo = f"{motivo} | Fuente Excel: {origen}"
+    elif tipo in ["pick", "reco"] and mercado:
+        motivo = (motivo_rec or visual_motivo or "Mercado oficial exportado.") + f" | Fuente Excel: {origen}"
+
+    return pd.Series({
+        "__excel_accion": accion,
+        "__excel_mercado": _limpiar_texto_excel_cell(mercado),
+        "__excel_prob": prob,
+        "__excel_confianza": confianza,
+        "__excel_motivo": motivo,
+        "__excel_fuente_pick": origen,
+    })
 
 
 def crear_picks_limpios_df(df):
@@ -15414,8 +15524,25 @@ def crear_picks_limpios_df(df):
         "🎯 Motivo acierto": "Motivo",
         "📥 Motivo Datos extra": "Motivo Datos extra",
     })
-    if "Mercado" in picks.columns:
-        picks["Mercado"] = picks["Mercado"].apply(_limpiar_texto_excel_cell)
+    # v23.50.8: corregir SOLO presentación Excel.
+    # Si existe Pick oficial/Mercado recomendado Over, manda sobre 🎯 Mercado más probable.
+    try:
+        excel_pick_cols = out.apply(_excel_pick_export_over_priority_v23508, axis=1)
+        excel_pick_cols.index = picks.index
+        if "Acción" in picks.columns:
+            picks["Acción"] = excel_pick_cols["__excel_accion"].values
+        if "Mercado" in picks.columns:
+            picks["Mercado"] = excel_pick_cols["__excel_mercado"].values
+        if "Prob." in picks.columns:
+            picks["Prob."] = excel_pick_cols["__excel_prob"].values
+        if "Confianza" in picks.columns:
+            picks["Confianza"] = excel_pick_cols["__excel_confianza"].values
+        if "Motivo" in picks.columns:
+            picks["Motivo"] = excel_pick_cols["__excel_motivo"].values
+        picks["Fuente pick Excel"] = excel_pick_cols["__excel_fuente_pick"].values
+    except Exception:
+        if "Mercado" in picks.columns:
+            picks["Mercado"] = picks["Mercado"].apply(_limpiar_texto_excel_cell)
 
     def _score(row):
         accion = str(row.get("Acción", "")).upper()
