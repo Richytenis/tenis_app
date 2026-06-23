@@ -2,14 +2,14 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import random, re, os, glob, unicodedata, time, io, gc, json
+import random, re, os, glob, unicodedata, time, io, gc, json, hashlib
 import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.50.1 Manual + OCR", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.50.6-ta-cache-alias-sin-duplicar"
+APP_VERSION = "v23.50.7-ta-cache-alias-sin-duplicar-hashlib-fix"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
