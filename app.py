@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.50.1 Manual + OCR", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.50.4-ta-cache-flatten-fix"
+APP_VERSION = "v23.50.5-ta-cache-flat-alias-fix"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -11766,71 +11766,91 @@ def _ta_profile_cache_path():
 
 
 def _ta_profile_cache_extract_entries(data):
-    """Devuelve SOLO fichas reales del JSON TA, aunque el backup venga anidado.
+    """Devuelve SOLO las fichas reales del JSON TA.
 
-    Arregla dos casos detectados:
-    1) {schema, app_version, exported_at, entries:{PLAYERKEY: ficha}}
-    2) backups anidados varias veces: entries -> entries -> entries,
-       conservando también jugadores que estén como hermanos de otro entries.
+    Soporta:
+    1) formato directo: {PLAYERKEY: ficha, ...}
+    2) formato backup: {schema, app_version, exported_at, entries:{PLAYERKEY: ficha, ...}}
+    3) backups anidados varias veces: {entries:{entries:{entries:{PLAYERKEY:ficha}}}}
 
-    No toca cálculos ni motor Over: solo normaliza la lectura de caché TA.
+    Importante: el JSON de backup puede pesar mucho por el raw_text, aunque tenga pocas
+    fichas reales. Esta función baja hasta el nivel donde están las fichas.
     """
     if not isinstance(data, dict):
         return {}
 
-    meta_keys = {"schema", "app_version", "exported_at", "entries"}
-    out = {}
-
-    def is_profile_dict(v):
-        if not isinstance(v, dict):
-            return False
-        profile_markers = {
-            "player", "expected_player", "raw_text", "uploaded_at",
-            "source", "tennisabstract", "flashscore", "ta_player_detected",
-            "recent_profile", "largos", "palizas"
-        }
-        return bool(profile_markers & set(v.keys()))
-
-    def walk(obj, depth=0):
-        if not isinstance(obj, dict) or depth > 20:
-            return
-        for k, v in obj.items():
-            if k == "entries" and isinstance(v, dict):
-                walk(v, depth + 1)
-                continue
-            if k in meta_keys:
-                continue
-            if is_profile_dict(v):
-                kk = _ta_profile_cache_key(k) if "_ta_profile_cache_key" in globals() else limpiar(k)
-                if kk:
-                    out[kk] = v
-                # Añade también claves robustas por nombres internos de la ficha.
-                for nm in [v.get("player", ""), v.get("expected_player", ""), v.get("ta_player_detected", "")]:
-                    nm = normalizar_texto(nm)
-                    if not nm:
-                        continue
-                    for nm2 in [nm, _ta_alias_resolve(nm), apellido_inicial_key(nm)]:
-                        kk2 = _ta_profile_cache_key(nm2) if "_ta_profile_cache_key" in globals() else limpiar(nm2)
-                        if kk2:
-                            out.setdefault(kk2, v)
-            elif isinstance(v, dict):
-                # Por seguridad, si hubiera otro contenedor interno, seguimos bajando.
-                walk(v, depth + 1)
-
-    walk(data)
-
-    if out:
-        return out
-
-    # Fallback para cachés antiguas directas sin marcadores claros.
-    clean = {}
-    for k, v in data.items():
-        if k in meta_keys or not isinstance(v, dict):
+    current = data
+    for _ in range(20):
+        entries = current.get("entries") if isinstance(current, dict) else None
+        if not isinstance(entries, dict):
+            break
+        # Si current es claramente un wrapper de exportación, baja un nivel.
+        current_keys = set(current.keys())
+        if {"schema", "app_version", "exported_at", "entries"} & current_keys:
+            current = entries
             continue
-        kk = _ta_profile_cache_key(k) if "_ta_profile_cache_key" in globals() else limpiar(k)
-        if kk:
-            clean[kk] = v
-    return clean
+        # Si entries también es wrapper, baja otro nivel.
+        if isinstance(entries.get("entries"), dict) or "schema" in entries:
+            current = entries
+            continue
+        break
+
+    if isinstance(current, dict) and isinstance(current.get("entries"), dict):
+        return current.get("entries")
+    return current if isinstance(current, dict) else {}
+
+
+def _ta_profile_cache_add_alias_keys(cache):
+    """Añade claves espejo para nombres equivalentes sin duplicar fichas reales.
+
+    Ejemplos:
+    - FELIXAUGERALIASSIME / AUGERALIASSIMEF
+    - A. Zverev / Alexander Zverev
+    - nombre player / expected_player / ta_player_detected
+
+    No inventa fichas: solo permite encontrar las que ya existen en el JSON.
+    """
+    if not isinstance(cache, dict):
+        return {}
+
+    out = dict(cache)
+    for k, item in list(cache.items()):
+        if not isinstance(item, dict):
+            continue
+        names = [
+            k,
+            item.get("player", ""),
+            item.get("expected_player", ""),
+            item.get("ta_player_detected", ""),
+        ]
+        raw = str(item.get("raw_text", "") or "")
+        # A veces la primera línea del raw_text trae el nombre TA exacto.
+        first_line = normalizar_texto(raw.splitlines()[0] if raw else "")
+        if first_line:
+            names.append(first_line)
+
+        for nm in names:
+            nm = normalizar_texto(nm)
+            if not nm:
+                continue
+            variants = [nm, _ta_alias_resolve(nm), apellido_inicial_key(nm)]
+            toks = tokens(nm)
+            if len(toks) >= 2:
+                first, last = toks[0], toks[-1]
+                variants.extend([
+                    f"{last} {first}",
+                    f"{last} {first[0]}",
+                    f"{first[0]} {last}",
+                    f"{last}{first[0]}",
+                    f"{first[0]}{last}",
+                ])
+            for v in variants:
+                kk = _ta_profile_cache_key(v)
+                if not kk:
+                    continue
+                # No pisar una ficha distinta ya existente.
+                out.setdefault(kk, item)
+    return out
 
 
 def _ta_profile_cache_load_from_disk_once():
@@ -11844,7 +11864,7 @@ def _ta_profile_cache_load_from_disk_once():
                 continue
             with open(path, "r", encoding="utf-8") as f:
                 raw_data = json.load(f)
-            data = _ta_profile_cache_extract_entries(raw_data)
+            data = _ta_profile_cache_add_alias_keys(_ta_profile_cache_extract_entries(raw_data))
             if isinstance(data, dict) and len(data) > best_size:
                 best_data = data
                 best_path = path
@@ -11861,11 +11881,12 @@ def _ta_profile_cache_load(force_reload=False):
     # cada vez que se analiza una lista o se abre el backup/uploader.
     if force_reload or "ta_profile_cache_memory" not in st.session_state:
         st.session_state["ta_profile_cache_memory"] = _ta_profile_cache_load_from_disk_once()
-    cache = _ta_profile_cache_extract_entries(st.session_state.get("ta_profile_cache_memory", {}))
-    if cache is not st.session_state.get("ta_profile_cache_memory"):
+    cache = _ta_profile_cache_add_alias_keys(_ta_profile_cache_extract_entries(st.session_state.get("ta_profile_cache_memory", {})))
+    if isinstance(cache, dict):
         st.session_state["ta_profile_cache_memory"] = cache
-        st.session_state["ta_profile_cache_loaded_keys"] = len(cache) if isinstance(cache, dict) else 0
-    return cache if isinstance(cache, dict) else {}
+        st.session_state["ta_profile_cache_loaded_keys"] = len(cache)
+        return cache
+    return {}
 
 
 def _ta_profile_cache_save(cache):
@@ -11922,7 +11943,7 @@ def _ta_profile_cache_import_merge_v234924(uploaded_bytes):
             raw = raw.decode("utf-8")
         data = json.loads(str(raw or "{}"))
 
-        # Soporta formato directo, backup y backup anidado.
+        # Soporta formato nuevo, formato antiguo y backups anidados.
         incoming = _ta_profile_cache_extract_entries(data) if isinstance(data, dict) else {}
         if not isinstance(incoming, dict) or not incoming:
             return False, "el JSON no contiene fichas TA"
