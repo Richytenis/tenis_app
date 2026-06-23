@@ -7,9 +7,9 @@ import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
-st.set_page_config(page_title="Tennis IA v23.50.1 Manual + OCR", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.52 Excel práctico + TA", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.51.0-ta-intelligence-observar"
+APP_VERSION = "v23.52.0-excel-practico-ta-adn"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -8176,23 +8176,81 @@ def ta_intelligence_match(p1_name, p2_name, surface, model_over18=None, model_ov
 
 
 def crear_ta_intelligence_ranking_df_v23510(detalle_df):
-    """Hoja de estudio para Excel: partidos ordenados por TA Long Match."""
+    """Hoja práctica de TA Intelligence ordenada por partido largo / gana-set.
+
+    Modo observar: no modifica picks oficiales ni el motor Over.
+    """
     if detalle_df is None or len(detalle_df) == 0:
         return pd.DataFrame()
     df = detalle_df.copy()
     if 'TA_LONG_MATCH_SCORE' not in df.columns:
         return pd.DataFrame()
+
     def num(x):
-        try: return float(str(x).replace(',','.'))
-        except Exception: return -1.0
+        try:
+            if pd.isna(x): return 0.0
+            v = float(str(x).replace('%','').replace(',','.').strip())
+            return v / 100.0 if v > 1.5 else v
+        except Exception:
+            return 0.0
+
+    def pct(x):
+        try:
+            return float(leer_porcentaje(x, 0) or 0)
+        except Exception:
+            return 0.0
+
+    try:
+        adn_cols = df.apply(_adn_over_largo_excel_v23520, axis=1)
+        for c in adn_cols.columns:
+            df[c] = adn_cols[c]
+    except Exception:
+        pass
+
     df['_ta_long_num'] = df['TA_LONG_MATCH_SCORE'].apply(num)
+    df['_ta_set_num'] = df['TA_SET_SCORE'].apply(num) if 'TA_SET_SCORE' in df.columns else 0.0
+    df['_o20_num'] = df['Over 20.5'].apply(pct) if 'Over 20.5' in df.columns else 0.0
+    df['_o21_num'] = df['Over 21.5 estudio'].apply(pct) if 'Over 21.5 estudio' in df.columns else 0.0
+    df['_ta_score_final'] = (df['_ta_long_num'] * 0.55 + df['_o20_num'] * 0.25 + df['_o21_num'] * 0.10 + df['_ta_set_num'] * 0.10)
+
+    def etiqueta(row):
+        long_score = float(row.get('_ta_long_num', 0) or 0)
+        set_score = float(row.get('_ta_set_num', 0) or 0)
+        o20 = float(row.get('_o20_num', 0) or 0)
+        if long_score >= 0.78 and o20 >= 0.56:
+            return '🔥 TA partido largo fuerte'
+        if long_score >= 0.68:
+            return '✅ TA largo interesante'
+        if set_score >= 0.78:
+            return '🎾 TA gana-set interesante'
+        return '👀 TA apoyo informativo'
+
+    df['Señal TA limpia'] = df.apply(etiqueta, axis=1)
     cols = [c for c in [
-        'Partido','Circuito cálculo','Superficie','🎯 Acción final','Pick oficial','Mercado recomendado',
-        'Over 18.5','Over 19.5','Over 20.5','Over 21.5 estudio','TA_PERFIL','TA_RECOMENDACION',
-        'TA_LONG_MATCH_SCORE','TA_OVER_SCORE','TA_SET_SCORE','TA_MOTIVO','TA_J1_SCORE','TA_J2_SCORE','TA_J1_ESTILO','TA_J2_ESTILO'
+        'Hora','Fecha','Circuito cálculo','Torneo','Superficie','Partido','🎯 Acción final','Pick oficial','Mercado recomendado',
+        'Señal TA limpia','ADN Over Largo','Línea larga estudio','Over 18.5','Over 19.5','Over 20.5','Over 21.5 estudio',
+        'TA_PERFIL','TA_RECOMENDACION','TA_LONG_MATCH_SCORE','TA_OVER_SCORE','TA_SET_SCORE','TA_MOTIVO',
+        'TA_J1_SCORE','TA_J2_SCORE','TA_J1_ESTILO','TA_J2_ESTILO','Partido a 3 sets','Jugador gana set','Prob gana set'
     ] if c in df.columns]
-    out = df.sort_values('_ta_long_num', ascending=False)[cols].head(60).copy()
-    return out
+    out = df.sort_values('_ta_score_final', ascending=False)[cols + ['_ta_score_final']].head(80).copy()
+    out.insert(0, 'Ranking TA', [f'#{i}' for i in range(1, len(out)+1)])
+    out['Score TA final'] = out.pop('_ta_score_final').apply(lambda x: f'{float(x):.1%}')
+    out = out.rename(columns={
+        'Circuito cálculo': 'Circuito',
+        '🎯 Acción final': 'Acción actual',
+        'Over 21.5 estudio': 'Over 21.5',
+        'TA_PERFIL': 'Perfil TA',
+        'TA_RECOMENDACION': 'TA observar',
+        'TA_LONG_MATCH_SCORE': 'TA largo',
+        'TA_OVER_SCORE': 'TA over',
+        'TA_SET_SCORE': 'TA set',
+        'TA_MOTIVO': 'Motivo TA',
+        'TA_J1_SCORE': 'TA J1 largo',
+        'TA_J2_SCORE': 'TA J2 largo',
+        'TA_J1_ESTILO': 'Estilo J1',
+        'TA_J2_ESTILO': 'Estilo J2',
+    })
+    return out.reset_index(drop=True)
 
 def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, progress_callback=None):
     rows = []
@@ -15468,11 +15526,16 @@ def aplicar_challenger_recent_form_engine(df):
 # =========================================================
 
 PICKS_LIMPIOS_COLS = [
-    "Hora", "Fecha", "Torneo", "Superficie", "Partido",
+    # Hoja práctica: solo lo que sirve para decidir/revisar el día.
+    # No modifica cálculos, solo presentación Excel.
+    "Hora", "Fecha", "Circuito cálculo", "Torneo", "Superficie", "Partido",
     "🎯 Acción final", "🎯 Mercado más probable", "🎯 Prob máxima", "🎯 Confianza acierto",
-    "📥 Necesita Datos extra", "📥 Prioridad Datos extra", "📥 Estado Datos extra", "📥 Ajuste Datos extra", "📥 Qué mirar Datos extra",
-    "🎯 Motivo acierto", "📥 Motivo Datos extra",
+    "Pick oficial", "Mercado recomendado", "Prob mercado recomendado",
+    "Over 18.5", "Over 19.5", "Over 20.5", "Over 21.5 estudio",
+    "ADN Over Largo", "Línea larga estudio", "Motivo ADN largo",
+    "TA_PERFIL", "TA_RECOMENDACION", "TA_LONG_MATCH_SCORE", "TA_SET_SCORE", "TA_MOTIVO",
     "Mejor juegos jugador", "Prob juegos jugador", "Confianza juegos jugador",
+    "Riesgos", "🎯 Motivo acierto",
 ]
 
 DETALLE_TECNICO_FIRST_COLS = [
@@ -15831,20 +15894,117 @@ def _excel_pick_export_over_priority_v23508(row):
     })
 
 
+
+
+def _adn_over_largo_excel_v23520(row):
+    """Señal visual para estudiar si un Over 18.5/19.5 puede estirarse a 20.5/21.5.
+
+    Es 100% presentación/estudio: no cambia motor Over, picks oficiales, filtros ni simulaciones.
+    """
+    def pct(col):
+        try:
+            return float(leer_porcentaje(row.get(col, 0), 0) or 0)
+        except Exception:
+            return 0.0
+
+    def num(col):
+        try:
+            v = row.get(col, "")
+            if pd.isna(v):
+                return 0.0
+            return float(str(v).replace("%", "").replace(",", ".").strip())
+        except Exception:
+            return 0.0
+
+    p18 = pct("Over 18.5")
+    p19 = pct("Over 19.5")
+    p20 = pct("Over 20.5")
+    p21 = pct("Over 21.5 estudio")
+    p3s = pct("Partido a 3 sets")
+    ta_long = num("TA_LONG_MATCH_SCORE") / 100.0
+    ta_set = num("TA_SET_SCORE") / 100.0
+    ta_long = max(0.0, min(1.0, ta_long))
+    ta_set = max(0.0, min(1.0, ta_set))
+
+    score = (
+        p18 * 0.16 +
+        p19 * 0.20 +
+        p20 * 0.25 +
+        p21 * 0.12 +
+        ta_long * 0.20 +
+        max(p3s, ta_set) * 0.07
+    )
+
+    if p21 >= 0.52 and p20 >= 0.56 and ta_long >= 0.70:
+        linea = "Over 21.5 estudio"
+    elif p20 >= 0.56 and ta_long >= 0.62:
+        linea = "Over 20.5 estudio"
+    elif p19 >= 0.65 and (ta_long >= 0.55 or p3s >= 0.36):
+        linea = "Over 19.5"
+    elif p18 >= 0.78:
+        linea = "Mantener Over 18.5"
+    else:
+        linea = "No subir línea"
+
+    if score >= 0.72:
+        etiqueta = "🔥 ADN largo fuerte"
+    elif score >= 0.64:
+        etiqueta = "✅ ADN largo interesante"
+    elif score >= 0.56:
+        etiqueta = "👀 Observar largo"
+    else:
+        etiqueta = "— Sin señal larga"
+
+    motivos = []
+    if p18: motivos.append(f"O18 {p18:.0%}")
+    if p19: motivos.append(f"O19 {p19:.0%}")
+    if p20: motivos.append(f"O20 {p20:.0%}")
+    if p21: motivos.append(f"O21 {p21:.0%}")
+    if ta_long: motivos.append(f"TA largo {ta_long:.0%}")
+    if p3s: motivos.append(f"3 sets {p3s:.0%}")
+    if ta_set: motivos.append(f"TA set {ta_set:.0%}")
+
+    return pd.Series({
+        "ADN Over Largo": etiqueta,
+        "Línea larga estudio": linea,
+        "Motivo ADN largo": " · ".join(motivos[:7]),
+    })
+
 def crear_picks_limpios_df(df):
     """Hoja simple para decidir: una fila por partido y solo columnas útiles."""
     if df is None or df.empty:
         return pd.DataFrame(columns=PICKS_LIMPIOS_COLS)
     out = df.copy()
+    try:
+        adn_cols = out.apply(_adn_over_largo_excel_v23520, axis=1)
+        for _c in adn_cols.columns:
+            out[_c] = adn_cols[_c]
+    except Exception:
+        for _c in ["ADN Over Largo", "Línea larga estudio", "Motivo ADN largo"]:
+            out[_c] = ""
     for c in PICKS_LIMPIOS_COLS:
         if c not in out.columns:
             out[c] = ""
     picks = out[[c for c in PICKS_LIMPIOS_COLS if c in out.columns]].copy()
     picks = picks.rename(columns={
+        "Circuito cálculo": "Circuito",
         "🎯 Acción final": "Acción",
         "🎯 Mercado más probable": "Mercado",
         "🎯 Prob máxima": "Prob.",
         "🎯 Confianza acierto": "Confianza",
+        "Pick oficial": "Pick oficial app",
+        "Mercado recomendado": "Mercado base",
+        "Prob mercado recomendado": "Prob. base",
+        "Over 21.5 estudio": "Over 21.5",
+        "TA_PERFIL": "ADN TA",
+        "TA_RECOMENDACION": "TA observar",
+        "TA_LONG_MATCH_SCORE": "TA largo",
+        "TA_SET_SCORE": "TA set",
+        "TA_MOTIVO": "Motivo TA",
+        "Mejor juegos jugador": "Juegos jugador",
+        "Prob juegos jugador": "Prob. juegos",
+        "Confianza juegos jugador": "Conf. juegos",
+        "Riesgos": "Riesgo",
         "📥 Necesita Datos extra": "Datos extra",
         "📥 Prioridad Datos extra": "Prioridad Datos extra",
         "📥 Estado Datos extra": "Estado Datos extra",
@@ -15938,7 +16098,7 @@ def aplicar_estilo_excel_limpio(writer):
             for r in range(2, min(ws.max_row, 80) + 1):
                 max_len = max(max_len, len(str(ws.cell(row=r, column=col_idx).value or "")))
             width = min(max(max_len + 2, 10), 42)
-            if header in ["Partido", "Mercado", "Qué mirar", "Motivo", "Motivo Datos extra", "🎯 Motivo acierto", "📥 Qué mirar Datos extra", "📥 Motivo Datos extra"]:
+            if header in ["Partido", "Mercado", "Motivo", "Riesgo", "Motivo ADN largo", "Motivo TA", "Motivo Datos extra", "Qué mirar", "🎯 Motivo acierto", "📥 Qué mirar Datos extra", "📥 Motivo Datos extra"]:
                 width = min(max(width, 26), 50)
             ws.column_dimensions[letter].width = width
         headers = {str(ws.cell(row=1, column=i).value or ""): i for i in range(1, ws.max_column + 1)}
@@ -16167,6 +16327,87 @@ def _prob_series_v23502(df, posibles):
     return df[col].apply(lambda x: _pct_float_v23500(x, np.nan)), col
 
 
+
+
+def crear_adn_over_largo_diario_df_v23520(df):
+    """Ranking diario de candidatos a partido largo cuando todavía no hay resultado real.
+
+    Solo usa probabilidades/señales ya calculadas y TA Intelligence. No cambia ningún pick.
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return pd.DataFrame()
+    d = df.copy()
+    try:
+        adn = d.apply(_adn_over_largo_excel_v23520, axis=1)
+        for c in adn.columns:
+            d[c] = adn[c]
+    except Exception:
+        return pd.DataFrame()
+
+    def pct_val(col):
+        if col not in d.columns:
+            return pd.Series([0.0] * len(d), index=d.index)
+        return d[col].apply(lambda x: _pct_float_v23500(x, 0.0) or 0.0)
+
+    def num_val(col):
+        if col not in d.columns:
+            return pd.Series([0.0] * len(d), index=d.index)
+        def _one(x):
+            try:
+                if pd.isna(x): return 0.0
+                v = float(str(x).replace('%','').replace(',','.').strip())
+                return v / 100.0 if v > 1.5 else v
+            except Exception:
+                return 0.0
+        return d[col].apply(_one)
+
+    p18 = pct_val("Over 18.5")
+    p19 = pct_val("Over 19.5")
+    p20 = pct_val("Over 20.5")
+    p21 = pct_val("Over 21.5 estudio")
+    p3s = pct_val("Partido a 3 sets")
+    ta_long = num_val("TA_LONG_MATCH_SCORE")
+    ta_set = num_val("TA_SET_SCORE")
+    d["__adn_score"] = (
+        p18 * 0.16 + p19 * 0.20 + p20 * 0.25 + p21 * 0.12 +
+        ta_long * 0.20 + pd.concat([p3s, ta_set], axis=1).max(axis=1) * 0.07
+    )
+    d = d[d["__adn_score"] >= 0.45].copy()
+    if d.empty:
+        d = df.copy()
+        d["__adn_score"] = 0.0
+        try:
+            adn = d.apply(_adn_over_largo_excel_v23520, axis=1)
+            for c in adn.columns:
+                d[c] = adn[c]
+        except Exception:
+            pass
+
+    cols = [c for c in [
+        "Hora", "Fecha", "Circuito cálculo", "Torneo", "Superficie", "Partido", "🎯 Acción final",
+        "Pick oficial", "Mercado recomendado", "Over 18.5", "Over 19.5", "Over 20.5", "Over 21.5 estudio",
+        "ADN Over Largo", "Línea larga estudio", "Motivo ADN largo",
+        "TA_PERFIL", "TA_RECOMENDACION", "TA_LONG_MATCH_SCORE", "TA_OVER_SCORE", "TA_SET_SCORE", "TA_MOTIVO",
+        "Partido a 3 sets", "Under 22.5", "Mejor juegos jugador", "Prob juegos jugador", "Riesgos"
+    ] if c in d.columns]
+    out = d.sort_values("__adn_score", ascending=False)[cols + ["__adn_score"]].head(80).copy()
+    out.insert(0, "Ranking ADN", [f"#{i}" for i in range(1, len(out) + 1)])
+    out["Score ADN Largo"] = out.pop("__adn_score").apply(lambda x: f"{float(x):.1%}")
+    out = out.rename(columns={
+        "Circuito cálculo": "Circuito",
+        "🎯 Acción final": "Acción actual",
+        "Over 21.5 estudio": "Over 21.5",
+        "TA_PERFIL": "ADN TA",
+        "TA_RECOMENDACION": "TA observar",
+        "TA_LONG_MATCH_SCORE": "TA largo",
+        "TA_OVER_SCORE": "TA over",
+        "TA_SET_SCORE": "TA set",
+        "TA_MOTIVO": "Motivo TA",
+        "Mejor juegos jugador": "Juegos jugador",
+        "Prob juegos jugador": "Prob. juegos",
+    })
+    return out.reset_index(drop=True)
+
 def crear_adn_over_largo_estudio_v23502(df):
     """Estudia qué TIPO de Over 18.5 llega a 22/23/24+ juegos.
 
@@ -16178,11 +16419,11 @@ def crear_adn_over_largo_estudio_v23502(df):
     d = añadir_estudio_over_20_21_v23500(df).copy()
     total_col = "Total games real" if "Total games real" in d.columns else ("GS Juegos reales" if "GS Juegos reales" in d.columns else None)
     if total_col is None:
-        return pd.DataFrame()
+        return crear_adn_over_largo_diario_df_v23520(df)
     d["__games"] = pd.to_numeric(d[total_col], errors="coerce")
     d = d[d["__games"].notna()].copy()
     if d.empty:
-        return pd.DataFrame()
+        return crear_adn_over_largo_diario_df_v23520(df)
 
     p18, c18 = _prob_series_v23502(d, ["Prob Over 18.5", "Over 18.5"])
     p19, c19 = _prob_series_v23502(d, ["Prob Over 19.5", "Over 19.5"])
@@ -16223,6 +16464,19 @@ def crear_adn_over_largo_estudio_v23502(df):
         masks["3 sets muy alto >= 40%"] = p3s >= 0.40
     if ctb:
         masks["Tie-break alto >= 30%"] = ptb >= 0.30
+    if "TA_LONG_MATCH_SCORE" in d.columns:
+        ta_long_num = d["TA_LONG_MATCH_SCORE"].apply(lambda x: _pct_float_v23500(x, np.nan))
+        masks["TA Long >= 65%"] = ta_long_num >= 0.65
+        masks["TA Long >= 75%"] = ta_long_num >= 0.75
+    if "ADN Over Largo" not in d.columns:
+        try:
+            _adn_tmp = d.apply(_adn_over_largo_excel_v23520, axis=1)
+            for _c in _adn_tmp.columns:
+                d[_c] = _adn_tmp[_c]
+        except Exception:
+            pass
+    if "ADN Over Largo" in d.columns:
+        masks["ADN largo fuerte/interesante"] = d["ADN Over Largo"].astype(str).str.contains("FUERTE|INTERESANTE|🔥|✅", case=False, na=False)
     if confianza_col:
         ctxt = d[confianza_col].astype(str)
         masks["Confianza alta"] = ctxt.str.contains("ALTA|🔥|🟢|BUENA|FUERTE", case=False, na=False)
@@ -16274,61 +16528,68 @@ def crear_adn_over_largo_estudio_v23502(df):
             out[c] = out[c].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "")
     return out
 
+def _write_if_not_empty_v23520(writer, df, sheet_name):
+    """Escribe una hoja solo si contiene datos. Presentación Excel únicamente."""
+    try:
+        if df is not None and isinstance(df, pd.DataFrame) and not df.empty:
+            df.to_excel(writer, index=False, sheet_name=sheet_name[:31])
+    except Exception:
+        pass
+
+
 def batch_excel_bytes(df):
-    """Exporta Excel limpio: hoja diaria + detalle técnico."""
+    """Exporta Excel práctico.
+
+    Hojas finales:
+    - PICKS DEL DÍA
+    - TOP APUESTAS
+    - COMBINADA 1.70
+    - ADN OVER LARGO
+    - TA INTELLIGENCE
+
+    No exporta DETALLE TECNICO, JUEGOS_JUGADOR, ESTUDIO OVER 20-21 ni DATOS EXTRA A REVISAR.
+    No toca cálculos ni motor Over.
+    """
     output = io.BytesIO()
     df = añadir_estudio_over_20_21_v23500(df)
     picks_df = crear_picks_limpios_df(df)
     detalle_df = crear_detalle_tecnico_df(df)
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        picks_df.to_excel(writer, index=False, sheet_name="PICKS LIMPIOS")
+        _write_if_not_empty_v23520(writer, picks_df, "PICKS DEL DÍA")
         try:
-            crear_top_apuestas_df_v23467(picks_df, n=10).to_excel(writer, index=False, sheet_name="TOP APUESTAS")
-            crear_combinada_recomendada_df_v23467(picks_df).to_excel(writer, index=False, sheet_name="COMBINADA RECOMENDADA")
-            crear_juegos_jugador_df_v23480(detalle_df).to_excel(writer, index=False, sheet_name="JUEGOS_JUGADOR")
-            crear_estudio_over_superior_df_v23500(detalle_df).to_excel(writer, index=False, sheet_name="ESTUDIO OVER 20-21")
-            crear_adn_over_largo_estudio_v23502(detalle_df).to_excel(writer, index=False, sheet_name="ADN OVER LARGO")
-            ta_rank = crear_ta_intelligence_ranking_df_v23510(detalle_df)
-            if ta_rank is not None and not ta_rank.empty:
-                ta_rank.to_excel(writer, index=False, sheet_name="TA INTELLIGENCE")
+            _write_if_not_empty_v23520(writer, crear_top_apuestas_df_v23467(picks_df, n=12), "TOP APUESTAS")
+            _write_if_not_empty_v23520(writer, crear_combinada_recomendada_df_v23467(picks_df), "COMBINADA 1.70")
+            _write_if_not_empty_v23520(writer, crear_adn_over_largo_estudio_v23502(detalle_df), "ADN OVER LARGO")
+            _write_if_not_empty_v23520(writer, crear_ta_intelligence_ranking_df_v23510(detalle_df), "TA INTELLIGENCE")
         except Exception:
             pass
-        detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
-        try:
-            wm_df = picks_df[picks_df.get("Datos extra", "").astype(str).str.upper().str.contains("SÍ", na=False)].copy()
-            if not wm_df.empty:
-                for _c in ["Resultado Datos extra", "Forma últimos 10", "Marcadores largos", "Nota manual"]:
-                    wm_df[_c] = ""
-                wm_df.to_excel(writer, index=False, sheet_name="DATOS EXTRA A REVISAR")
-        except Exception:
-            pass
+        if not writer.book.worksheets:
+            pd.DataFrame([{"Aviso": "No hay datos para exportar"}]).to_excel(writer, index=False, sheet_name="PICKS DEL DÍA")
         aplicar_estilo_excel_limpio(writer)
     output.seek(0)
     return output.getvalue()
 
+
 def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
-    """Exporta Excel con 2 hojas útiles + no encontrados si existen."""
+    """Exporta Excel práctico + NO ENCONTRADOS si existen."""
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         ok_sheet = añadir_estudio_over_20_21_v23500(ok_df.copy() if ok_df is not None else pd.DataFrame())
         ko_sheet = enrich_not_found_with_suggestions(ko_df, db) if ko_df is not None and not ko_df.empty else pd.DataFrame()
         picks_df = crear_picks_limpios_df(ok_sheet)
         detalle_df = crear_detalle_tecnico_df(ok_sheet)
-        picks_df.to_excel(writer, index=False, sheet_name="PICKS LIMPIOS")
+        _write_if_not_empty_v23520(writer, picks_df, "PICKS DEL DÍA")
         try:
-            crear_top_apuestas_df_v23467(picks_df, n=10).to_excel(writer, index=False, sheet_name="TOP APUESTAS")
-            crear_combinada_recomendada_df_v23467(picks_df).to_excel(writer, index=False, sheet_name="COMBINADA RECOMENDADA")
-            crear_juegos_jugador_df_v23480(detalle_df).to_excel(writer, index=False, sheet_name="JUEGOS_JUGADOR")
-            crear_estudio_over_superior_df_v23500(detalle_df).to_excel(writer, index=False, sheet_name="ESTUDIO OVER 20-21")
-            crear_adn_over_largo_estudio_v23502(detalle_df).to_excel(writer, index=False, sheet_name="ADN OVER LARGO")
-            ta_rank = crear_ta_intelligence_ranking_df_v23510(detalle_df)
-            if ta_rank is not None and not ta_rank.empty:
-                ta_rank.to_excel(writer, index=False, sheet_name="TA INTELLIGENCE")
+            _write_if_not_empty_v23520(writer, crear_top_apuestas_df_v23467(picks_df, n=12), "TOP APUESTAS")
+            _write_if_not_empty_v23520(writer, crear_combinada_recomendada_df_v23467(picks_df), "COMBINADA 1.70")
+            _write_if_not_empty_v23520(writer, crear_adn_over_largo_estudio_v23502(detalle_df), "ADN OVER LARGO")
+            _write_if_not_empty_v23520(writer, crear_ta_intelligence_ranking_df_v23510(detalle_df), "TA INTELLIGENCE")
         except Exception:
             pass
-        detalle_df.to_excel(writer, index=False, sheet_name="DETALLE TECNICO")
         if not ko_sheet.empty:
             ko_sheet.to_excel(writer, index=False, sheet_name="NO ENCONTRADOS")
+        if not writer.book.worksheets:
+            pd.DataFrame([{"Aviso": "No hay datos para exportar"}]).to_excel(writer, index=False, sheet_name="PICKS DEL DÍA")
         aplicar_estilo_excel_limpio(writer)
     output.seek(0)
     return output.getvalue()
