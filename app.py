@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.52 Excel práctico + TA", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.61.0-ocr-multi-photo"
+APP_VERSION = "v23.64.0-top-apuestas-clean"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -16026,12 +16026,48 @@ def aplicar_ranking_valor_apuesta_v23467(picks):
     return out[cols]
 
 
+def _es_jugar_limpio_excel_v23640(df):
+    """Máscara única para que TOP APUESTAS/COMBINADA coincidan con PICKS DEL DÍA.
+
+    Acción=JUGAR no basta: si el Mercado/Motivo dice WATCH, OBSERVAR, NO BET,
+    NO OVER, UNDER, riesgo 2-0 o guard activo, no es apuesta limpia.
+    """
+    if df is None or df.empty:
+        return pd.Series([], dtype=bool)
+    accion = df.get("Acción", pd.Series([""] * len(df), index=df.index)).astype(str).str.upper()
+
+    def _join_row(r):
+        return _texto_row_simple_v23620(r, [
+            "Mercado", "Motivo", "Riesgo", "Prioridad apuesta",
+            "Mercado base", "Pick oficial app", "Fuente pick Excel"
+        ])
+
+    try:
+        txt = df.apply(_join_row, axis=1)
+    except Exception:
+        txt = pd.Series([""] * len(df), index=df.index)
+    excluir = txt.str.contains(
+        r"OBSERVAR|WATCH|NO BET|NO\s+OVER|UNDER|NO COMBI|CANCEL|RETIR|RIESGO\s*2\s*-\s*0|RIESGO 2-0|QUALITY GUARD ACTIVO",
+        case=False, regex=True, na=False
+    )
+    return accion.str.contains("JUGAR", na=False) & (~excluir)
+
+
 def crear_top_apuestas_df_v23467(picks_df, n=10):
     if picks_df is None or picks_df.empty:
         return pd.DataFrame()
     df = picks_df.copy()
     if "Score apuesta" not in df.columns:
         df = aplicar_ranking_valor_apuesta_v23467(df)
+
+    # v23.64: TOP APUESTAS debe significar apuestas reales, no WATCH/OBSERVAR/NO BET.
+    # Así coincide con la primera hoja y deja de aparecer "12 jugar" cuando solo hay 4 limpias.
+    try:
+        mask = _es_jugar_limpio_excel_v23640(df)
+        df = df[mask].copy()
+    except Exception:
+        pass
+
     keep = [c for c in ["Ranking apuesta", "Prioridad apuesta", "Score apuesta", "Hora", "Fecha", "Torneo", "Superficie", "Partido", "Acción", "Mercado", "Prob.", "Confianza", "Motivo"] if c in df.columns]
     return df.head(int(n))[keep].copy()
 
@@ -16050,9 +16086,13 @@ def crear_combinada_recomendada_df_v23467(picks_df):
         df = aplicar_ranking_valor_apuesta_v23467(df)
     accion = df.get("Acción", pd.Series([""]*len(df))).astype(str).str.upper()
     mercado = df.get("Mercado", pd.Series([""]*len(df))).astype(str).str.lower()
-    jugar = df[accion.str.contains("JUGAR", na=False)].copy()
+    # v23.64: combinada solo con JUGAR limpio; no usar WATCH/OBSERVAR/NO BET aunque Acción diga JUGAR.
+    try:
+        jugar = df[_es_jugar_limpio_excel_v23640(df)].copy()
+    except Exception:
+        jugar = df[accion.str.contains("JUGAR", na=False)].copy()
     if jugar.empty:
-        return pd.DataFrame([{"Estado": "NO APOSTAR", "Motivo": "No hay picks JUGAR"}])
+        return pd.DataFrame([{"Estado": "NO APOSTAR", "Motivo": "No hay picks JUGAR limpios"}])
 
     def _sin_repetir_partido(cands):
         rows, seen = [], set()
@@ -16170,18 +16210,23 @@ def _excel_pick_export_over_priority_v23508(row):
     confianza = visual_conf
     motivo = visual_motivo
 
-    # Si es pick oficial Over, mostrarlo como JUGAR en Excel siempre que no sea NO BET.
-    # Esto NO modifica el cálculo: solo evita que la hoja lo tape con gana-set.
-    if is_over(mercado) and "NO BET" not in mercado_u:
-        if "OBSERV" in mercado_u and "JUGAR" not in mercado_u:
-            accion = "👀 OBSERVAR"
-        else:
-            accion = "✅ JUGAR"
+    # v23.64: si el mercado elegido es WATCH/OBSERVAR/NO COMBI/NO BET, NO puede convertirse en JUGAR.
+    # Antes los WATCH OVER se exportaban como Acción=JUGAR y por eso TOP APUESTAS mostraba 12 jugar
+    # aunque PICKS DEL DÍA solo tuviera 4 apuestas limpias. Esto es solo presentación/exportación.
+    no_jugar_tokens = ["NO BET", "NO OVER", "WATCH", "OBSERV", "NO COMBI", "SOLO OBSERVAR", "UNDER"]
+    es_watch_o_no_jugar = any(x in mercado_u for x in no_jugar_tokens)
+
+    if is_over(mercado) and not es_watch_o_no_jugar:
+        accion = "✅ JUGAR"
         if any(x in mercado_u for x in ["🔥", "FUERTE", "MUY ALTO", "ALTA"]):
             confianza = confianza or "🔥 Alta"
         else:
             confianza = confianza or "✅ Media-alta"
         motivo = (motivo_rec or visual_motivo or "Excel prioriza Pick oficial/Mercado recomendado Over para no taparlo con otro mercado.")
+        motivo = f"{motivo} | Fuente Excel: {origen}"
+    elif is_over(mercado) and es_watch_o_no_jugar:
+        accion = "👀 OBSERVAR"
+        motivo = (motivo_rec or visual_motivo or "Mercado watch/observación exportado sin convertirlo en apuesta.")
         motivo = f"{motivo} | Fuente Excel: {origen}"
     elif tipo in ["pick", "reco"] and mercado:
         motivo = (motivo_rec or visual_motivo or "Mercado oficial exportado.") + f" | Fuente Excel: {origen}"
@@ -19000,6 +19045,223 @@ def render_over_largo_intelligence_v23630(payload, ta_adj=None):
         st.dataframe(dfo, use_container_width=True, hide_index=True)
 
 
+
+
+# =========================================================
+# v23.65.0 MODO SOLO TA - OVER LARGO
+# Lectura paralela basada SOLO en ficha TennisAbstract.
+# No usa Elo, cuotas ni simulación del modelo para la decisión TA pura.
+# =========================================================
+
+def _ta_only_fmt_pct_v23650(v):
+    try:
+        if v is None or pd.isna(v):
+            return "N/D"
+        return f"{float(v):.0%}"
+    except Exception:
+        return "N/D"
+
+
+def _ta_only_fmt_num_v23650(v, dec=1):
+    try:
+        if v is None or pd.isna(v):
+            return "N/D"
+        return f"{float(v):.{int(dec)}f}"
+    except Exception:
+        return "N/D"
+
+
+def _ta_only_profile_row_v23650(label, a, b, key, kind="pct"):
+    va = a.get(key) if isinstance(a, dict) else None
+    vb = b.get(key) if isinstance(b, dict) else None
+    if kind == "pct":
+        fa, fb = _ta_only_fmt_pct_v23650(va), _ta_only_fmt_pct_v23650(vb)
+    elif kind == "num0":
+        fa, fb = _ta_only_fmt_num_v23650(va, 0), _ta_only_fmt_num_v23650(vb, 0)
+    else:
+        fa, fb = _ta_only_fmt_num_v23650(va, 1), _ta_only_fmt_num_v23650(vb, 1)
+    return {"Dato TA": label, "Jugador 1": fa, "Jugador 2": fb}
+
+
+def ta_only_over_largo_match_v23650(p1_name, p2_name, surface):
+    """Calcula una lectura SOLO TA para Over largo. No usa modelo ni Elo interno."""
+    a = _ta_int_profile(p1_name, surface)
+    b = _ta_int_profile(p2_name, surface)
+    found = int(bool(a.get("found"))) + int(bool(b.get("found")))
+    if found == 0:
+        return {
+            "found": 0,
+            "level": "Sin TA",
+            "line": "Sin lectura solo TA",
+            "risk": "N/D",
+            "score": 0.0,
+            "summary": "No hay fichas TA suficientes para esta lectura.",
+            "rows": [],
+            "profiles": [],
+        }
+
+    avg_games = _ta_int_avg([a.get("avg_games"), b.get("avg_games")], None)
+    avg_over18 = _ta_int_avg([a.get("over18"), b.get("over18")], None)
+    avg_over19 = _ta_int_avg([a.get("over19"), b.get("over19")], None)
+    avg_three = _ta_int_avg([a.get("three"), b.get("three")], None)
+    avg_set = _ta_int_avg([a.get("set_score"), b.get("set_score")], 0.0) / 100.0
+    avg_long = _ta_int_avg([a.get("long_score"), b.get("long_score")], 0.0) / 100.0
+    avg_hold = _ta_int_avg([a.get("hold"), b.get("hold")], None)
+    avg_break = _ta_int_avg([a.get("break"), b.get("break")], None)
+    avg_tb_pct = _ta_int_avg([a.get("tb_pct"), b.get("tb_pct")], None)
+    avg_tb_pm = _ta_int_avg([a.get("tb_per_match"), b.get("tb_per_match")], None)
+    avg_easy = _ta_int_avg([a.get("easy"), b.get("easy")], 0.22)
+    avg_lost02 = _ta_int_avg([a.get("lost02"), b.get("lost02")], None)
+    sample = _ta_int_avg([a.get("sample_score"), b.get("sample_score")], 0.30)
+
+    games_component = np.clip(((avg_games or 18.5) - 20.5) / 6.5, 0, 1)
+    over19_component = avg_over19 if avg_over19 is not None else (avg_over18 * 0.82 if avg_over18 is not None else 0.0)
+    hold_component = 0.0
+    if avg_hold is not None and avg_break is not None:
+        hold_component = np.clip((avg_hold - 0.78) / 0.13, 0, 1) * 0.65 + np.clip((0.27 - avg_break) / 0.16, 0, 1) * 0.35
+    tb_component = max(avg_tb_pct or 0.0, min(0.85, (avg_tb_pm or 0.0) / 0.75))
+
+    risk_short = 0.0
+    risk_reasons = []
+    if avg_easy is not None and avg_easy >= 0.38:
+        risk_short += 0.20; risk_reasons.append("palizas/cortos TA")
+    if avg_games is not None and avg_games < 20.5:
+        risk_short += 0.18; risk_reasons.append("media TA baja")
+    if avg_over19 is not None and avg_over19 < 0.50:
+        risk_short += 0.14; risk_reasons.append("Over19 TA bajo")
+    if avg_hold is not None and avg_hold < 0.76:
+        risk_short += 0.10; risk_reasons.append("hold TA bajo")
+    if found < 2:
+        risk_short += 0.10; risk_reasons.append("solo 1 ficha TA")
+    risk_short = float(np.clip(risk_short, 0, 1))
+
+    score = (
+        avg_long * 0.30 +
+        over19_component * 0.20 +
+        games_component * 0.17 +
+        avg_set * 0.13 +
+        (avg_three or 0.0) * 0.08 +
+        hold_component * 0.08 +
+        tb_component * 0.04
+    )
+    if str(surface).lower() == "grass":
+        score += 0.04
+    if found == 2:
+        score += 0.05
+    score += np.clip(sample - 0.45, 0, 0.25) * 0.10
+    score -= risk_short * 0.32
+    score = float(np.clip(score, 0, 1))
+
+    if risk_short >= 0.34:
+        risk_label = "Alto"
+    elif risk_short >= 0.18:
+        risk_label = "Medio"
+    else:
+        risk_label = "Bajo"
+
+    if score >= 0.74 and risk_short < 0.24 and over19_component >= 0.66 and games_component >= 0.45:
+        level = "🔥 TA Premium"
+        line = "TA sugiere mirar Over 21.5 / 22.5"
+    elif score >= 0.64 and risk_short < 0.30:
+        level = "✅ TA largo fuerte"
+        line = "TA sugiere mirar Over 20.5 / 21.5"
+    elif score >= 0.55 and risk_short < 0.34:
+        level = "🟡 TA interesante"
+        line = "TA sugiere Over 19.5 / 20.5"
+    elif avg_over18 is not None and avg_over18 >= 0.66 and risk_short < 0.38:
+        level = "🟢 TA Over base"
+        line = "TA apoya Over 18.5, sin subir mucho"
+    else:
+        level = "⚠️ TA prudente"
+        line = "TA no recomienda subir línea"
+
+    bits = []
+    if avg_games is not None: bits.append(f"media TA {avg_games:.1f}")
+    if avg_over19 is not None: bits.append(f"Over19 TA {avg_over19:.0%}")
+    if avg_three is not None: bits.append(f"3 sets TA {avg_three:.0%}")
+    if avg_hold is not None: bits.append(f"Hold TA {avg_hold:.0%}")
+    if avg_break is not None: bits.append(f"Break TA {avg_break:.0%}")
+    if avg_tb_pct is not None: bits.append(f"TB TA {avg_tb_pct:.0%}")
+    bits.append(f"muestra {sample:.0%}")
+    bits.append(f"fichas {found}/2")
+    if risk_reasons: bits.append("freno: " + ", ".join(risk_reasons[:2]))
+
+    rows = [
+        {"Señal solo TA": "ADN Over largo TA", "Valor": f"{score:.0%}", "Lectura": level},
+        {"Señal solo TA": "Línea TA sugerida", "Valor": line, "Lectura": "revisar cuota"},
+        {"Señal solo TA": "Riesgo TA 2-0 corto", "Valor": risk_label, "Lectura": ", ".join(risk_reasons[:3]) if risk_reasons else "sin alerta fuerte"},
+        {"Señal solo TA": "Media juegos TA", "Valor": _ta_only_fmt_num_v23650(avg_games, 1), "Lectura": "promedio combinado"},
+        {"Señal solo TA": "Over19 TA combinado", "Valor": _ta_only_fmt_pct_v23650(avg_over19), "Lectura": "si existe en ficha"},
+        {"Señal solo TA": "3 sets TA combinado", "Valor": _ta_only_fmt_pct_v23650(avg_three), "Lectura": "set extra"},
+        {"Señal solo TA": "Hold/Break TA", "Valor": f"{_ta_only_fmt_pct_v23650(avg_hold)} / {_ta_only_fmt_pct_v23650(avg_break)}", "Lectura": "sets largos si hold alto y break bajo"},
+    ]
+
+    profiles = [
+        {"Dato TA": "Ficha encontrada", "Jugador 1": "✅" if a.get("found") else "❌", "Jugador 2": "✅" if b.get("found") else "❌"},
+        _ta_only_profile_row_v23650("Partidos TA", a, b, "n", "num0"),
+        _ta_only_profile_row_v23650("Partidos superficie", a, b, "surface_matches", "num0"),
+        _ta_only_profile_row_v23650("Media juegos", a, b, "avg_games", "num"),
+        _ta_only_profile_row_v23650("Over 18.5 TA", a, b, "over18", "pct"),
+        _ta_only_profile_row_v23650("Over 19.5 TA", a, b, "over19", "pct"),
+        _ta_only_profile_row_v23650("3 sets TA", a, b, "three", "pct"),
+        _ta_only_profile_row_v23650("Gana set / resistencia", a, b, "set_rate", "pct"),
+        _ta_only_profile_row_v23650("Hold superficie", a, b, "hold", "pct"),
+        _ta_only_profile_row_v23650("Break superficie", a, b, "break", "pct"),
+        _ta_only_profile_row_v23650("Ace superficie", a, b, "ace", "pct"),
+        _ta_only_profile_row_v23650("Tie-break superficie", a, b, "tb_pct", "pct"),
+        _ta_only_profile_row_v23650("Palizas/cortos", a, b, "easy", "pct"),
+        _ta_only_profile_row_v23650("Pierde 0-2", a, b, "lost02", "pct"),
+    ]
+
+    return {
+        "found": found,
+        "level": level,
+        "line": line,
+        "risk": risk_label,
+        "score": score,
+        "summary": " · ".join(bits[:9]),
+        "rows": rows,
+        "profiles": profiles,
+    }
+
+
+def render_ta_only_over_largo_v23650(payload):
+    if not isinstance(payload, dict):
+        return
+    p1 = payload.get("p1_name", "Jugador 1")
+    p2 = payload.get("p2_name", "Jugador 2")
+    surface = payload.get("surface", "Hard")
+    try:
+        res = ta_only_over_largo_match_v23650(p1, p2, surface)
+    except Exception as e:
+        st.caption(f"No se pudo calcular modo solo TA: {type(e).__name__}: {e}")
+        return
+
+    st.subheader("📚 MODO SOLO TA")
+    msg = f"{res.get('level','')} · {res.get('line','')} · Riesgo TA 2-0 corto: {res.get('risk','')}"
+    if "Premium" in str(res.get("level", "")) or "fuerte" in str(res.get("level", "")):
+        st.success(msg)
+    elif "prudente" in str(res.get("level", "")).lower() or "no recomienda" in str(res.get("line", "")).lower():
+        st.warning(msg)
+    else:
+        st.info(msg)
+    if res.get("summary"):
+        st.caption(res.get("summary"))
+
+    dfr = pd.DataFrame(res.get("rows", []))
+    if not dfr.empty:
+        st.dataframe(dfr, use_container_width=True, hide_index=True)
+
+    with st.expander("📚 Datos TA usados jugador por jugador", expanded=False):
+        dfp = pd.DataFrame(res.get("profiles", []))
+        if not dfp.empty:
+            # Renombramos columnas visibles con nombres reales.
+            dfp = dfp.rename(columns={"Jugador 1": str(p1), "Jugador 2": str(p2)})
+            st.dataframe(dfp, use_container_width=True, hide_index=True)
+        else:
+            st.info("No hay fichas TA suficientes para mostrar detalle.")
+
+
 def render_predictor_deep_match_analyzer_panel():
     payload = st.session_state.get("predictor_last_payload_v23440")
     if not isinstance(payload, dict):
@@ -19034,6 +19296,10 @@ def render_predictor_deep_match_analyzer_panel():
 
         # v23.63: bloque específico para decidir si merece subir el Over a 20.5/21.5/22.5.
         render_over_largo_intelligence_v23630(payload, ta_adj if isinstance(ta_adj, dict) else None)
+
+        # v23.65: lectura paralela basada SOLO en fichas TennisAbstract.
+        # Sirve para comparar Modelo vs TA puro sin tocar el motor Over.
+        render_ta_only_over_largo_v23650(payload)
 
         st.subheader("📌 Conclusiones deportivas")
         for n in _deep_conclusions(payload, ta_adj if isinstance(ta_adj, dict) else None):
