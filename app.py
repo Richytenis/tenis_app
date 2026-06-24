@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.52 Excel práctico + TA", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.59.0-ta-intelligence-simple"
+APP_VERSION = "v23.61.0-ocr-multi-photo"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -19438,31 +19438,72 @@ Sebastián Baez - Roberto Carballés Baena"""
     # Quitadas de pantalla las cargas automáticas de SofaScore y API Tennis porque no son fiables.
     # Se mantienen los parsers manuales y la captura OCR, sin tocar motor Over.
 
-    with st.expander("📸 Subir captura de SofaScore (OCR)", expanded=False):
-        st.caption("Sube una captura de la lista o resultados. La app intentará leerla y pegar el texto en el cuadro de abajo. Si el OCR falla, puedes seguir pegando manualmente.")
-        sofa_img = st.file_uploader(
-            "Captura SofaScore",
+    with st.expander("📸 Subir capturas de SofaScore (OCR)", expanded=False):
+        st.caption("Sube una o varias capturas de la lista/resultados. La app las leerá en orden, juntará todos los partidos y pegará el texto limpio en el cuadro de abajo.")
+        sofa_imgs = st.file_uploader(
+            "Capturas SofaScore",
             type=["png", "jpg", "jpeg", "webp"],
-            key="sofa_screenshot_uploader_v23500"
+            accept_multiple_files=True,
+            key="sofa_screenshot_uploader_multi_v23610"
         )
-        if sofa_img is not None:
-            if st.button("🔎 Leer captura y pegar texto", key="sofa_screenshot_ocr_btn_v23500"):
-                txt_ocr, err_ocr = _ocr_datos_extra_image(sofa_img)
-                if err_ocr:
-                    st.warning(err_ocr)
-                if txt_ocr:
+        if sofa_imgs:
+            st.caption(f"Capturas cargadas: {len(sofa_imgs)}")
+            if st.button("🔎 Leer capturas y pegar texto", key="sofa_screenshot_ocr_btn_multi_v23610"):
+                all_clean_parts = []
+                all_raw_parts = []
+                all_matches = []
+                total_imgs_ok = 0
+
+                for idx, sofa_img in enumerate(sofa_imgs, start=1):
+                    txt_ocr, err_ocr = _ocr_datos_extra_image(sofa_img)
+                    if err_ocr:
+                        st.warning(f"Captura {idx}: {err_ocr}")
+                    if not txt_ocr:
+                        st.warning(f"Captura {idx}: no he podido sacar texto útil.")
+                        continue
+
+                    total_imgs_ok += 1
                     txt_limpio, partidos_ocr = sofa_mobile_ocr_to_canonical_text(txt_ocr)
-                    st.session_state["sofa_raw_batch"] = txt_limpio if txt_limpio else txt_ocr
-                    if partidos_ocr:
-                        st.success(f"Captura leída y limpiada: {len(partidos_ocr)} partidos detectados. Revisa el texto pegado abajo antes de analizar.")
-                        with st.expander("Ver partidos OCR detectados", expanded=True):
-                            st.dataframe(pd.DataFrame(partidos_ocr)[["time", "p1_raw", "p2_raw"]], width='stretch', hide_index=True)
+                    all_raw_parts.append(f"--- CAPTURA {idx} ---\n{txt_ocr}")
+                    if txt_limpio:
+                        all_clean_parts.append(txt_limpio)
                     else:
-                        st.warning("Captura leída, pero el limpiador móvil no ha podido formar partidos. Te pego el OCR bruto abajo para revisarlo.")
+                        all_clean_parts.append(txt_ocr)
+                    if partidos_ocr:
+                        for m in partidos_ocr:
+                            mm = dict(m)
+                            mm["captura"] = idx
+                            all_matches.append(mm)
+
+                if all_clean_parts:
+                    texto_final = "\n".join(x.strip() for x in all_clean_parts if str(x).strip())
+
+                    # Deduplicado suave por si una captura solapa con la siguiente.
+                    parsed_final = parse_sofascore_mobile_ocr_paste(texto_final)
+                    if parsed_final:
+                        seen = set()
+                        clean_lines = []
+                        deduped = []
+                        for m in parsed_final:
+                            key = f"{m.get('time','')}|{limpiar(m.get('p1_raw',''))}|{limpiar(m.get('p2_raw',''))}"
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            deduped.append(m)
+                            clean_lines.append(f"{m.get('time','')} {m.get('p1_raw','')} - {m.get('p2_raw','')}")
+                        texto_final = "\n".join(clean_lines)
+                        st.session_state["sofa_raw_batch"] = texto_final
+                        st.success(f"Capturas leídas: {total_imgs_ok}/{len(sofa_imgs)} · Partidos detectados: {len(deduped)}")
+                        with st.expander("Ver partidos OCR detectados", expanded=True):
+                            st.dataframe(pd.DataFrame(deduped)[[c for c in ["time", "p1_raw", "p2_raw"] if c in pd.DataFrame(deduped).columns]], width='stretch', hide_index=True)
+                    else:
+                        st.session_state["sofa_raw_batch"] = texto_final
+                        st.warning("Capturas leídas, pero el limpiador móvil no ha podido formar partidos. Te pego el OCR limpio/bruto abajo para revisarlo.")
+
                     with st.expander("Ver texto OCR bruto", expanded=False):
-                        st.text(txt_ocr[:6000])
+                        st.text("\n\n".join(all_raw_parts)[:12000])
                 else:
-                    st.error("No he podido sacar texto útil de la captura. Prueba una captura más grande o pega la lista manualmente.")
+                    st.error("No he podido sacar texto útil de ninguna captura. Prueba capturas más grandes o pega la lista manualmente.")
 
     raw_batch = st.text_area(
         "Pega aquí los partidos/resultados de SofaScore",
