@@ -16363,6 +16363,214 @@ def crear_picks_limpios_df(df):
     return picks
 
 
+
+# =========================================================
+# v23.62 EXCEL PRIMERA HOJA ULTRA SIMPLE
+# Primera hoja = solo apuestas JUGAR reales: Hora, Pista, Jugadores, Mercado.
+# Todo lo técnico queda en otras hojas. No toca motor Over ni cálculos.
+# =========================================================
+
+def _texto_row_simple_v23620(row, cols):
+    vals = []
+    for c in cols:
+        try:
+            v = row.get(c, "")
+            if pd.isna(v):
+                v = ""
+            vals.append(str(v))
+        except Exception:
+            pass
+    return " ".join(vals).upper()
+
+
+def _pista_simple_v23620(row):
+    """Primera hoja: Pista = tipo de superficie, no número de court.
+
+    Devuelve solo Hierba/Tierra/Dura cuando sea posible.
+    """
+    raw = ""
+    for c in ["Superficie", "Surface", "Pista"]:
+        try:
+            v = row.get(c, "")
+            if pd.notna(v) and str(v).strip():
+                raw = str(v).strip()
+                break
+        except Exception:
+            pass
+    k = limpiar(raw)
+    if k in ["GRASS", "HIERBA"]:
+        return "Hierba"
+    if k in ["CLAY", "TIERRA", "TIERRABATIDA", "REDCLAY"]:
+        return "Tierra"
+    if k in ["HARD", "DURA", "DURO", "HARDO"]:
+        return "Dura"
+    # Si el valor ya viene en español o no es reconocible, lo dejamos limpio sin meter torneo/court.
+    return raw or ""
+
+
+def _prob01_simple_v23630(v, default=0.0):
+    """Convierte 74%, 0.74, '74.0%' a 0-1 para lectura de presentación."""
+    try:
+        if v is None or (hasattr(pd, "isna") and pd.isna(v)):
+            return default
+        s = str(v).replace("%", "").replace(",", ".").strip()
+        if s == "" or s.lower() in ["nan", "none", "n/d", "-"]:
+            return default
+        x = float(s)
+        return max(0.0, min(1.0, x / 100.0 if x > 1.5 else x))
+    except Exception:
+        return default
+
+
+def _score100_simple_v23630(v, default=0.0):
+    p = _prob01_simple_v23630(v, default=None)
+    if p is None:
+        return default
+    # _prob01 convierte 78 a 0.78; aquí queremos score 0-100.
+    try:
+        raw = str(v).replace("%", "").replace(",", ".").strip()
+        x = float(raw)
+        return max(0.0, min(100.0, x if x > 1.5 else x * 100.0))
+    except Exception:
+        return max(0.0, min(100.0, p * 100.0))
+
+
+def _over_largo_display_v23630(row):
+    """Crea aviso corto para primera hoja: 🔥 Over largo XX candidato.
+
+    No cambia motor Over ni selector base. Solo muestra candidatos largos si TA/app/ADN
+    apuntan a partido de 21-22+ juegos y no hay alerta clara de riesgo.
+    """
+    blob = _texto_row_simple_v23620(row, [
+        "Mercado", "Mercado recomendado", "Motivo", "Riesgo", "Prioridad apuesta",
+        "Línea larga estudio", "ADN Over Largo", "TA_PERFIL", "TA_MOTIVO", "Aviso"
+    ])
+    if re.search(r"NO\s+BET|NO\s+OVER|UNDER|CANCEL|RETIR|RIESGO\s*2\s*-\s*0|RIESGO 2-0|PALIZA|QUALITY GUARD ACTIVO", blob, flags=re.I):
+        return ""
+
+    o20 = _prob01_simple_v23630(row.get("Over 20.5", ""), 0.0)
+    o21 = _prob01_simple_v23630(row.get("Over 21.5 estudio", row.get("Over 21.5", "")), 0.0)
+    o22 = _prob01_simple_v23630(row.get("Over 22.5", ""), 0.0)
+    o19 = _prob01_simple_v23630(row.get("Over 19.5", ""), 0.0)
+    ta_long = _score100_simple_v23630(row.get("TA_LONG_MATCH_SCORE", ""), 0.0)
+    ta_set = _score100_simple_v23630(row.get("TA_SET_SCORE", ""), 0.0)
+    ta_over = _score100_simple_v23630(row.get("TA_OVER_SCORE", ""), 0.0)
+
+    linea_txt = str(row.get("Línea larga estudio", "") or "")
+    adn_txt = str(row.get("ADN Over Largo", "") or "")
+    perfil_txt = str(row.get("TA_PERFIL", "") or "")
+    fuerte_texto = bool(re.search(r"OVER\s*LARGO|ADN\s*LARGO|LARGO\s*FUERTE|PREMIUM|21\.5|22\.5", " | ".join([linea_txt, adn_txt, perfil_txt]), flags=re.I))
+
+    # Score conservador para que no salgan 15 candidatos.
+    score = (ta_long/100.0)*0.34 + o20*0.24 + o21*0.18 + o19*0.08 + (ta_set/100.0)*0.08 + (ta_over/100.0)*0.08
+    if fuerte_texto:
+        score += 0.07
+    score = max(0.0, min(1.0, score))
+
+    if (o22 >= 0.43 and ta_long >= 78 and score >= 0.72) or ("22.5" in linea_txt and ta_long >= 72 and score >= 0.68):
+        return "🔥 Over largo 22.5 candidato"
+    if (o21 >= 0.53 and ta_long >= 70 and score >= 0.66) or ("21.5" in linea_txt and ta_long >= 66 and score >= 0.63):
+        return "🔥 Over largo 21.5 candidato"
+    if (o20 >= 0.58 and ta_long >= 64 and score >= 0.60) or ("20.5" in linea_txt and ta_long >= 62 and score >= 0.59):
+        return "🔥 Over largo 20.5 candidato"
+    return ""
+
+
+def _crear_rows_over_largo_primera_hoja_v23630(df):
+    rows = []
+    if df is None or df.empty:
+        return rows
+    tmp = df.copy()
+    tmp["__over_largo_display"] = tmp.apply(_over_largo_display_v23630, axis=1)
+    tmp = tmp[tmp["__over_largo_display"].astype(str).str.len() > 0].copy()
+    if tmp.empty:
+        return rows
+    # Ordenar por señales si existen.
+    try:
+        tmp["__ta_long_sort"] = tmp.get("TA_LONG_MATCH_SCORE", pd.Series([0]*len(tmp))).apply(_score100_simple_v23630)
+        tmp["__o21_sort"] = tmp.get("Over 21.5 estudio", pd.Series([0]*len(tmp))).apply(_prob01_simple_v23630)
+        tmp["__o20_sort"] = tmp.get("Over 20.5", pd.Series([0]*len(tmp))).apply(_prob01_simple_v23630)
+        tmp = tmp.sort_values(["__ta_long_sort", "__o21_sort", "__o20_sort"], ascending=False)
+    except Exception:
+        pass
+    # Máximo 3 avisos largos para que la primera hoja siga limpia.
+    for _, r in tmp.head(3).iterrows():
+        rows.append({
+            "Hora": str(r.get("Hora", "") or ""),
+            "Pista": _pista_simple_v23620(r),
+            "Jugadores": str(r.get("Partido", "") or ""),
+            "Mercado": str(r.get("__over_largo_display", "") or ""),
+        })
+    return rows
+
+
+def crear_hoja_jugar_simple_v23620(picks_df):
+    """Primera hoja del Excel: solo lo apostable y solo 4 columnas.
+
+    Filtra:
+    - Acción JUGAR
+    - descarta OBSERVAR/WATCH/NO BET/cancelados/riesgo 2-0
+    Presentación solamente; no cambia el motor ni los picks internos.
+    """
+    if picks_df is None or not isinstance(picks_df, pd.DataFrame) or picks_df.empty:
+        return pd.DataFrame(columns=["Hora", "Pista", "Jugadores", "Mercado"])
+
+    df = picks_df.copy()
+    accion = df.get("Acción", pd.Series([""] * len(df), index=df.index)).astype(str).str.upper()
+    txt = df.apply(lambda r: _texto_row_simple_v23620(r, ["Mercado", "Motivo", "Riesgo", "Prioridad apuesta"]), axis=1)
+
+    jugar_mask = accion.str.contains("JUGAR", na=False)
+    excluir_mask = txt.str.contains(
+        r"OBSERVAR|WATCH|NO BET|NO\s+OVER|CANCEL|RETIR|RIESGO\s*2\s*-\s*0|RIESGO 2-0|QUALITY GUARD ACTIVO",
+        case=False,
+        regex=True,
+        na=False,
+    )
+    df = df[jugar_mask & (~excluir_mask)].copy()
+
+    if df.empty:
+        return pd.DataFrame([{
+            "Hora": "",
+            "Pista": "",
+            "Jugadores": "NO HAY APUESTA CLARA",
+            "Mercado": "Disciplina: no forzar si no hay JUGAR limpio",
+        }])
+
+    if "Score apuesta" not in df.columns:
+        try:
+            df = aplicar_ranking_valor_apuesta_v23467(df)
+        except Exception:
+            pass
+
+    if "Score apuesta" in df.columns:
+        try:
+            df = df.sort_values("Score apuesta", ascending=False)
+        except Exception:
+            pass
+
+    rows = []
+    for _, r in df.iterrows():
+        rows.append({
+            "Hora": str(r.get("Hora", "") or ""),
+            "Pista": _pista_simple_v23620(r),
+            "Jugadores": str(r.get("Partido", "") or ""),
+            "Mercado": _limpiar_texto_excel_cell(r.get("Mercado", "")),
+        })
+
+    # v23.63: además de picks JUGAR limpios, mostrar hasta 3 avisos de Over largo
+    # para que Richy los vea y decida según cuota. No cambia el motor Over.
+    try:
+        rows.extend(_crear_rows_over_largo_primera_hoja_v23630(picks_df))
+    except Exception:
+        pass
+
+    out = pd.DataFrame(rows, columns=["Hora", "Pista", "Jugadores", "Mercado"])
+    try:
+        out = out.drop_duplicates(subset=["Jugadores", "Mercado"], keep="first").reset_index(drop=True)
+    except Exception:
+        pass
+    return out
+
 def crear_detalle_tecnico_df(df):
     """Hoja completa con todo lo técnico, pero con lo importante al principio."""
     if df is None or df.empty:
@@ -16857,7 +17065,7 @@ def batch_excel_bytes(df):
     picks_df = crear_picks_limpios_df(df)
     detalle_df = crear_detalle_tecnico_df(df)
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        _write_if_not_empty_v23520(writer, picks_df, "PICKS DEL DÍA")
+        _write_if_not_empty_v23520(writer, crear_hoja_jugar_simple_v23620(picks_df), "PICKS DEL DÍA")
         try:
             _write_if_not_empty_v23520(writer, crear_top_apuestas_df_v23467(picks_df, n=12), "TOP APUESTAS")
             _write_if_not_empty_v23520(writer, crear_combinada_recomendada_df_v23467(picks_df), "COMBINADA 1.70")
@@ -16880,7 +17088,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
         ko_sheet = enrich_not_found_with_suggestions(ko_df, db) if ko_df is not None and not ko_df.empty else pd.DataFrame()
         picks_df = crear_picks_limpios_df(ok_sheet)
         detalle_df = crear_detalle_tecnico_df(ok_sheet)
-        _write_if_not_empty_v23520(writer, picks_df, "PICKS DEL DÍA")
+        _write_if_not_empty_v23520(writer, crear_hoja_jugar_simple_v23620(picks_df), "PICKS DEL DÍA")
         try:
             _write_if_not_empty_v23520(writer, crear_top_apuestas_df_v23467(picks_df, n=12), "TOP APUESTAS")
             _write_if_not_empty_v23520(writer, crear_combinada_recomendada_df_v23467(picks_df), "COMBINADA 1.70")
@@ -18641,6 +18849,157 @@ def _deep_conclusions(payload, ta_adj=None):
     return notes
 
 
+def _predictor_over_largo_intelligence_v23630(payload, ta_adj=None):
+    """Bloque específico para responder: ¿hasta qué línea puedo subir el Over?
+
+    Usa datos del predictor + TA completa cuando está en caché/ajuste. No modifica el
+    motor Over ni el mercado recomendado; solo informa en el predictor individual.
+    """
+    payload = payload or {}
+    base = payload.get("base", {}) if isinstance(payload.get("base", {}), dict) else {}
+    deep = payload.get("deep", {}) if isinstance(payload.get("deep", {}), dict) else {}
+    p1 = payload.get("p1_name", "Jugador 1")
+    p2 = payload.get("p2_name", "Jugador 2")
+    surface = payload.get("surface", "")
+
+    over18 = _di_float(base.get("over18"), 0.0)
+    over19 = _di_float(base.get("over19"), 0.0)
+    over20 = _di_float(base.get("over20"), 0.0)
+    over22 = _di_float(base.get("over22"), 0.0)
+    over21 = float(np.clip((over20 * 0.58 + over22 * 0.42), 0.0, 1.0)) if over20 or over22 else 0.0
+    set3 = _di_float(base.get("set3"), 0.0)
+    tb = _di_float(base.get("tb"), 0.0)
+    dog_set = _di_float(base.get("dog_wins_set"), 0.0)
+    fav20 = _di_float(base.get("fav_2_0"), 0.0)
+    mlmax = max(_di_float(base.get("p1"), 0.5), _di_float(base.get("p2"), 0.5))
+    equality = max(0.0, 1.0 - abs(mlmax - 0.50) * 2.0)
+    avg_games = _di_float(deep.get("avg_games"), 0.0)
+    hold1 = _di_float(deep.get("hold1"), 0.0)
+    hold2 = _di_float(deep.get("hold2"), 0.0)
+    hold_avg = (hold1 + hold2) / 2.0 if hold1 and hold2 else 0.0
+    hold_diff = abs(hold1 - hold2) if hold1 and hold2 else 0.0
+
+    try:
+        ta = ta_intelligence_match(p1, p2, surface, over18, over19, over20, over21, over22)
+    except Exception:
+        ta = {}
+    ta_long = _di_float((ta or {}).get("TA_LONG_MATCH_SCORE"), 0.0) / 100.0
+    ta_over = _di_float((ta or {}).get("TA_OVER_SCORE"), 0.0) / 100.0
+    ta_set = _di_float((ta or {}).get("TA_SET_SCORE"), 0.0) / 100.0
+    found_count = int((ta or {}).get("found_count", 0) or 0)
+
+    # Si hay ajuste TA recién pegado en el predictor, también se suma como apoyo.
+    raw = _deep_ta_raw(ta_adj) if isinstance(ta_adj, dict) else {}
+    raw_over = _di_float(raw.get("over_rate"), 0.0)
+    raw_over19 = _di_float(raw.get("over19_rate"), 0.0)
+    raw_three = _di_float(raw.get("three_rate"), 0.0)
+    raw_easy = _di_float(raw.get("easy_rate"), 0.0)
+    raw_avg = _di_float(raw.get("avg_games"), 0.0)
+    if raw_over or raw_three or raw_avg:
+        ta_over = max(ta_over, raw_over)
+        ta_set = max(ta_set, raw_three)
+        if raw_over19 or raw_avg >= 22.5:
+            ta_long = max(ta_long, raw_over19, min(0.86, (raw_avg - 18.0) / 8.0) if raw_avg else 0.0)
+
+    risk_short = 0.0
+    risk_reasons = []
+    if fav20 >= 0.60 and mlmax >= 0.64:
+        risk_short += 0.22; risk_reasons.append("favorito 2-0 alto")
+    if raw_easy >= 0.42:
+        risk_short += 0.18; risk_reasons.append("TA muestra palizas/cortos")
+    if hold_diff >= 0.10 and mlmax >= 0.64:
+        risk_short += 0.12; risk_reasons.append("diferencia de hold")
+    if avg_games and avg_games < 20.5:
+        risk_short += 0.12; risk_reasons.append("media esperada baja")
+    risk_short = float(np.clip(risk_short, 0.0, 1.0))
+
+    # Score de línea larga. Busca 21-22 juegos, no solo Over18.
+    long_score = (
+        over20 * 0.21 + over21 * 0.17 + over22 * 0.09 +
+        tb * 0.13 + dog_set * 0.11 + set3 * 0.08 + equality * 0.08 +
+        ta_long * 0.17 + ta_set * 0.07 + ta_over * 0.05
+    )
+    if hold_avg >= 0.84 and hold_diff <= 0.08:
+        long_score += 0.06
+    if str(surface).lower() == "grass":
+        long_score += 0.04
+    if found_count == 2:
+        long_score += 0.04
+    elif found_count == 1:
+        long_score += 0.01
+    else:
+        long_score -= 0.06
+    long_score -= risk_short * 0.32
+    long_score = float(np.clip(long_score, 0.0, 1.0))
+
+    if risk_short >= 0.34:
+        risk_label = "Alto"
+    elif risk_short >= 0.18:
+        risk_label = "Medio"
+    else:
+        risk_label = "Bajo"
+
+    if long_score >= 0.72 and risk_short < 0.24 and over22 >= 0.42 and ta_long >= 0.70:
+        line = "Over 22.5 candidato"
+        level = "🔥 Premium"
+    elif long_score >= 0.65 and risk_short < 0.30 and over21 >= 0.50 and ta_long >= 0.62:
+        line = "Over 21.5 candidato"
+        level = "🔥 Muy interesante"
+    elif long_score >= 0.58 and risk_short < 0.34 and over20 >= 0.56:
+        line = "Over 20.5 candidato"
+        level = "✅ Interesante"
+    elif over18 >= 0.74 and risk_short < 0.35:
+        line = "Over 18.5/19.5, no subir mucho"
+        level = "🟡 Over base"
+    else:
+        line = "No subir línea"
+        level = "⚠️ Prudente"
+
+    reasons = []
+    if over20: reasons.append(f"O20 modelo {over20:.0%}")
+    if over21: reasons.append(f"O21 estimado {over21:.0%}")
+    if tb: reasons.append(f"TB {tb:.0%}")
+    if dog_set: reasons.append(f"dog set {dog_set:.0%}")
+    if ta_long: reasons.append(f"TA largo {ta_long:.0%}")
+    if ta_set: reasons.append(f"TA set {ta_set:.0%}")
+    if hold_avg: reasons.append(f"Hold medio {hold_avg:.0%}")
+    if found_count: reasons.append(f"fichas TA {found_count}/2")
+    if risk_reasons: reasons.append("freno: " + ", ".join(risk_reasons[:2]))
+
+    rows = [
+        {"Señal": "ADN Over largo", "Valor": f"{long_score:.0%}", "Lectura": level},
+        {"Señal": "Línea recomendada", "Valor": line, "Lectura": "tú decides según cuota"},
+        {"Señal": "Riesgo 2-0 corto", "Valor": risk_label, "Lectura": ", ".join(risk_reasons[:3]) if risk_reasons else "sin alerta fuerte"},
+        {"Señal": "TA partido largo", "Valor": f"{ta_long:.0%}" if ta_long else "N/D", "Lectura": (ta or {}).get("TA_PERFIL", "Sin TA")},
+        {"Señal": "Over 20.5", "Valor": f"{over20:.0%}" if over20 else "N/D", "Lectura": "modelo base"},
+        {"Señal": "Over 21.5", "Valor": f"{over21:.0%}" if over21 else "N/D", "Lectura": "estimación intermedia"},
+        {"Señal": "Over 22.5", "Valor": f"{over22:.0%}" if over22 else "N/D", "Lectura": "línea alta"},
+    ]
+
+    return {"line": line, "level": level, "score": long_score, "risk": risk_label, "motivo": " · ".join(reasons[:9]), "rows": rows}
+
+
+def render_over_largo_intelligence_v23630(payload, ta_adj=None):
+    try:
+        res = _predictor_over_largo_intelligence_v23630(payload, ta_adj if isinstance(ta_adj, dict) else None)
+    except Exception as e:
+        st.caption(f"No se pudo calcular Over Largo Intelligence: {type(e).__name__}: {e}")
+        return
+    st.subheader("🔥 OVER LARGO INTELLIGENCE")
+    msg = f"{res.get('level','')} · {res.get('line','')} · Riesgo 2-0 corto: {res.get('risk','')}"
+    if "No subir" in str(res.get("line", "")) or "Prudente" in str(res.get("level", "")):
+        st.warning(msg)
+    elif "18.5/19.5" in str(res.get("line", "")):
+        st.info(msg)
+    else:
+        st.success(msg)
+    if res.get("motivo"):
+        st.caption(res.get("motivo"))
+    dfo = pd.DataFrame(res.get("rows", []))
+    if not dfo.empty:
+        st.dataframe(dfo, use_container_width=True, hide_index=True)
+
+
 def render_predictor_deep_match_analyzer_panel():
     payload = st.session_state.get("predictor_last_payload_v23440")
     if not isinstance(payload, dict):
@@ -18672,6 +19031,9 @@ def render_predictor_deep_match_analyzer_panel():
         with c6: st.metric("Primer set J2", _deep_pct(base.get("p2_fs", 0)))
         with c7: st.metric("Tie-break", _deep_pct(base.get("tb", 0)), _deep_level(base.get("tb", 0)))
         with c8: st.metric("Dog gana set", _deep_pct(base.get("dog_wins_set", 0)), _deep_level(base.get("dog_wins_set", 0)))
+
+        # v23.63: bloque específico para decidir si merece subir el Over a 20.5/21.5/22.5.
+        render_over_largo_intelligence_v23630(payload, ta_adj if isinstance(ta_adj, dict) else None)
 
         st.subheader("📌 Conclusiones deportivas")
         for n in _deep_conclusions(payload, ta_adj if isinstance(ta_adj, dict) else None):
