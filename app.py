@@ -6169,6 +6169,130 @@ def parse_sofascore_paste(raw_text):
     return matches
 
 
+# =========================================================
+# v23.60.0 MOBILE SOFASCORE OCR PARSER
+# Convierte capturas de móvil tipo SofaScore en partidos.
+# Solo afecta a lectura/limpieza de entrada OCR; NO toca motor Over.
+# =========================================================
+
+def _sofa_ocr_has_time(line):
+    return re.search(r"\b\d{1,2}[:;.\-]\d{2}\b", str(line or "")) is not None
+
+def _sofa_ocr_extract_time_and_rest(line):
+    txt = str(line or "").strip()
+    m = re.search(r"\b(\d{1,2})[:;.\-](\d{2})\b", txt)
+    if not m:
+        return "", txt
+    hora = f"{int(m.group(1)):02d}:{m.group(2)}"
+    rest = (txt[:m.start()] + " " + txt[m.end():]).strip()
+    return hora, rest
+
+def _clean_sofascore_ocr_player_line(line):
+    """Limpia símbolos de banderas/campanas/OCR dejando un posible nombre."""
+    t = normalizar_texto(line)
+    if not t:
+        return ""
+    _, t = _sofa_ocr_extract_time_and_rest(t)
+    t = t.replace("’", "'").replace("‘", "'").replace("`", "'").replace("´", "'")
+    t = re.sub(r"^[\s\-–—_:;|/\\]+", " ", t)
+    t = re.sub(r"[•●○◎◉★☆🔔🎾🇦-🇿]+", " ", t)
+    # Quita basura OCR frecuente al principio: @, &, %, sk, wp, q), etc.
+    t = re.sub(r"^[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+", " ", t)
+    t = re.sub(r"^(sk|wp|fal|al|a|q|w|v|vs|vs\.)\b[\s:;,.\-]*", "", t, flags=re.I)
+    # Mantiene letras, espacios, punto de inicial, apostrofe y guion de apellidos.
+    t = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ.'\- ]+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip(" .:-_=|/")
+    # Arregla O.Tarvet / D.Evans -> O. Tarvet.
+    t = re.sub(r"\b([A-Za-z])\.\s*(?=[A-Za-zÁÉÍÓÚÜÑáéíóúüñ])", r"\1. ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    # Quita coletillas OCR al final sin cargarse nombres reales.
+    parts = t.split()
+    while len(parts) >= 3 and parts[-1].lower().strip(".") in {"a", "al", "fal", "sk", "wp"}:
+        parts = parts[:-1]
+    t = " ".join(parts).strip()
+    low = t.lower()
+    if not t or low.startswith("cancela") or low in {"tenis", "favoritos", "fantasy", "never miss", "hierba"}:
+        return ""
+    if is_country_line_sofa(t) or is_country_like_name(t) or is_sofa_meta_line(t):
+        return ""
+    if is_pending_opponent_name(t) or "/" in t:
+        return ""
+    # Debe parecer nombre de jugador: inicial+apellido o al menos dos letras.
+    if not re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]{2,}", t):
+        return ""
+    return t
+
+def parse_sofascore_mobile_ocr_paste(raw_text):
+    """
+    Lee OCR de capturas de móvil donde cada partido suele salir como:
+      12:00 A. Galarneau
+      - O. Tarvet
+    o con símbolos de bandera/campana entre medias.
+    """
+    text = str(raw_text or "")
+    # Si el OCR junta varias horas en una línea, fuerza corte antes de cada hora.
+    text = re.sub(r"(?<!^)\s+(?=\d{1,2}[:;.\-]\d{2}\b)", "\n", text)
+    raw_lines = [ln.strip() for ln in text.splitlines() if str(ln).strip()]
+    matches = []
+    current_time = ""
+    candidates = []
+
+    def flush_if_ready():
+        nonlocal current_time, candidates
+        if current_time and len(candidates) >= 2:
+            p1_raw, p2_raw = candidates[0], candidates[1]
+            matches.append({
+                "raw": f"{current_time} · {p1_raw} - {p2_raw}",
+                "time": current_time,
+                "p1_raw": p1_raw,
+                "p2_raw": p2_raw,
+                "odd1": None,
+                "odd2": None,
+                "quoted_side": None,
+                "quoted_odd": None,
+                "quoted_text": None
+            })
+            current_time = ""
+            candidates = []
+            return True
+        return False
+
+    for raw in raw_lines:
+        line = raw.strip()
+        if not line:
+            continue
+        if _sofa_ocr_has_time(line):
+            # Nueva hora: si había un partido incompleto, lo descartamos y empezamos otro.
+            if len(candidates) >= 2:
+                flush_if_ready()
+            hora, rest = _sofa_ocr_extract_time_and_rest(line)
+            current_time = hora
+            candidates = []
+            name = _clean_sofascore_ocr_player_line(rest)
+            if name:
+                candidates.append(name)
+                flush_if_ready()
+            continue
+
+        if not current_time:
+            continue
+        name = _clean_sofascore_ocr_player_line(line)
+        if name:
+            candidates.append(name)
+            flush_if_ready()
+
+    flush_if_ready()
+    return matches
+
+def sofa_mobile_ocr_to_canonical_text(raw_text):
+    """Devuelve texto ya limpio en formato que entiende parse_sofascore_paste."""
+    matches = parse_sofascore_mobile_ocr_paste(raw_text)
+    blocks = []
+    for m in matches:
+        blocks.extend([str(m.get("time", "")).strip(), "-", str(m.get("p1_raw", "")).strip(), str(m.get("p2_raw", "")).strip(), ""])
+    return "\n".join([x for x in blocks if x is not None]).strip(), matches
+
+
 
 def normalizar_superficie_pegada(x, default="Clay"):
     """Normaliza superficies copiadas de Sofascore/Flashscore sin tocar cálculos."""
@@ -19327,9 +19451,15 @@ Sebastián Baez - Roberto Carballés Baena"""
                 if err_ocr:
                     st.warning(err_ocr)
                 if txt_ocr:
-                    st.session_state["sofa_raw_batch"] = txt_ocr
-                    st.success("Captura leída. Revisa el texto pegado abajo antes de analizar.")
-                    with st.expander("Ver texto OCR detectado", expanded=False):
+                    txt_limpio, partidos_ocr = sofa_mobile_ocr_to_canonical_text(txt_ocr)
+                    st.session_state["sofa_raw_batch"] = txt_limpio if txt_limpio else txt_ocr
+                    if partidos_ocr:
+                        st.success(f"Captura leída y limpiada: {len(partidos_ocr)} partidos detectados. Revisa el texto pegado abajo antes de analizar.")
+                        with st.expander("Ver partidos OCR detectados", expanded=True):
+                            st.dataframe(pd.DataFrame(partidos_ocr)[["time", "p1_raw", "p2_raw"]], width='stretch', hide_index=True)
+                    else:
+                        st.warning("Captura leída, pero el limpiador móvil no ha podido formar partidos. Te pego el OCR bruto abajo para revisarlo.")
+                    with st.expander("Ver texto OCR bruto", expanded=False):
                         st.text(txt_ocr[:6000])
                 else:
                     st.error("No he podido sacar texto útil de la captura. Prueba una captura más grande o pega la lista manualmente.")
@@ -19378,6 +19508,8 @@ Sebastián Baez - Roberto Carballés Baena"""
                 # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Datos extra.
                 if not preview and any(is_time_line_sofa(x.strip()) for x in raw_batch.splitlines()):
                     preview = parse_sofascore_paste(raw_batch)
+                if not preview and any(_sofa_ocr_has_time(x.strip()) for x in raw_batch.splitlines()):
+                    preview = parse_sofascore_mobile_ocr_paste(raw_batch)
                 if not preview and any(is_date_line_sofa_result(x.strip()) for x in raw_batch.splitlines()):
                     preview = parse_sofascore_results_paste(raw_batch)
         else:
@@ -19442,9 +19574,15 @@ Sebastián Baez - Roberto Carballés Baena"""
             # autodetección si se pegó formato Sofascore pero quedó seleccionado Casa/Datos extra.
             if not parsed and any(is_time_line_sofa(x.strip()) for x in raw_batch.splitlines()):
                 parsed = parse_sofascore_paste(raw_batch)
+            if not parsed and any(_sofa_ocr_has_time(x.strip()) for x in raw_batch.splitlines()):
+                parsed = parse_sofascore_mobile_ocr_paste(raw_batch)
             if not parsed and any(is_date_line_sofa_result(x.strip()) for x in raw_batch.splitlines()):
                 parsed = parse_sofascore_results_paste(raw_batch)
             parsed = parsed[:int(max_batch)]
+
+        # v23.60.0: fallback final para capturas/OCR móvil de SofaScore.
+        if not parsed and any(_sofa_ocr_has_time(x.strip()) for x in raw_batch.splitlines()):
+            parsed = parse_sofascore_mobile_ocr_paste(raw_batch)[:int(max_batch)]
 
         # v23.10: seguridad para evitar superar memoria en Cloud.
         if len(parsed) * int(sims_batch) > 50000:
