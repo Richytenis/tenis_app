@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.52 Excel práctico + TA", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.64.0-top-apuestas-clean"
+APP_VERSION = "v23.65.0-no-over-under-watch"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -16068,7 +16068,7 @@ def crear_top_apuestas_df_v23467(picks_df, n=10):
     except Exception:
         pass
 
-    keep = [c for c in ["Ranking apuesta", "Prioridad apuesta", "Score apuesta", "Hora", "Fecha", "Torneo", "Superficie", "Partido", "Acción", "Mercado", "Prob.", "Confianza", "Motivo"] if c in df.columns]
+    keep = [c for c in ["Ranking apuesta", "Prioridad apuesta", "Score apuesta", "Hora", "Fecha", "Torneo", "Superficie", "Partido", "Acción", "Mercado", "Prob.", "Confianza", "Riesgo NO OVER", "Decisión NO OVER", "Motivo"] if c in df.columns]
     return df.head(int(n))[keep].copy()
 
 
@@ -16317,6 +16317,262 @@ def _adn_over_largo_excel_v23520(row):
         "Motivo ADN largo": " · ".join(motivos[:7]),
     })
 
+
+
+# =========================================================
+# v23.65 DETECTOR NO OVER + UNDER WATCH
+# Capa de presentación/validación: NO toca simulación ni motor Over.
+# Objetivo:
+#   1) detectar Overs peligrosos que pueden quedarse en 13-16 juegos.
+#   2) bloquearlos en Excel como JUGAR limpio.
+#   3) sacar hoja UNDER WATCH para validar Under 22.5/21.5/20.5.
+# =========================================================
+
+def _under_watch_pct_v23650(row, cols, default=0.0):
+    """Lee probabilidad 0-1 desde la primera columna existente."""
+    for c in cols:
+        try:
+            if c in row.index:
+                v = row.get(c, None)
+                if v is None or (hasattr(pd, "isna") and pd.isna(v)):
+                    continue
+                s = str(v).replace("%", "").replace(",", ".").strip()
+                if s == "" or s.lower() in ["nan", "none", "n/d", "-"]:
+                    continue
+                x = float(s)
+                return max(0.0, min(1.0, x / 100.0 if x > 1.5 else x))
+        except Exception:
+            continue
+    return default
+
+
+def _under_watch_score100_v23650(v, default=0.0):
+    try:
+        if v is None or (hasattr(pd, "isna") and pd.isna(v)):
+            return default
+        s = str(v).replace("%", "").replace(",", ".").strip()
+        if s == "" or s.lower() in ["nan", "none", "n/d", "-"]:
+            return default
+        x = float(s)
+        return max(0.0, min(100.0, x if x > 1.5 else x * 100.0))
+    except Exception:
+        return default
+
+
+def _detector_no_over_row_v23650(row):
+    """Devuelve señales NO OVER/UNDER WATCH para una fila ya calculada.
+
+    Importante: es una capa de lectura. Usa probabilidades ya existentes
+    (Under 22.5, Over 18.5/19.5/20.5, 3 sets, TB, Fav 2-0, ML favorito, TA).
+    """
+    mercado = str(row.get("Mercado", row.get("🎯 Mercado más probable", row.get("Mercado recomendado", ""))) or "")
+    accion = str(row.get("Acción", row.get("🎯 Acción final", "")) or "")
+    motivo_prev = str(row.get("Motivo", row.get("🎯 Motivo acierto", row.get("Motivo Market Selector", ""))) or "")
+    riesgo_txt = " ".join([
+        str(row.get("Riesgo", row.get("Riesgos", "")) or ""),
+        str(row.get("Motivo", row.get("🎯 Motivo acierto", "")) or ""),
+        str(row.get("Motivo TA", row.get("TA_MOTIVO", "")) or ""),
+        str(row.get("ADN TA", row.get("TA_PERFIL", "")) or ""),
+        str(row.get("Mercado", row.get("Mercado recomendado", "")) or ""),
+    ]).upper()
+
+    over18 = _under_watch_pct_v23650(row, ["Over 18.5", "ModelOver18"], 0.0)
+    over19 = _under_watch_pct_v23650(row, ["Over 19.5", "ModelOver19"], 0.0)
+    over20 = _under_watch_pct_v23650(row, ["Over 20.5", "ModelOver20"], 0.0)
+    over22 = _under_watch_pct_v23650(row, ["Over 22.5", "ModelOver22"], 0.0)
+    under22 = _under_watch_pct_v23650(row, ["Under 22.5", "ModelUnder22"], None)
+    if under22 is None:
+        under22 = max(0.0, min(1.0, 1.0 - over22)) if over22 > 0 else 0.0
+    set3 = _under_watch_pct_v23650(row, ["Partido a 3 sets", "3 Sets", "Model3Sets", "ModelLongMatch"], 0.0)
+    tb = _under_watch_pct_v23650(row, ["Tie-break", "Tie Break", "TB", "ModelTB"], 0.0)
+    fav20 = _under_watch_pct_v23650(row, ["Favorito 2-0", "Fav 2-0", "ModelFav20"], 0.0)
+    fav_ml = _under_watch_pct_v23650(row, ["ML favorito", "Favorito modelo prob", "Prob ML", "ModelML"], 0.0)
+    fav_under22 = _under_watch_pct_v23650(row, ["Fav + Under 22.5", "ModelFavUnder22"], 0.0)
+
+    ta_largo = _under_watch_score100_v23650(row.get("TA largo", row.get("TA_LONG_MATCH_SCORE", "")), 0.0) / 100.0
+    ta_over = _under_watch_score100_v23650(row.get("TA over", row.get("TA_OVER_SCORE", "")), 0.0) / 100.0
+    ta_set = _under_watch_score100_v23650(row.get("TA set", row.get("TA_SET_SCORE", "")), 0.0) / 100.0
+
+    is_over_pick = bool(re.search(r"OVER\s*(17\.5|18\.5|19\.5|20\.5|21\.5|22\.5|17|18|19|20|21|22)", mercado.upper()))
+    is_jugar = "JUGAR" in accion.upper()
+
+    # Score NO OVER: cuanto más alto, más pinta de partido corto / 2 sets controlados.
+    score = 0.0
+    razones = []
+    if under22 >= 0.66:
+        score += 22; razones.append("Under22 alto")
+    elif under22 >= 0.60:
+        score += 14; razones.append("Under22 medio")
+    if fav_under22 >= 0.54:
+        score += 16; razones.append("fav+under22")
+    if fav20 >= 0.60:
+        score += 18; razones.append("favorito 2-0 fuerte")
+    elif fav20 >= 0.52:
+        score += 10; razones.append("favorito 2-0 medio")
+    if fav_ml >= 0.74:
+        score += 11; razones.append("favorito claro")
+    elif fav_ml >= 0.68:
+        score += 7; razones.append("favorito con ventaja")
+    if set3 and set3 <= 0.34:
+        score += 12; razones.append("bajo 3 sets")
+    elif set3 and set3 <= 0.40:
+        score += 7; razones.append("3 sets controlado")
+    if tb and tb <= 0.24:
+        score += 8; razones.append("bajo tie-break")
+    elif tb and tb >= 0.38:
+        score -= 10; razones.append("riesgo tie-break")
+    if over19 and over19 < 0.58:
+        score += 7; razones.append("Over19 flojo")
+    if over20 and over20 < 0.46:
+        score += 5; razones.append("Over20 flojo")
+    if ta_largo and ta_largo < 0.50:
+        score += 7; razones.append("TA no largo")
+    if ta_over and ta_over < 0.55:
+        score += 4; razones.append("TA over bajo")
+    if ta_set and ta_set < 0.42:
+        score += 4; razones.append("TA 3 sets bajo")
+
+    if re.search(r"2-0|UNDER|PALIZA|MARCADOR CORTO|NO OVER|FAVORITO CLARO|DOMINA|DOMINADO|BAJO 3 SET|BAJA 3 SET", riesgo_txt):
+        score += 10; razones.append("texto partido corto")
+    if re.search(r"BIG SERVER|ELITE SERVER|TIE|TB|TIEBREAK|3 SET|PARTIDO LARGO|RESIST|IGUAL", riesgo_txt):
+        score -= 8; razones.append("texto largo/TB")
+
+    # Penalización si el propio modelo ve Over 18.5 muy fuerte y no hay under claro.
+    if over18 >= 0.80 and under22 < 0.62 and fav20 < 0.58:
+        score -= 16; razones.append("Over18 fuerte")
+    elif over18 >= 0.76 and under22 < 0.58:
+        score -= 8; razones.append("Over18 apto")
+
+    score = max(0.0, min(100.0, score))
+    if score >= 78:
+        nivel = "MUY ALTO"
+    elif score >= 65:
+        nivel = "ALTO"
+    elif score >= 50:
+        nivel = "MEDIO"
+    else:
+        nivel = "BAJO"
+
+    candidato_under = (score >= 65 and under22 >= 0.60 and set3 <= 0.42)
+    if candidato_under:
+        if under22 >= 0.78 and fav20 >= 0.66 and set3 <= 0.30 and tb <= 0.24:
+            linea = "Under 20.5"
+        elif under22 >= 0.70 and fav20 >= 0.58 and set3 <= 0.35:
+            linea = "Under 21.5"
+        else:
+            linea = "Under 22.5"
+    else:
+        linea = ""
+
+    if score >= 78:
+        conf_under = "🔥 Alta"
+    elif score >= 65:
+        conf_under = "✅ Media-alta"
+    elif score >= 50:
+        conf_under = "👀 Observar"
+    else:
+        conf_under = "—"
+
+    decision = ""
+    mercado_ajustado = mercado
+    accion_ajustada = accion
+    motivo_ajustado = motivo_prev
+    if is_over_pick and is_jugar and score >= 65:
+        # Bloqueo de presentación: deja de ser JUGAR limpio y obliga a revisar Under.
+        accion_ajustada = "OBSERVAR"
+        if candidato_under:
+            mercado_ajustado = f"❌ NO OVER / 👀 {linea} WATCH"
+            decision = f"Bloquea Over; mirar {linea}"
+        else:
+            mercado_ajustado = "❌ NO OVER / NO BET"
+            decision = "Bloquea Over"
+        extra = f"Detector NO OVER {nivel}: " + "; ".join(razones[:5])
+        motivo_ajustado = (motivo_prev + " | " if motivo_prev else "") + extra
+    elif candidato_under:
+        decision = f"Mirar {linea}"
+    elif score >= 50:
+        decision = "No combinar Over"
+    else:
+        decision = "Sin alerta"
+
+    return pd.Series({
+        "Riesgo NO OVER": nivel,
+        "Score NO OVER": round(score, 1),
+        "Motivo NO OVER": "; ".join(razones[:8]),
+        "Candidato Under": "Sí" if candidato_under else "No",
+        "Línea Under recomendada": linea,
+        "Confianza Under": conf_under,
+        "Riesgo Tie-break": "Alto" if tb >= 0.38 else ("Bajo" if tb and tb <= 0.24 else "Medio"),
+        "Riesgo 3 sets": "Alto" if set3 >= 0.46 else ("Bajo" if set3 and set3 <= 0.34 else "Medio"),
+        "Decisión NO OVER": decision,
+        "__no_over_accion": accion_ajustada,
+        "__no_over_mercado": mercado_ajustado,
+        "__no_over_motivo": motivo_ajustado,
+    })
+
+
+def aplicar_detector_no_over_under_watch_v23650(picks_df):
+    """Añade columnas NO OVER y bloquea Overs peligrosos a nivel Excel."""
+    if picks_df is None or not isinstance(picks_df, pd.DataFrame) or picks_df.empty:
+        return picks_df
+    out = picks_df.copy()
+    try:
+        det = out.apply(_detector_no_over_row_v23650, axis=1)
+        det.index = out.index
+        for c in det.columns:
+            if not c.startswith("__no_over_"):
+                out[c] = det[c]
+        if "Acción" in out.columns:
+            out["Acción"] = det["__no_over_accion"].values
+        if "Mercado" in out.columns:
+            out["Mercado"] = det["__no_over_mercado"].values
+        if "Motivo" in out.columns:
+            out["Motivo"] = det["__no_over_motivo"].values
+    except Exception:
+        for c in ["Riesgo NO OVER", "Score NO OVER", "Motivo NO OVER", "Candidato Under", "Línea Under recomendada", "Confianza Under", "Riesgo Tie-break", "Riesgo 3 sets", "Decisión NO OVER"]:
+            if c not in out.columns:
+                out[c] = ""
+    return out
+
+
+def crear_under_watch_df_v23650(picks_df, n=25):
+    """Hoja de validación: candidatos Under 22.5/21.5/20.5.
+    No son JUGAR oficial; salen para observar cuota/resultado.
+    """
+    if picks_df is None or not isinstance(picks_df, pd.DataFrame) or picks_df.empty:
+        return pd.DataFrame()
+    df = picks_df.copy()
+    if "Riesgo NO OVER" not in df.columns or "Candidato Under" not in df.columns:
+        df = aplicar_detector_no_over_under_watch_v23650(df)
+    try:
+        mask = (
+            df.get("Candidato Under", pd.Series([""] * len(df), index=df.index)).astype(str).str.upper().str.contains("SÍ|SI|YES", regex=True, na=False)
+            | df.get("Riesgo NO OVER", pd.Series([""] * len(df), index=df.index)).astype(str).str.upper().isin(["ALTO", "MUY ALTO"])
+        )
+        df = df[mask].copy()
+    except Exception:
+        df = pd.DataFrame()
+    if df.empty:
+        return pd.DataFrame([{
+            "Estado": "SIN UNDER WATCH",
+            "Motivo": "No hay partidos con riesgo NO OVER alto/muy alto en esta tanda",
+        }])
+    try:
+        df["__score_no_over_sort"] = pd.to_numeric(df.get("Score NO OVER", 0), errors="coerce").fillna(0)
+        df = df.sort_values("__score_no_over_sort", ascending=False)
+    except Exception:
+        pass
+    keep = [c for c in [
+        "Hora", "Fecha", "Torneo", "Superficie", "Partido",
+        "Línea Under recomendada", "Confianza Under", "Riesgo NO OVER", "Score NO OVER",
+        "Riesgo 3 sets", "Riesgo Tie-break", "Under 22.5", "Over 18.5", "Over 19.5", "Over 20.5",
+        "Favorito modelo", "ML favorito", "Favorito 2-0", "Motivo NO OVER", "Decisión NO OVER", "Motivo"
+    ] if c in df.columns]
+    out = df.head(int(n))[keep].copy() if keep else df.head(int(n)).copy()
+    if "Estado" not in out.columns:
+        out.insert(0, "Estado", "👀 OBSERVAR UNDER")
+    return out.drop(columns=["__score_no_over_sort"], errors="ignore")
+
 def crear_picks_limpios_df(df):
     """Hoja simple para decidir: una fila por partido y solo columnas útiles."""
     if df is None or df.empty:
@@ -16379,6 +16635,14 @@ def crear_picks_limpios_df(df):
     except Exception:
         if "Mercado" in picks.columns:
             picks["Mercado"] = picks["Mercado"].apply(_limpiar_texto_excel_cell)
+
+    # v23.65: Detector NO OVER + UNDER WATCH. Solo cambia presentación Excel:
+    # si un Over JUGAR tiene riesgo alto de partido corto, pasa a OBSERVAR/NO OVER
+    # y aparece en UNDER WATCH para validar Under 22.5/21.5/20.5.
+    try:
+        picks = aplicar_detector_no_over_under_watch_v23650(picks)
+    except Exception:
+        pass
 
     def _score(row):
         accion = str(row.get("Acción", "")).upper()
@@ -17114,6 +17378,7 @@ def batch_excel_bytes(df):
         try:
             _write_if_not_empty_v23520(writer, crear_top_apuestas_df_v23467(picks_df, n=12), "TOP APUESTAS")
             _write_if_not_empty_v23520(writer, crear_combinada_recomendada_df_v23467(picks_df), "COMBINADA 1.70")
+            _write_if_not_empty_v23520(writer, crear_under_watch_df_v23650(picks_df), "UNDER WATCH")
             _write_if_not_empty_v23520(writer, crear_adn_over_largo_estudio_v23502(detalle_df), "ADN OVER LARGO")
             _write_if_not_empty_v23520(writer, crear_ta_intelligence_ranking_df_v23510(detalle_df), "TA INTELLIGENCE")
         except Exception:
@@ -17137,6 +17402,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
         try:
             _write_if_not_empty_v23520(writer, crear_top_apuestas_df_v23467(picks_df, n=12), "TOP APUESTAS")
             _write_if_not_empty_v23520(writer, crear_combinada_recomendada_df_v23467(picks_df), "COMBINADA 1.70")
+            _write_if_not_empty_v23520(writer, crear_under_watch_df_v23650(picks_df), "UNDER WATCH")
             _write_if_not_empty_v23520(writer, crear_adn_over_largo_estudio_v23502(detalle_df), "ADN OVER LARGO")
             _write_if_not_empty_v23520(writer, crear_ta_intelligence_ranking_df_v23510(detalle_df), "TA INTELLIGENCE")
         except Exception:
