@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.52 Excel práctico + TA", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.65.0-no-over-under-watch"
+APP_VERSION = "v23.66.0-under-radar-pro"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -16564,14 +16564,222 @@ def crear_under_watch_df_v23650(picks_df, n=25):
         pass
     keep = [c for c in [
         "Hora", "Fecha", "Torneo", "Superficie", "Partido",
-        "Línea Under recomendada", "Confianza Under", "Riesgo NO OVER", "Score NO OVER",
+        "Dirección partido", "Mercado estudio", "Score Under Pro", "Línea Under recomendada", "Confianza Under", "Riesgo NO OVER", "Score NO OVER",
         "Riesgo 3 sets", "Riesgo Tie-break", "Under 22.5", "Over 18.5", "Over 19.5", "Over 20.5",
-        "Favorito modelo", "ML favorito", "Favorito 2-0", "Motivo NO OVER", "Decisión NO OVER", "Motivo"
+        "Favorito modelo", "ML favorito", "Favorito 2-0", "Motivo radar", "Motivo NO OVER", "Decisión NO OVER", "Motivo"
     ] if c in df.columns]
     out = df.head(int(n))[keep].copy() if keep else df.head(int(n)).copy()
     if "Estado" not in out.columns:
         out.insert(0, "Estado", "👀 OBSERVAR UNDER")
     return out.drop(columns=["__score_no_over_sort"], errors="ignore")
+
+
+
+# =========================================================
+# v23.66 UNDER RADAR PRO + RADAR 10
+# Capa de presentación/validación. NO toca el motor Over ni sus fórmulas.
+# Objetivo: separar candidatos OVER LARGO y UNDER para que la lista diaria
+# saque 10 partidos interesantes y luego se afinen en el predictor individual.
+# =========================================================
+
+def _under_radar_pro_row_v23660(row):
+    """Clasifica la dirección del partido: OVER LARGO / UNDER / BASE / NO TOCAR.
+
+    Usa solo datos ya calculados y columnas de presentación. No recalcula el Over.
+    El under se interpreta como mercado de estudio, no como JUGAR automático.
+    """
+    under22 = _under_watch_pct_v23650(row, ["Under 22.5", "ModelUnder22"], None)
+    over22 = _under_watch_pct_v23650(row, ["Over 22.5", "ModelOver22"], 0.0)
+    if under22 is None:
+        under22 = max(0.0, min(1.0, 1.0 - over22)) if over22 > 0 else 0.0
+    over18 = _under_watch_pct_v23650(row, ["Over 18.5", "ModelOver18"], 0.0)
+    over19 = _under_watch_pct_v23650(row, ["Over 19.5", "ModelOver19"], 0.0)
+    over20 = _under_watch_pct_v23650(row, ["Over 20.5", "ModelOver20"], 0.0)
+    over21 = _under_watch_pct_v23650(row, ["Over 21.5 estudio", "Over 21.5", "ModelOver21"], 0.0)
+    set3 = _under_watch_pct_v23650(row, ["Partido a 3 sets", "3 Sets", "Model3Sets", "ModelLongMatch"], 0.0)
+    tb = _under_watch_pct_v23650(row, ["Tie-break", "Tie Break", "TB", "ModelTB"], 0.0)
+    fav20 = _under_watch_pct_v23650(row, ["Favorito 2-0", "Fav 2-0", "ModelFav20"], 0.0)
+    fav_ml = _under_watch_pct_v23650(row, ["ML favorito", "Favorito modelo prob", "Prob ML", "ModelML"], 0.0)
+    fav_under22 = _under_watch_pct_v23650(row, ["Fav + Under 22.5", "ModelFavUnder22"], 0.0)
+
+    no_over_score = _under_watch_score100_v23650(row.get("Score NO OVER", 0), 0.0)
+    ta_largo = _under_watch_score100_v23650(row.get("TA largo", row.get("TA_LONG_MATCH_SCORE", "")), 0.0) / 100.0
+    ta_over = _under_watch_score100_v23650(row.get("TA over", row.get("TA_OVER_SCORE", "")), 0.0) / 100.0
+    ta_set = _under_watch_score100_v23650(row.get("TA set", row.get("TA_SET_SCORE", "")), 0.0) / 100.0
+
+    txt = _texto_row_simple_v23620(row, [
+        "Mercado", "Motivo", "Riesgo", "Motivo NO OVER", "ADN TA", "TA observar",
+        "ADN Over Largo", "Motivo ADN largo", "Riesgo 3 sets", "Riesgo Tie-break"
+    ]) if '_texto_row_simple_v23620' in globals() else ""
+
+    # Score UNDER: favorito domina + poco 3 sets + poco TB + Under22 alto.
+    under_score = 0.0
+    razones_u = []
+    if under22 >= 0.74:
+        under_score += 26; razones_u.append("Under22 muy alto")
+    elif under22 >= 0.68:
+        under_score += 21; razones_u.append("Under22 alto")
+    elif under22 >= 0.61:
+        under_score += 14; razones_u.append("Under22 medio")
+    if fav_under22 >= 0.56:
+        under_score += 16; razones_u.append("favorito+under22")
+    if fav20 >= 0.66:
+        under_score += 18; razones_u.append("2-0 fuerte")
+    elif fav20 >= 0.58:
+        under_score += 12; razones_u.append("2-0 medio")
+    if fav_ml >= 0.76:
+        under_score += 10; razones_u.append("favorito claro")
+    elif fav_ml >= 0.69:
+        under_score += 6; razones_u.append("favorito con ventaja")
+    if set3 and set3 <= 0.32:
+        under_score += 12; razones_u.append("bajo 3 sets")
+    elif set3 and set3 <= 0.39:
+        under_score += 7; razones_u.append("3 sets controlado")
+    if tb and tb <= 0.22:
+        under_score += 8; razones_u.append("bajo tie-break")
+    elif tb and tb >= 0.36:
+        under_score -= 12; razones_u.append("riesgo TB")
+    if over20 and over20 <= 0.44:
+        under_score += 7; razones_u.append("Over20 flojo")
+    if over19 and over19 <= 0.56:
+        under_score += 5; razones_u.append("Over19 flojo")
+    if ta_largo and ta_largo < 0.48:
+        under_score += 6; razones_u.append("TA no largo")
+    if ta_set and ta_set < 0.40:
+        under_score += 4; razones_u.append("TA set bajo")
+    if no_over_score >= 65:
+        under_score += min(12, (no_over_score - 55) / 3.0); razones_u.append("NO OVER alto")
+    if re.search(r"PALIZA|MARCADOR CORTO|FAVORITO CLARO|DOMINA|BAJO 3 SET|NO OVER", txt, flags=re.I):
+        under_score += 8; razones_u.append("texto corto")
+    if re.search(r"BIG SERVER|ELITE SERVER|TIE.?BREAK|\bTB\b|PARTIDO LARGO|RESIST|IGUAL", txt, flags=re.I):
+        under_score -= 8; razones_u.append("texto largo/TB")
+    if over18 >= 0.80 and under22 < 0.64 and fav20 < 0.60:
+        under_score -= 12; razones_u.append("Over18 fuerte")
+
+    under_score = max(0.0, min(100.0, under_score))
+
+    # Score OVER LARGO: lectura separada para comparar dirección.
+    over_largo_score = 0.0
+    razones_o = []
+    if over21 >= 0.56:
+        over_largo_score += 22; razones_o.append("Over21 alto")
+    elif over20 >= 0.61:
+        over_largo_score += 16; razones_o.append("Over20 alto")
+    if over22 >= 0.42:
+        over_largo_score += 12; razones_o.append("Over22 vivo")
+    if set3 >= 0.44:
+        over_largo_score += 15; razones_o.append("3 sets alto")
+    elif set3 >= 0.38:
+        over_largo_score += 9; razones_o.append("3 sets medio")
+    if tb >= 0.34:
+        over_largo_score += 12; razones_o.append("riesgo TB")
+    if ta_largo >= 0.68:
+        over_largo_score += 14; razones_o.append("TA largo")
+    if ta_over >= 0.66:
+        over_largo_score += 8; razones_o.append("TA over")
+    if fav_ml >= 0.76 and fav20 >= 0.60:
+        over_largo_score -= 10; razones_o.append("dominio favorito")
+    if under22 >= 0.68:
+        over_largo_score -= 10; razones_o.append("Under22 alto")
+    over_largo_score = max(0.0, min(100.0, over_largo_score))
+
+    if under_score >= 70 and under_score >= over_largo_score + 8:
+        direccion = "CORTO / UNDER"
+        if under22 >= 0.78 and fav20 >= 0.66 and set3 <= 0.30 and tb <= 0.24:
+            mercado = "Under 20.5"
+        elif under22 >= 0.70 and fav20 >= 0.58 and set3 <= 0.36:
+            mercado = "Under 21.5"
+        else:
+            mercado = "Under 22.5"
+        confianza = "🔥 Alta" if under_score >= 78 else "✅ Media-alta"
+        apto = "Sí" if under_score >= 72 and tb < 0.36 and set3 < 0.42 else "Revisar"
+        motivo = "; ".join(razones_u[:7])
+        score_final = under_score
+    elif over_largo_score >= 66 and over_largo_score >= under_score + 6:
+        direccion = "LARGO / OVER"
+        if over22 >= 0.43 and ta_largo >= 0.72:
+            mercado = "Over 22.5"
+        elif over21 >= 0.53 or ta_largo >= 0.68:
+            mercado = "Over 21.5"
+        else:
+            mercado = "Over 20.5"
+        confianza = "🔥 Alta" if over_largo_score >= 76 else "✅ Media-alta"
+        apto = "Sí" if over_largo_score >= 70 and under_score < 65 else "Revisar"
+        motivo = "; ".join(razones_o[:7])
+        score_final = over_largo_score
+    elif over18 >= 0.76 and under_score < 60:
+        direccion = "BASE OVER"
+        mercado = "Over 18.5 / 19.5"
+        confianza = "✅ Media-alta" if over18 >= 0.80 else "👀 Observar"
+        apto = "Revisar"
+        motivo = "Over base fuerte, pero sin señal clara de largo"
+        score_final = max(over18 * 100.0, over_largo_score, under_score)
+    else:
+        direccion = "NO TOCAR / MIXTO"
+        mercado = "Sin mercado claro"
+        confianza = "—"
+        apto = "No"
+        motivo = "Señales mezcladas o insuficientes"
+        score_final = max(over_largo_score, under_score)
+
+    return pd.Series({
+        "Dirección partido": direccion,
+        "Mercado estudio": mercado,
+        "Score radar": round(score_final, 1),
+        "Score Under Pro": round(under_score, 1),
+        "Score Over Largo Pro": round(over_largo_score, 1),
+        "Confianza radar": confianza,
+        "Apto combinada": apto,
+        "Motivo radar": motivo,
+    })
+
+
+def aplicar_under_radar_pro_v23660(picks_df):
+    if picks_df is None or not isinstance(picks_df, pd.DataFrame) or picks_df.empty:
+        return picks_df
+    out = picks_df.copy()
+    try:
+        radar = out.apply(_under_radar_pro_row_v23660, axis=1)
+        radar.index = out.index
+        for c in radar.columns:
+            out[c] = radar[c]
+    except Exception:
+        for c in ["Dirección partido", "Mercado estudio", "Score radar", "Score Under Pro", "Score Over Largo Pro", "Confianza radar", "Apto combinada", "Motivo radar"]:
+            if c not in out.columns:
+                out[c] = ""
+    return out
+
+
+def crear_radar_over_under_10_df_v23660(picks_df, n=10):
+    """Hoja práctica: 10 candidatos del día, mezclando OVER LARGO y UNDER.
+    No son apuestas automáticas; sirve para elegir qué abrir en el predictor.
+    """
+    if picks_df is None or not isinstance(picks_df, pd.DataFrame) or picks_df.empty:
+        return pd.DataFrame()
+    df = picks_df.copy()
+    if "Dirección partido" not in df.columns:
+        df = aplicar_under_radar_pro_v23660(df)
+    try:
+        df["__score_radar_sort"] = pd.to_numeric(df.get("Score radar", 0), errors="coerce").fillna(0)
+        direccion = df.get("Dirección partido", pd.Series([""] * len(df), index=df.index)).astype(str).str.upper()
+        mask = direccion.str.contains("UNDER|OVER|BASE", regex=True, na=False) & (df["__score_radar_sort"] >= 58)
+        df = df[mask].copy()
+        df = df.sort_values("__score_radar_sort", ascending=False)
+    except Exception:
+        pass
+    if df.empty:
+        return pd.DataFrame([{"Estado": "SIN RADAR", "Motivo": "No hay candidatos claros Over largo/Under en esta tanda"}])
+    keep = [c for c in [
+        "Hora", "Fecha", "Torneo", "Superficie", "Partido",
+        "Dirección partido", "Mercado estudio", "Score radar", "Confianza radar", "Apto combinada",
+        "Score Under Pro", "Score Over Largo Pro", "Riesgo 3 sets", "Riesgo Tie-break",
+        "Under 22.5", "Over 18.5", "Over 19.5", "Over 20.5", "Over 21.5", "Over 21.5 estudio", "Over 22.5",
+        "Favorito modelo", "ML favorito", "Favorito 2-0", "Motivo radar", "Motivo", "Motivo NO OVER"
+    ] if c in df.columns]
+    out = df.head(int(n))[keep].copy() if keep else df.head(int(n)).copy()
+    if "Estado" not in out.columns:
+        out.insert(0, "Estado", "🎯 RADAR")
+    return out.drop(columns=["__score_radar_sort"], errors="ignore")
 
 def crear_picks_limpios_df(df):
     """Hoja simple para decidir: una fila por partido y solo columnas útiles."""
@@ -16641,6 +16849,12 @@ def crear_picks_limpios_df(df):
     # y aparece en UNDER WATCH para validar Under 22.5/21.5/20.5.
     try:
         picks = aplicar_detector_no_over_under_watch_v23650(picks)
+    except Exception:
+        pass
+
+    # v23.66: radar mixto Over largo / Under para sacar 10 candidatos diarios.
+    try:
+        picks = aplicar_under_radar_pro_v23660(picks)
     except Exception:
         pass
 
@@ -16813,6 +17027,51 @@ def _crear_rows_over_largo_primera_hoja_v23630(df):
     return rows
 
 
+
+
+def _under_display_v23660(row):
+    """Aviso corto para primera hoja: candidatos Under a revisar en predictor."""
+    direccion = str(row.get("Dirección partido", "") or "").upper()
+    mercado = str(row.get("Mercado estudio", "") or "")
+    score_u = _score100_simple_v23630(row.get("Score Under Pro", 0), 0.0)
+    apto = str(row.get("Apto combinada", "") or "").upper()
+    if "UNDER" not in direccion or score_u < 68:
+        return ""
+    if "NO" in apto and "REVISAR" not in apto:
+        return ""
+    if not mercado or "Sin mercado" in mercado:
+        mercado = str(row.get("Línea Under recomendada", "") or "Under 21.5")
+    return f"👀 {mercado} candidato"
+
+
+def _crear_rows_under_primera_hoja_v23660(df):
+    rows = []
+    if df is None or df.empty:
+        return rows
+    tmp = df.copy()
+    if "Dirección partido" not in tmp.columns:
+        try:
+            tmp = aplicar_under_radar_pro_v23660(tmp)
+        except Exception:
+            pass
+    tmp["__under_display"] = tmp.apply(_under_display_v23660, axis=1)
+    tmp = tmp[tmp["__under_display"].astype(str).str.len() > 0].copy()
+    if tmp.empty:
+        return rows
+    try:
+        tmp["__under_sort"] = pd.to_numeric(tmp.get("Score Under Pro", 0), errors="coerce").fillna(0)
+        tmp = tmp.sort_values("__under_sort", ascending=False)
+    except Exception:
+        pass
+    for _, r in tmp.head(3).iterrows():
+        rows.append({
+            "Hora": str(r.get("Hora", "") or ""),
+            "Pista": _pista_simple_v23620(r),
+            "Jugadores": str(r.get("Partido", "") or ""),
+            "Mercado": str(r.get("__under_display", "") or ""),
+        })
+    return rows
+
 def crear_hoja_jugar_simple_v23620(picks_df):
     """Primera hoja del Excel: solo lo apostable y solo 4 columnas.
 
@@ -16870,6 +17129,11 @@ def crear_hoja_jugar_simple_v23620(picks_df):
     # para que Richy los vea y decida según cuota. No cambia el motor Over.
     try:
         rows.extend(_crear_rows_over_largo_primera_hoja_v23630(picks_df))
+    except Exception:
+        pass
+    # v23.66: también mostrar hasta 3 candidatos UNDER para abrir en predictor.
+    try:
+        rows.extend(_crear_rows_under_primera_hoja_v23660(picks_df))
     except Exception:
         pass
 
@@ -17377,6 +17641,7 @@ def batch_excel_bytes(df):
         _write_if_not_empty_v23520(writer, crear_hoja_jugar_simple_v23620(picks_df), "PICKS DEL DÍA")
         try:
             _write_if_not_empty_v23520(writer, crear_top_apuestas_df_v23467(picks_df, n=12), "TOP APUESTAS")
+            _write_if_not_empty_v23520(writer, crear_radar_over_under_10_df_v23660(picks_df, n=10), "RADAR OVER-UNDER")
             _write_if_not_empty_v23520(writer, crear_combinada_recomendada_df_v23467(picks_df), "COMBINADA 1.70")
             _write_if_not_empty_v23520(writer, crear_under_watch_df_v23650(picks_df), "UNDER WATCH")
             _write_if_not_empty_v23520(writer, crear_adn_over_largo_estudio_v23502(detalle_df), "ADN OVER LARGO")
@@ -17401,6 +17666,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
         _write_if_not_empty_v23520(writer, crear_hoja_jugar_simple_v23620(picks_df), "PICKS DEL DÍA")
         try:
             _write_if_not_empty_v23520(writer, crear_top_apuestas_df_v23467(picks_df, n=12), "TOP APUESTAS")
+            _write_if_not_empty_v23520(writer, crear_radar_over_under_10_df_v23660(picks_df, n=10), "RADAR OVER-UNDER")
             _write_if_not_empty_v23520(writer, crear_combinada_recomendada_df_v23467(picks_df), "COMBINADA 1.70")
             _write_if_not_empty_v23520(writer, crear_under_watch_df_v23650(picks_df), "UNDER WATCH")
             _write_if_not_empty_v23520(writer, crear_adn_over_largo_estudio_v23502(detalle_df), "ADN OVER LARGO")
