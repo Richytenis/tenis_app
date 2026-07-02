@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.52 Excel práctico + TA", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.66.0-under-radar-pro"
+APP_VERSION = "v23.67.0-superficie-fix-under-pro"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -6306,6 +6306,64 @@ def normalizar_superficie_pegada(x, default="Clay"):
     return default
 
 
+
+
+# =========================================================
+# v23.67 SUPERFICIE FIX PRO
+# Evita que la superficie se arrastre de un bloque anterior de SofaScore.
+# Prioridad:
+#   1) superficie explícita en meta/título (Tierra batida / Dura outdoor / Hierba)
+#   2) mapa de torneos conocidos de la tanda Challenger/ATP
+#   3) fallback seguro
+# No toca motor Over: solo corrige el dato de entrada "surface".
+# =========================================================
+
+SURFACE_TOURNAMENT_HINTS_V23670 = {
+    "Clay": [
+        "BRASOV", "MILAN", "MILANO", "QUITO", "TROYES", "PIRACICABA",
+        "BASTAD", "GSTAAD", "KITZBUHEL", "UMAG", "HAMBURG", "ROMA", "ROME",
+        "MADRID", "MONTE CARLO", "ROLAND GARROS", "FRENCH OPEN"
+    ],
+    "Hard": [
+        "CARY", "WINNIPEG", "LEXINGTON", "WASHINGTON", "ATLANTA", "LOS CABOS",
+        "CINCINNATI", "CANADA", "TORONTO", "MONTREAL", "US OPEN", "MIAMI", "INDIAN WELLS"
+    ],
+    "Grass": [
+        "ASTBOURNE", "EASTBOURNE", "HALLE", "QUEENS", "QUEEN", "WIMBLEDON",
+        "NOTTINGHAM", "MALLORCA", "NEWPORT", "STUTTGART", "S-HERTOGENBOSCH", "HERTOGENBOSCH"
+    ],
+}
+
+
+def detectar_superficie_pegado_pro_v23670(tournament="", meta_lines=None, fallback="Clay"):
+    """Devuelve (surface, source, warning) para pegados SofaScore.
+
+    Importante: si cambia el torneo, recalcula desde cero. Así un bloque de Hierba
+    no contamina Brasov/Milano/Quito/Troyes, que son Clay.
+    """
+    meta_lines = meta_lines or []
+    piezas = [str(tournament or "")] + [str(x or "") for x in meta_lines]
+
+    # 1) Superficie explícita: tomar la última explícita del bloque.
+    explicit = []
+    for x in piezas:
+        sf = normalizar_superficie_pegada(x, default="")
+        if sf in ["Hard", "Clay", "Grass"]:
+            explicit.append(sf)
+    if explicit:
+        return explicit[-1], "SofaScore/meta explícita", ""
+
+    # 2) Mapa por torneo.
+    txt = limpiar(" ".join(piezas))
+    for sf, names in SURFACE_TOURNAMENT_HINTS_V23670.items():
+        for name in names:
+            if limpiar(name) and limpiar(name) in txt:
+                return sf, f"Detectada por torneo ({name})", ""
+
+    # 3) Fallback: si no hay dato, no inventamos Grass por arrastre.
+    fb = fallback if fallback in ["Hard", "Clay", "Grass"] else "Clay"
+    return fb, "Fallback sin superficie explícita", "⚠️ Superficie no explícita: revisar"
+
 def clasificar_bloque_torneo_pegado(tournament, meta_lines):
     """Clasifica encabezados pegados: ATP/WTA/Challenger y dobles."""
     txt = " ".join([str(tournament)] + [str(x) for x in meta_lines])
@@ -6441,16 +6499,15 @@ def parse_sofascore_schedule_no_date_paste(raw_text):
     current_meta = []
     current_circuit = "DESCONOCIDO"
     current_surface = "Clay"
+    current_surface_source = "Default Clay"
+    current_surface_warning = ""
     current_ignore_doubles = False
 
     def refresh_context():
-        nonlocal current_circuit, current_surface, current_ignore_doubles
+        nonlocal current_circuit, current_surface, current_surface_source, current_surface_warning, current_ignore_doubles
         current_circuit = clasificar_bloque_torneo_pegado(current_tournament, current_meta)
         current_ignore_doubles = current_circuit == "IGNORAR_DOBLES"
-        for ml in current_meta + [current_tournament]:
-            surf = normalizar_superficie_pegada(ml, default="")
-            if surf in ["Hard", "Clay", "Grass"]:
-                current_surface = surf
+        current_surface, current_surface_source, current_surface_warning = detectar_superficie_pegado_pro_v23670(current_tournament, current_meta, fallback="Clay")
 
     def add_meta(ln):
         nonlocal current_meta
@@ -6494,6 +6551,8 @@ def parse_sofascore_schedule_no_date_paste(raw_text):
                         "p1_raw": jugador1,
                         "p2_raw": jugador2,
                         "surface": current_surface,
+                        "surface_source": current_surface_source,
+                        "surface_warning": current_surface_warning,
                         "torneo": current_tournament,
                         "circuito_detectado": current_circuit,
                         "odd1": None,
@@ -6570,16 +6629,15 @@ def parse_sofascore_day_grouped_paste(raw_text):
     current_meta = []
     current_circuit = "DESCONOCIDO"
     current_surface = "Clay"
+    current_surface_source = "Default Clay"
+    current_surface_warning = ""
     current_ignore_doubles = False
 
     def refresh_context():
-        nonlocal current_circuit, current_surface, current_ignore_doubles
+        nonlocal current_circuit, current_surface, current_surface_source, current_surface_warning, current_ignore_doubles
         current_circuit = clasificar_bloque_torneo_pegado(current_tournament, current_meta)
         current_ignore_doubles = current_circuit == "IGNORAR_DOBLES"
-        for ml in current_meta:
-            surf = normalizar_superficie_pegada(ml, default="")
-            if surf in ["Hard", "Clay", "Grass"]:
-                current_surface = surf
+        current_surface, current_surface_source, current_surface_warning = detectar_superficie_pegado_pro_v23670(current_tournament, current_meta, fallback="Clay")
 
     i = 0
     while i < len(lines):
@@ -6635,6 +6693,8 @@ def parse_sofascore_day_grouped_paste(raw_text):
                     "p1_raw": candidates[0],
                     "p2_raw": candidates[1],
                     "surface": current_surface,
+                    "surface_source": current_surface_source,
+                    "surface_warning": current_surface_warning,
                     "torneo": current_tournament,
                     "circuito_detectado": current_circuit,
                     "odd1": None,
@@ -6816,16 +6876,15 @@ def parse_sofascore_results_grouped_paste(raw_text):
     current_meta = []
     current_circuit = "DESCONOCIDO"
     current_surface = "Clay"
+    current_surface_source = "Default Clay"
+    current_surface_warning = ""
     current_ignore_doubles = False
 
     def refresh_context():
-        nonlocal current_circuit, current_surface, current_ignore_doubles
+        nonlocal current_circuit, current_surface, current_surface_source, current_surface_warning, current_ignore_doubles
         current_circuit = clasificar_bloque_torneo_pegado(current_tournament, current_meta)
         current_ignore_doubles = current_circuit == "IGNORAR_DOBLES"
-        for ml in current_meta:
-            surf = normalizar_superficie_pegada(ml, default="")
-            if surf in ["Hard", "Clay", "Grass"]:
-                current_surface = surf
+        current_surface, current_surface_source, current_surface_warning = detectar_superficie_pegado_pro_v23670(current_tournament, current_meta, fallback="Clay")
 
     i = 0
     while i < len(lines):
@@ -6945,6 +7004,8 @@ def parse_sofascore_results_grouped_paste(raw_text):
                 "actual_total_games": actual_total_games,
                 "score_games": score_games,
                 "surface": current_surface,
+                "surface_source": current_surface_source if 'current_surface_source' in locals() else "",
+                "surface_warning": current_surface_warning if 'current_surface_warning' in locals() else "",
                 "torneo": current_tournament,
                 "circuito_detectado": current_circuit,
                 "odd1": None,
@@ -7269,16 +7330,15 @@ def parse_sofascore_results_grouped_paste(raw_text):
     current_meta = []
     current_circuit = "DESCONOCIDO"
     current_surface = "Clay"
+    current_surface_source = "Default Clay"
+    current_surface_warning = ""
     current_ignore_doubles = False
 
     def refresh_context():
-        nonlocal current_circuit, current_surface, current_ignore_doubles
+        nonlocal current_circuit, current_surface, current_surface_source, current_surface_warning, current_ignore_doubles
         current_circuit = clasificar_bloque_torneo_pegado(current_tournament, current_meta)
         current_ignore_doubles = current_circuit == "IGNORAR_DOBLES"
-        for ml in current_meta:
-            surf = normalizar_superficie_pegada(ml, default="")
-            if surf in ["Hard", "Clay", "Grass"]:
-                current_surface = surf
+        current_surface, current_surface_source, current_surface_warning = detectar_superficie_pegado_pro_v23670(current_tournament, current_meta, fallback="Clay")
 
     i = 0
     while i < len(lines):
@@ -7311,6 +7371,11 @@ def parse_sofascore_results_grouped_paste(raw_text):
             current_ignore_doubles=current_ignore_doubles
         )
         if match:
+            try:
+                match["surface_source"] = current_surface_source
+                match["surface_warning"] = current_surface_warning
+            except Exception:
+                pass
             matches.append(match)
         i = max(ni, i + 1)
 
@@ -8554,6 +8619,137 @@ def crear_ta_intelligence_ranking_df_v23510(detalle_df):
     })
     return out.reset_index(drop=True)
 
+
+
+# =========================================================
+# v23.67 UNDER PRO BASE
+# Capa nueva de lectura SHORT MATCH. No toca motor Over ni sus umbrales.
+# Usa simulación ya existente + fichas TA (hold/break/tb) + superficie.
+# =========================================================
+
+def _under_pro_float_v23670(x, default=0.0):
+    try:
+        if x is None or (isinstance(x, float) and pd.isna(x)):
+            return default
+        if isinstance(x, str):
+            t = x.replace('%','').replace(',','.').strip()
+            if t == '' or t.lower() in {'nan','none','n/d','—','-'}:
+                return default
+            v = float(t)
+            return v/100.0 if v > 1.0 else v
+        v = float(x)
+        return v/100.0 if v > 1.0 else v
+    except Exception:
+        return default
+
+
+def calcular_under_pro_v23670(p1_name, p2_name, surface, circuito, sim, under19_5, under20_5, under21_5):
+    surface = surface if surface in ["Hard", "Clay", "Grass"] else "Clay"
+    sim = sim or {}
+    p1_is_fav = _under_pro_float_v23670(sim.get('p1_cal'), 0.5) >= 0.5
+    fav_name = p1_name if p1_is_fav else p2_name
+    dog_name = p2_name if p1_is_fav else p1_name
+    fav_ml = max(_under_pro_float_v23670(sim.get('p1_cal'), 0.5), _under_pro_float_v23670(sim.get('p2_cal'), 0.5))
+    fav20 = _under_pro_float_v23670(sim.get('fav_2_0'), 0.0)
+    set3 = _under_pro_float_v23670(sim.get('set3'), 0.0)
+    tb = _under_pro_float_v23670(sim.get('tb'), 0.0)
+    longm = _under_pro_float_v23670(sim.get('long_match'), 0.0)
+    hold1 = _under_pro_float_v23670(sim.get('hold1'), 0.0)
+    hold2 = _under_pro_float_v23670(sim.get('hold2'), 0.0)
+    ret1 = _under_pro_float_v23670(sim.get('ret1'), 0.0)
+    ret2 = _under_pro_float_v23670(sim.get('ret2'), 0.0)
+    fav_hold, dog_hold = (hold1, hold2) if p1_is_fav else (hold2, hold1)
+    fav_ret, dog_ret = (ret1, ret2) if p1_is_fav else (ret2, ret1)
+
+    ta_fav = _ta_int_profile(fav_name, surface)
+    ta_dog = _ta_int_profile(dog_name, surface)
+    fav_break = _under_pro_float_v23670(ta_fav.get('break'), fav_ret)
+    dog_hold_ta = _under_pro_float_v23670(ta_dog.get('hold'), dog_hold)
+    fav_hold_ta = _under_pro_float_v23670(ta_fav.get('hold'), fav_hold)
+    avg_tb_ta = _ta_int_avg([ta_fav.get('tb_pct'), ta_dog.get('tb_pct')], None)
+    avg_three_ta = _ta_int_avg([ta_fav.get('three'), ta_dog.get('three')], None)
+    dog_lost02 = _under_pro_float_v23670(ta_dog.get('lost02'), 0.0)
+    dog_easy = _under_pro_float_v23670(ta_dog.get('easy'), 0.0)
+    sample = _ta_int_avg([ta_fav.get('sample_score'), ta_dog.get('sample_score')], 0.35)
+
+    # Núcleo under: no basta ser favorito; buscamos break + rival vulnerable + bajo TB/3 sets.
+    break_pressure = float(np.clip((fav_break - 0.22) / 0.16, 0, 1))
+    dog_vulnerable = float(np.clip((0.80 - dog_hold_ta) / 0.20, 0, 1))
+    fav_safe_hold = float(np.clip((fav_hold_ta - 0.74) / 0.16, 0, 1))
+    dominance = float(np.clip((fav_ml - 0.60) / 0.22, 0, 1))
+    straight = float(np.clip((fav20 - 0.50) / 0.34, 0, 1))
+
+    risk_tb = tb
+    if avg_tb_ta is not None:
+        risk_tb = max(risk_tb, float(np.clip(avg_tb_ta, 0, 1)))
+    if fav_hold_ta >= 0.84 and dog_hold_ta >= 0.80:
+        risk_tb += 0.07
+    if surface == 'Grass':
+        risk_tb += 0.08
+    elif surface == 'Clay':
+        risk_tb -= 0.04
+    risk_tb = float(np.clip(risk_tb, 0, 1))
+
+    risk_set3 = set3
+    if avg_three_ta is not None:
+        risk_set3 = max(risk_set3, avg_three_ta * 0.85)
+    risk_set3 = max(risk_set3, _under_pro_float_v23670(sim.get('dog_wins_set'), 0.0) * 0.65)
+    risk_set3 = float(np.clip(risk_set3, 0, 1))
+
+    surface_bonus = 6 if surface == 'Clay' else (-8 if surface == 'Grass' else 0)
+    # En Challenger clay/hard hay más valor under que en ATP Tour, pero solo como boost de radar.
+    if str(circuito).upper() == 'CHALLENGER':
+        surface_bonus += 3 if surface in ['Clay', 'Hard'] else -2
+
+    score = (
+        under21_5 * 30 + under20_5 * 16 + under19_5 * 6 +
+        break_pressure * 15 + dog_vulnerable * 14 + fav_safe_hold * 7 +
+        dominance * 10 + straight * 12 +
+        dog_lost02 * 4 + dog_easy * 3 + surface_bonus
+    )
+    score -= risk_tb * 15
+    score -= risk_set3 * 18
+    score -= longm * 8
+    if sample < 0.35:
+        score -= 5
+    score = float(np.clip(score, 0, 100))
+
+    if score >= 78 and under20_5 >= 0.62 and risk_tb <= 0.30 and risk_set3 <= 0.34:
+        mercado = 'Under 20.5'
+        alt = f'{fav_name} 2-0 / {dog_name} under juegos'
+    elif score >= 70 and under21_5 >= 0.66 and risk_tb <= 0.36 and risk_set3 <= 0.42:
+        mercado = 'Under 21.5'
+        alt = f'{fav_name} 2-0'
+    elif score >= 62 and under21_5 >= 0.60:
+        mercado = 'Under 21.5 observar'
+        alt = f'{dog_name} under juegos si cuota compensa'
+    else:
+        mercado = 'No under claro'
+        alt = ''
+
+    motivos = []
+    if break_pressure >= 0.55: motivos.append('favorito rompe bien')
+    if dog_vulnerable >= 0.55: motivos.append('rival hold bajo')
+    if fav_safe_hold >= 0.55: motivos.append('favorito sostiene')
+    if straight >= 0.45: motivos.append('2-0 probable')
+    if surface == 'Clay': motivos.append('Clay favorece breaks')
+    if risk_tb >= 0.36: motivos.append('⚠️ riesgo tie-break')
+    if risk_set3 >= 0.42: motivos.append('⚠️ riesgo 3 sets')
+    if sample < 0.45: motivos.append('muestra TA limitada')
+
+    return {
+        'Short Match Score': round(score, 1),
+        'Mercado Under Pro': mercado,
+        'Alternativa Under': alt,
+        'Under Pro favorito': fav_name,
+        'Under Pro rival': dog_name,
+        'Under Pro break favorito': f'{fav_break:.1%}' if fav_break else '',
+        'Under Pro hold rival': f'{dog_hold_ta:.1%}' if dog_hold_ta else '',
+        'Riesgo Tie-break Under': f'{risk_tb:.1%}',
+        'Riesgo 3 sets Under': f'{risk_set3:.1%}',
+        'Motivo Under Pro': ' · '.join(motivos[:7]) if motivos else 'sin señales fuertes',
+    }
+
 def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, progress_callback=None):
     rows = []
     total = len(parsed_matches)
@@ -8617,6 +8813,11 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
         over20_raw = sum(x > 20.5 for x in games)/sims if sims else 0
         over21_raw = sum(x > 21.5 for x in games)/sims if sims else 0
         over22_raw = sum(x > 22.5 for x in games)/sims if sims else 0
+        # v23.67 Under Pro: mercados under calculados desde la misma distribución ya simulada.
+        # No modifica ni caps ni fórmula Over.
+        under19_5 = sum(float(x) < 19.5 for x in games)/sims if sims else 0
+        under20_5 = sum(float(x) < 20.5 for x in games)/sims if sims else 0
+        under21_5 = sum(float(x) < 21.5 for x in games)/sims if sims else 0
         caps = aplicar_market_sanity_caps(sim, circuito_calc, match_surface, over18_raw, over19_raw, over20_raw, over22_raw)
         over18, over19, over20, over22 = caps["over18"], caps["over19"], caps["over20"], caps["over22"]
         under22 = 1 - over22
@@ -8703,6 +8904,11 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             model_over21=over21_raw, model_over22=over22, sim=sim
         )
 
+        under_pro = calcular_under_pro_v23670(
+            p1_key, p2_key, match_surface, circuito_calc, sim,
+            under19_5=under19_5, under20_5=under20_5, under21_5=under21_5
+        )
+
         rows.append({
             "Versión app": APP_VERSION,
             "Fecha": m.get("date", ""),
@@ -8712,6 +8918,8 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "Circuito cálculo": str(circuito_calc).upper(),
             "Torneo": m.get("torneo", ""),
             "Superficie": match_surface,
+            "Fuente superficie": m.get("surface_source", ""),
+            "Aviso superficie": m.get("surface_warning", ""),
             "Partido": f"{p1_key} vs {p2_key}",
             "Estado": "OK" if p1_status == "OK" and p2_status == "OK" else "OK con jugador estimado",
             "Lectura J1": p1_status,
@@ -8757,6 +8965,19 @@ def analyze_batch_matches(parsed_matches, db, circuito, surface, best_of, sims, 
             "TA_J1_ESTILO": ta_intel.get("TA_J1_ESTILO", ""),
             "TA_J2_ESTILO": ta_intel.get("TA_J2_ESTILO", ""),
             "Under 22.5": f"{under22:.1%}",
+            "Under 21.5": f"{under21_5:.1%}",
+            "Under 20.5": f"{under20_5:.1%}",
+            "Under 19.5": f"{under19_5:.1%}",
+            "Short Match Score": under_pro.get("Short Match Score", ""),
+            "Mercado Under Pro": under_pro.get("Mercado Under Pro", ""),
+            "Alternativa Under": under_pro.get("Alternativa Under", ""),
+            "Under Pro favorito": under_pro.get("Under Pro favorito", ""),
+            "Under Pro rival": under_pro.get("Under Pro rival", ""),
+            "Under Pro break favorito": under_pro.get("Under Pro break favorito", ""),
+            "Under Pro hold rival": under_pro.get("Under Pro hold rival", ""),
+            "Riesgo Tie-break Under": under_pro.get("Riesgo Tie-break Under", ""),
+            "Riesgo 3 sets Under": under_pro.get("Riesgo 3 sets Under", ""),
+            "Motivo Under Pro": under_pro.get("Motivo Under Pro", ""),
             "🏆 GS 5 sets activo": "Sí" if gs5 else "",
             "🏆 Mercado GS 5 sets": gs5.get("best_label", "") if gs5 else "",
             "🏆 Prob GS 5 sets": f"{gs5.get('best_prob', 0.0):.1%}" if gs5 else "",
@@ -16563,7 +16784,7 @@ def crear_under_watch_df_v23650(picks_df, n=25):
     except Exception:
         pass
     keep = [c for c in [
-        "Hora", "Fecha", "Torneo", "Superficie", "Partido",
+        "Hora", "Fecha", "Torneo", "Superficie", "Fuente superficie", "Aviso superficie", "Partido",
         "Dirección partido", "Mercado estudio", "Score Under Pro", "Línea Under recomendada", "Confianza Under", "Riesgo NO OVER", "Score NO OVER",
         "Riesgo 3 sets", "Riesgo Tie-break", "Under 22.5", "Over 18.5", "Over 19.5", "Over 20.5",
         "Favorito modelo", "ML favorito", "Favorito 2-0", "Motivo radar", "Motivo NO OVER", "Decisión NO OVER", "Motivo"
@@ -16657,6 +16878,14 @@ def _under_radar_pro_row_v23660(row):
         under_score -= 12; razones_u.append("Over18 fuerte")
 
     under_score = max(0.0, min(100.0, under_score))
+    # v23.67: si existe Short Match Score calculado con TA/hold/break/superficie, manda sobre heurística antigua.
+    short_score = _under_watch_score100_v23650(row.get("Short Match Score", ""), None)
+    if short_score is not None and short_score > 0:
+        under_score = max(under_score, float(short_score))
+        if row.get("Mercado Under Pro", ""):
+            razones_u.insert(0, str(row.get("Mercado Under Pro", "")))
+        if row.get("Motivo Under Pro", ""):
+            razones_u.insert(1, str(row.get("Motivo Under Pro", "")))
 
     # Score OVER LARGO: lectura separada para comparar dirección.
     over_largo_score = 0.0
@@ -16685,7 +16914,10 @@ def _under_radar_pro_row_v23660(row):
 
     if under_score >= 70 and under_score >= over_largo_score + 8:
         direccion = "CORTO / UNDER"
-        if under22 >= 0.78 and fav20 >= 0.66 and set3 <= 0.30 and tb <= 0.24:
+        mercado_pro = str(row.get("Mercado Under Pro", "") or "")
+        if mercado_pro and "NO UNDER" not in mercado_pro.upper():
+            mercado = mercado_pro
+        elif under22 >= 0.78 and fav20 >= 0.66 and set3 <= 0.30 and tb <= 0.24:
             mercado = "Under 20.5"
         elif under22 >= 0.70 and fav20 >= 0.58 and set3 <= 0.36:
             mercado = "Under 21.5"
@@ -16770,16 +17002,52 @@ def crear_radar_over_under_10_df_v23660(picks_df, n=10):
     if df.empty:
         return pd.DataFrame([{"Estado": "SIN RADAR", "Motivo": "No hay candidatos claros Over largo/Under en esta tanda"}])
     keep = [c for c in [
-        "Hora", "Fecha", "Torneo", "Superficie", "Partido",
+        "Hora", "Fecha", "Torneo", "Superficie", "Fuente superficie", "Aviso superficie", "Partido",
         "Dirección partido", "Mercado estudio", "Score radar", "Confianza radar", "Apto combinada",
-        "Score Under Pro", "Score Over Largo Pro", "Riesgo 3 sets", "Riesgo Tie-break",
-        "Under 22.5", "Over 18.5", "Over 19.5", "Over 20.5", "Over 21.5", "Over 21.5 estudio", "Over 22.5",
+        "Score Under Pro", "Short Match Score", "Mercado Under Pro", "Alternativa Under",
+        "Under Pro break favorito", "Under Pro hold rival", "Riesgo Tie-break Under", "Riesgo 3 sets Under",
+        "Score Over Largo Pro", "Riesgo 3 sets", "Riesgo Tie-break",
+        "Under 22.5", "Under 21.5", "Under 20.5", "Under 19.5", "Over 18.5", "Over 19.5", "Over 20.5", "Over 21.5", "Over 21.5 estudio", "Over 22.5",
         "Favorito modelo", "ML favorito", "Favorito 2-0", "Motivo radar", "Motivo", "Motivo NO OVER"
     ] if c in df.columns]
     out = df.head(int(n))[keep].copy() if keep else df.head(int(n)).copy()
     if "Estado" not in out.columns:
         out.insert(0, "Estado", "🎯 RADAR")
     return out.drop(columns=["__score_radar_sort"], errors="ignore")
+
+
+
+def crear_under_radar_df_v23670(picks_df, n=12):
+    """Hoja específica UNDER RADAR: candidatos corto/under ordenados por Short Match Score.
+    No convierte nada en apuesta automática; es radar para abrir en predictor individual.
+    """
+    if picks_df is None or not isinstance(picks_df, pd.DataFrame) or picks_df.empty:
+        return pd.DataFrame()
+    df = picks_df.copy()
+    if "Dirección partido" not in df.columns:
+        df = aplicar_under_radar_pro_v23660(df)
+    try:
+        df["__short_score_sort"] = df.get("Short Match Score", df.get("Score Under Pro", 0)).apply(lambda x: _under_watch_score100_v23650(x, 0.0))
+        mercado = df.get("Mercado Under Pro", pd.Series([""]*len(df), index=df.index)).astype(str).str.upper()
+        direccion = df.get("Dirección partido", pd.Series([""]*len(df), index=df.index)).astype(str).str.upper()
+        mask = ((mercado.str.contains("UNDER", na=False)) | (direccion.str.contains("UNDER", na=False))) & (df["__short_score_sort"] >= 58)
+        df = df[mask].sort_values("__short_score_sort", ascending=False)
+    except Exception:
+        pass
+    if df.empty:
+        return pd.DataFrame([{"Estado": "SIN UNDER RADAR", "Motivo": "No hay candidatos Under claros en esta tanda"}])
+    keep = [c for c in [
+        "Hora", "Fecha", "Torneo", "Superficie", "Fuente superficie", "Aviso superficie", "Partido",
+        "Dirección partido", "Mercado Under Pro", "Short Match Score", "Alternativa Under",
+        "Under 21.5", "Under 20.5", "Under 19.5", "Under 22.5",
+        "Under Pro favorito", "Under Pro rival", "Under Pro break favorito", "Under Pro hold rival",
+        "Riesgo Tie-break Under", "Riesgo 3 sets Under", "Favorito 2-0", "ML favorito",
+        "Partido a 3 sets", "TA_LONG_MATCH_SCORE", "TA_SET_SCORE", "TA_MOTIVO", "Motivo Under Pro", "Riesgos"
+    ] if c in df.columns]
+    out = df.head(int(n))[keep].copy() if keep else df.head(int(n)).copy()
+    if "Estado" not in out.columns:
+        out.insert(0, "Estado", "🟦 UNDER RADAR")
+    return out.drop(columns=["__short_score_sort"], errors="ignore")
 
 def crear_picks_limpios_df(df):
     """Hoja simple para decidir: una fila por partido y solo columnas útiles."""
@@ -17642,6 +17910,7 @@ def batch_excel_bytes(df):
         try:
             _write_if_not_empty_v23520(writer, crear_top_apuestas_df_v23467(picks_df, n=12), "TOP APUESTAS")
             _write_if_not_empty_v23520(writer, crear_radar_over_under_10_df_v23660(picks_df, n=10), "RADAR OVER-UNDER")
+            _write_if_not_empty_v23520(writer, crear_under_radar_df_v23670(picks_df, n=12), "UNDER RADAR")
             _write_if_not_empty_v23520(writer, crear_combinada_recomendada_df_v23467(picks_df), "COMBINADA 1.70")
             _write_if_not_empty_v23520(writer, crear_under_watch_df_v23650(picks_df), "UNDER WATCH")
             _write_if_not_empty_v23520(writer, crear_adn_over_largo_estudio_v23502(detalle_df), "ADN OVER LARGO")
@@ -17667,6 +17936,7 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
         try:
             _write_if_not_empty_v23520(writer, crear_top_apuestas_df_v23467(picks_df, n=12), "TOP APUESTAS")
             _write_if_not_empty_v23520(writer, crear_radar_over_under_10_df_v23660(picks_df, n=10), "RADAR OVER-UNDER")
+            _write_if_not_empty_v23520(writer, crear_under_radar_df_v23670(picks_df, n=12), "UNDER RADAR")
             _write_if_not_empty_v23520(writer, crear_combinada_recomendada_df_v23467(picks_df), "COMBINADA 1.70")
             _write_if_not_empty_v23520(writer, crear_under_watch_df_v23650(picks_df), "UNDER WATCH")
             _write_if_not_empty_v23520(writer, crear_adn_over_largo_estudio_v23502(detalle_df), "ADN OVER LARGO")
@@ -20738,7 +21008,7 @@ Sebastián Baez - Roberto Carballés Baena"""
                 )
 
             show_cols = [c for c in [
-                "date", "time", "circuito_detectado", "torneo", "surface",
+                "date", "time", "circuito_detectado", "torneo", "surface", "surface_source", "surface_warning",
                 "p1_raw", "p2_raw", "sets_real", "score_games",
                 "actual_total_games", "games_leidos", "p1_sets_real", "p2_sets_real"
             ] if c in prev_df.columns]
