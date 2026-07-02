@@ -6612,6 +6612,38 @@ def parse_sofascore_schedule_no_date_paste(raw_text):
     return matches
 
 
+
+
+# =========================================================
+# v23.68 SURFACE CONTEXT FIX
+# El parser legacy parse_sofascore_paste leía los partidos por hora,
+# pero NO conservaba torneo/superficie. Eso hacía que una tanda con
+# Cary (Hard) pudiera acabar saliendo como Clay por fallback.
+# Desde aquí, cualquier pegado con horarios usa el parser con contexto.
+# No toca motor Over ni métricas: solo pasa surface/torneo/circuito.
+# =========================================================
+parse_sofascore_paste_legacy_v23680 = parse_sofascore_paste
+
+
+def parse_sofascore_paste(raw_text):
+    raw_lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    # Si es una lista de partidos con hora y sin resultados fechados, usar el parser nuevo
+    # que arrastra correctamente el contexto de cada bloque: Cary=Hard, Brasov/Milan/Quito/Troyes=Clay.
+    if raw_lines and any(is_time_line_sofa(x) for x in raw_lines) and not any(is_date_line_sofa_result(x) for x in raw_lines):
+        parsed = parse_sofascore_schedule_no_date_paste(raw_text)
+        if parsed:
+            return parsed
+    # Fallback legacy para formatos raros que no encajen con el parser con contexto.
+    legacy = parse_sofascore_paste_legacy_v23680(raw_text)
+    # Aun en fallback, evita que falten claves usadas por el resto de la app.
+    for m in legacy:
+        m.setdefault("surface", "Clay")
+        m.setdefault("surface_source", "Fallback legacy sin contexto")
+        m.setdefault("surface_warning", "⚠️ Superficie no detectada en parser legacy")
+        m.setdefault("torneo", "")
+        m.setdefault("circuito_detectado", "DESCONOCIDO")
+    return legacy
+
 def parse_sofascore_day_grouped_paste(raw_text):
     """
     Parser para pegar TODO el día desde Sofascore/Flashscore.
