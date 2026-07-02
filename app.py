@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.52 Excel práctico + TA", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.71.0-sofascore-router-surface-fix"
+APP_VERSION = "v23.72.0-under-radar-practical-fix"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -16861,8 +16861,11 @@ def _under_radar_pro_row_v23660(row):
     ta_set = _under_watch_score100_v23650(row.get("TA set", row.get("TA_SET_SCORE", "")), 0.0) / 100.0
 
     txt = _texto_row_simple_v23620(row, [
-        "Mercado", "Motivo", "Riesgo", "Motivo NO OVER", "ADN TA", "TA observar",
-        "ADN Over Largo", "Motivo ADN largo", "Riesgo 3 sets", "Riesgo Tie-break"
+        "Mercado", "Mercado estudio", "Mercado Under Pro", "Alternativa Under",
+        "Motivo", "Motivo radar", "Motivo Under Pro", "Riesgo", "Riesgos", "Motivo NO OVER",
+        "ADN TA", "TA observar", "TA_MOTIVO",
+        "ADN Over Largo", "Motivo ADN largo", "Riesgo 3 sets", "Riesgo Tie-break",
+        "Riesgo 3 sets Under", "Riesgo Tie-break Under"
     ]) if '_texto_row_simple_v23620' in globals() else ""
 
     # Score UNDER: favorito domina + poco 3 sets + poco TB + Under22 alto.
@@ -16902,8 +16905,8 @@ def _under_radar_pro_row_v23660(row):
         under_score += 4; razones_u.append("TA set bajo")
     if no_over_score >= 65:
         under_score += min(12, (no_over_score - 55) / 3.0); razones_u.append("NO OVER alto")
-    if re.search(r"PALIZA|MARCADOR CORTO|FAVORITO CLARO|DOMINA|BAJO 3 SET|NO OVER", txt, flags=re.I):
-        under_score += 8; razones_u.append("texto corto")
+    if re.search(r"PALIZA|MARCADOR CORTO|FAVORITO CLARO|DOMINA|BAJO 3 SET|NO OVER|MOTOR INCLINA UNDER|WATCH UNDER|NO SUBIR L[ÍI]NEA|NO SUBIR OVER|UNDER 2\.5", txt, flags=re.I):
+        under_score += 12; razones_u.append("texto corto/under")
     if re.search(r"BIG SERVER|ELITE SERVER|TIE.?BREAK|\bTB\b|PARTIDO LARGO|RESIST|IGUAL", txt, flags=re.I):
         under_score -= 8; razones_u.append("texto largo/TB")
     if over18 >= 0.80 and under22 < 0.64 and fav20 < 0.60:
@@ -16944,6 +16947,21 @@ def _under_radar_pro_row_v23660(row):
         over_largo_score -= 10; razones_o.append("Under22 alto")
     over_largo_score = max(0.0, min(100.0, over_largo_score))
 
+    # v23.72 Practical Under Radar:
+    # La hoja UNDER RADAR es un radar de estudio, no un filtro final de apuesta.
+    # Si TA Intelligence / Under Pro avisa "motor inclina UNDER", "no subir línea"
+    # o "WATCH UNDER", no lo escondemos aunque no llegue a UNDER FUERTE.
+    mercado_under_txt = str(row.get("Mercado Under Pro", "") or "")
+    alt_under_txt = str(row.get("Alternativa Under", "") or "")
+    practical_under_signal = bool(
+        re.search(r"MOTOR INCLINA UNDER|WATCH UNDER|NO SUBIR L[ÍI]NEA|NO SUBIR OVER|UNDER 2\.5", txt, flags=re.I)
+        or re.search(r"UNDER|2-0|RIVAL UNDER|NO SUBIR", mercado_under_txt + " " + alt_under_txt, flags=re.I)
+        or no_over_score >= 50
+    )
+    if practical_under_signal and under_score < 58:
+        under_score = min(69.0, max(58.0, under_score + 10.0))
+        razones_u.append("señal under práctica")
+
     if under_score >= 70 and under_score >= over_largo_score + 8:
         direccion = "CORTO / UNDER"
         mercado_pro = str(row.get("Mercado Under Pro", "") or "")
@@ -16959,6 +16977,19 @@ def _under_radar_pro_row_v23660(row):
         apto = "Sí" if under_score >= 72 and tb < 0.36 and set3 < 0.42 else "Revisar"
         motivo = "; ".join(razones_u[:7])
         score_final = under_score
+    elif practical_under_signal and under_score >= 58 and not (over_largo_score >= 74 and over_largo_score >= under_score + 12):
+        direccion = "CORTO / UNDER OBSERVAR"
+        mercado_pro = str(row.get("Mercado Under Pro", "") or "")
+        if mercado_pro and "NO UNDER" not in mercado_pro.upper():
+            mercado = mercado_pro
+        elif under22 >= 0.66 or fav20 >= 0.56:
+            mercado = "Under 21.5 / Favorito 2-0"
+        else:
+            mercado = "No subir Over / revisar Under"
+        confianza = "👀 Observar"
+        apto = "Revisar"
+        motivo = "; ".join((razones_u + ["radar práctico"])[:8])
+        score_final = max(under_score, 58.0)
     elif over_largo_score >= 66 and over_largo_score >= under_score + 6:
         direccion = "LARGO / OVER"
         if over22 >= 0.43 and ta_largo >= 0.72:
@@ -17049,37 +17080,94 @@ def crear_radar_over_under_10_df_v23660(picks_df, n=10):
 
 
 
+def _under_practical_signal_v23720(row):
+    """Devuelve True si una fila debe entrar en UNDER RADAR como estudio.
+    No es apuesta automática; solo evita que TA Intelligence esconda señales under.
+    """
+    try:
+        txt = _texto_row_simple_v23620(row, [
+            "Dirección partido", "Mercado estudio", "Mercado Under Pro", "Alternativa Under",
+            "Motivo radar", "Motivo Under Pro", "Motivo NO OVER", "Motivo", "Riesgo", "Riesgos",
+            "TA_MOTIVO", "ADN TA", "TA observar", "Riesgo 3 sets Under", "Riesgo Tie-break Under"
+        ]) if '_texto_row_simple_v23620' in globals() else " ".join(str(row.get(c, "")) for c in row.index)
+        if re.search(r"UNDER|MOTOR INCLINA UNDER|WATCH UNDER|NO SUBIR L[ÍI]NEA|NO SUBIR OVER|NO OVER|FAVORITO 2-0|RIVAL UNDER", txt, flags=re.I):
+            return True
+        score_under = _under_watch_score100_v23650(row.get("Score Under Pro", row.get("Short Match Score", 0)), 0.0)
+        score_no_over = _under_watch_score100_v23650(row.get("Score NO OVER", 0), 0.0)
+        over21 = _under_watch_pct_v23650(row, ["Over 21.5 estudio", "Over 21.5", "ModelOver21"], 0.0)
+        over20 = _under_watch_pct_v23650(row, ["Over 20.5", "ModelOver20"], 0.0)
+        fav20 = _under_watch_pct_v23650(row, ["Favorito 2-0", "Fav 2-0", "ModelFav20"], 0.0)
+        set3 = _under_watch_pct_v23650(row, ["Partido a 3 sets", "3 Sets", "Model3Sets", "ModelLongMatch"], 0.0)
+        tb = _under_watch_pct_v23650(row, ["Tie-break", "Tie Break", "TB", "ModelTB"], 0.0)
+        if score_under >= 50 or score_no_over >= 48:
+            return True
+        if over21 and over21 <= 0.50 and over20 and over20 <= 0.58 and (fav20 >= 0.50 or set3 <= 0.40 or tb <= 0.30):
+            return True
+    except Exception:
+        return False
+    return False
+
+
 def crear_under_radar_df_v23670(picks_df, n=12):
-    """Hoja específica UNDER RADAR: candidatos corto/under ordenados por Short Match Score.
-    No convierte nada en apuesta automática; es radar para abrir en predictor individual.
+    """Hoja específica UNDER RADAR v23.72: radar práctico.
+    Incluye UNDER FUERTE, UNDER OBSERVAR y NO SUBIR OVER para abrir en predictor individual.
+    No convierte nada en apuesta automática.
     """
     if picks_df is None or not isinstance(picks_df, pd.DataFrame) or picks_df.empty:
         return pd.DataFrame()
     df = picks_df.copy()
-    if "Dirección partido" not in df.columns:
+    if "Dirección partido" not in df.columns or "Score Under Pro" not in df.columns:
         df = aplicar_under_radar_pro_v23660(df)
     try:
         df["__short_score_sort"] = df.get("Short Match Score", df.get("Score Under Pro", 0)).apply(lambda x: _under_watch_score100_v23650(x, 0.0))
-        mercado = df.get("Mercado Under Pro", pd.Series([""]*len(df), index=df.index)).astype(str).str.upper()
+        df["__under_score_sort"] = df.get("Score Under Pro", 0).apply(lambda x: _under_watch_score100_v23650(x, 0.0))
+        df["__no_over_sort"] = df.get("Score NO OVER", 0).apply(lambda x: _under_watch_score100_v23650(x, 0.0))
+        df["__under_practical"] = df.apply(_under_practical_signal_v23720, axis=1)
         direccion = df.get("Dirección partido", pd.Series([""]*len(df), index=df.index)).astype(str).str.upper()
-        mask = ((mercado.str.contains("UNDER", na=False)) | (direccion.str.contains("UNDER", na=False))) & (df["__short_score_sort"] >= 58)
-        df = df[mask].sort_values("__short_score_sort", ascending=False)
+        mercado = df.get("Mercado Under Pro", pd.Series([""]*len(df), index=df.index)).astype(str).str.upper()
+        estudio = df.get("Mercado estudio", pd.Series([""]*len(df), index=df.index)).astype(str).str.upper()
+        mask = (
+            direccion.str.contains("UNDER|NO SUBIR|NO TOCAR", regex=True, na=False)
+            | mercado.str.contains("UNDER|2-0|NO SUBIR|RIVAL", regex=True, na=False)
+            | estudio.str.contains("UNDER|NO SUBIR|2-0", regex=True, na=False)
+            | (df["__under_score_sort"] >= 50)
+            | (df["__short_score_sort"] >= 50)
+            | (df["__no_over_sort"] >= 48)
+            | df["__under_practical"].fillna(False)
+        )
+        df = df[mask].copy()
+        if not df.empty:
+            df["__sort_final"] = df[["__short_score_sort", "__under_score_sort", "__no_over_sort"]].max(axis=1)
+            df = df.sort_values(["__sort_final", "__under_practical"], ascending=[False, False])
+            def _tipo_under(row):
+                us = _under_watch_score100_v23650(row.get("Score Under Pro", 0), 0.0)
+                ss = _under_watch_score100_v23650(row.get("Short Match Score", 0), 0.0)
+                no = _under_watch_score100_v23650(row.get("Score NO OVER", 0), 0.0)
+                txt = str(row.get("Dirección partido", "")) + " " + str(row.get("Mercado Under Pro", "")) + " " + str(row.get("Mercado estudio", "")) + " " + str(row.get("Motivo radar", "")) + " " + str(row.get("Motivo Under Pro", ""))
+                if max(us, ss) >= 70 or "CORTO / UNDER" in str(row.get("Dirección partido", "")).upper():
+                    return "UNDER FUERTE"
+                if re.search(r"2-0", txt, flags=re.I):
+                    return "FAVORITO 2-0"
+                if no >= 50 or re.search(r"NO SUBIR|NO OVER", txt, flags=re.I):
+                    return "NO SUBIR OVER"
+                return "UNDER OBSERVAR"
+            df["Tipo Under"] = df.apply(_tipo_under, axis=1)
     except Exception:
         pass
     if df.empty:
-        return pd.DataFrame([{"Estado": "SIN UNDER RADAR", "Motivo": "No hay candidatos Under claros en esta tanda"}])
+        return pd.DataFrame([{"Estado": "SIN UNDER RADAR", "Motivo": "No hay señales under/No subir Over en esta tanda"}])
     keep = [c for c in [
-        "Hora", "Fecha", "Torneo", "Superficie", "Fuente superficie", "Aviso superficie", "Partido",
-        "Dirección partido", "Mercado Under Pro", "Short Match Score", "Alternativa Under",
+        "Hora", "Fecha", "Torneo", "Superficie", "Fuente superficie", "Aviso superficie", "Partido", "Tipo Under",
+        "Dirección partido", "Mercado Under Pro", "Mercado estudio", "Short Match Score", "Score Under Pro", "Score NO OVER", "Alternativa Under",
         "Under 21.5", "Under 20.5", "Under 19.5", "Under 22.5",
         "Under Pro favorito", "Under Pro rival", "Under Pro break favorito", "Under Pro hold rival",
         "Riesgo Tie-break Under", "Riesgo 3 sets Under", "Favorito 2-0", "ML favorito",
-        "Partido a 3 sets", "TA_LONG_MATCH_SCORE", "TA_SET_SCORE", "TA_MOTIVO", "Motivo Under Pro", "Riesgos"
+        "Partido a 3 sets", "TA_LONG_MATCH_SCORE", "TA_SET_SCORE", "TA_MOTIVO", "Motivo Under Pro", "Motivo radar", "Motivo NO OVER", "Riesgos", "Motivo"
     ] if c in df.columns]
     out = df.head(int(n))[keep].copy() if keep else df.head(int(n)).copy()
     if "Estado" not in out.columns:
         out.insert(0, "Estado", "🟦 UNDER RADAR")
-    return out.drop(columns=["__short_score_sort"], errors="ignore")
+    return out.drop(columns=["__short_score_sort", "__under_score_sort", "__no_over_sort", "__under_practical", "__sort_final"], errors="ignore")
 
 def crear_picks_limpios_df(df):
     """Hoja simple para decidir: una fila por partido y solo columnas útiles."""
