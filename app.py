@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.52 Excel práctico + TA", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.67.0-superficie-fix-under-pro"
+APP_VERSION = "v23.69.2-surface-real-fix-under-pro"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -20169,6 +20169,314 @@ def render_predictor_deep_match_analyzer_panel():
                 "volatilidad": deep.get("vol"),
                 "notas_caps": deep.get("market_cap_notes", []),
             })
+
+
+
+# =========================================================
+# v23.69 SURFACE REAL FIX - Parser de contexto único
+# Corrige el fallo observado: los primeros partidos de Cary/Dura outdoor
+# salían como Clay porque el contexto no llegaba al análisis final.
+# Este bloque NO toca el motor Over: solo devuelve surface/torneo/circuito
+# dentro de cada partido parseado.
+# =========================================================
+
+def _surface_repair_from_context_v23690(surface, tournament="", meta_lines=None, fallback="Clay"):
+    """Repara superficie usando meta explícita y mapa de torneo.
+    Prioridad: meta explícita > torneo conocido > surface válido > fallback.
+    """
+    meta_lines = meta_lines or []
+    sf, src, warn = detectar_superficie_pegado_pro_v23670(tournament, meta_lines, fallback="")
+    if sf in ["Hard", "Clay", "Grass"]:
+        return sf, src, warn
+    if surface in ["Hard", "Clay", "Grass"]:
+        return surface, "Superficie heredada del bloque", ""
+    fb = fallback if fallback in ["Hard", "Clay", "Grass"] else "Clay"
+    return fb, "Fallback sin contexto", "⚠️ Superficie no explícita: revisar"
+
+
+def _is_block_header_v23690(line, following=None):
+    """Cabecera de torneo para pegados tipo SofaScore día."""
+    t = normalizar_texto(line).strip()
+    if not t or t == "-" or is_time_line_sofa(t) or is_date_line_sofa_result(t):
+        return False
+    if is_country_line_sofa(t) or is_country_like_name(t):
+        return False
+    if is_number_line_sofa_schedule(t):
+        return False
+    up = t.upper()
+    if up in {"ATP", "WTA", "CHALLENGER", "ITF", "QUALIFYING", "QUALIFICATION"}:
+        return False
+    # Categorías tipo Challenger 75 / ATP 250 / WTA 125 son metadatos, no nuevo torneo.
+    if any(k in up for k in ["CHALLENGER", "ATP ", "WTA ", "ITF ", "GRAND SLAM"]):
+        return False
+    if normalizar_superficie_pegada(t, default="") in ["Hard", "Clay", "Grass"]:
+        return False
+    if "DOUBLES" in up:
+        return True
+    if "," in t:
+        return True
+    following = following or []
+    ftxt = " ".join(normalizar_texto(x).upper() for x in following[:8])
+    if any(k in ftxt for k in ["ATP", "WTA", "CHALLENGER", "ITF", "TIERRA", "DURA", "HARD", "CLAY", "GRASS", "HIERBA"]):
+        return True
+    return False
+
+
+def parse_sofascore_schedule_no_date_paste(raw_text):
+    """v23.69.2 parser simple y seguro para SofaScore día SIN fecha.
+    Lee el contexto de bloque y asigna la superficie real a cada partido.
+    """
+    lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    matches = []
+    current_tournament = ""
+    current_meta = []
+    current_circuit = "DESCONOCIDO"
+    current_surface = ""
+    current_surface_source = ""
+    current_surface_warning = ""
+
+    def recompute():
+        nonlocal current_circuit, current_surface, current_surface_source, current_surface_warning
+        current_circuit = clasificar_bloque_torneo_pegado(current_tournament, current_meta)
+        current_surface, current_surface_source, current_surface_warning = _surface_repair_from_context_v23690(
+            current_surface, current_tournament, current_meta, fallback="Clay"
+        )
+
+    def set_tournament(x):
+        nonlocal current_tournament, current_meta, current_surface, current_surface_source, current_surface_warning
+        current_tournament = normalizar_texto(x)
+        current_meta = []
+        current_surface = ""
+        current_surface_source = ""
+        current_surface_warning = ""
+        recompute()
+
+    def add_meta(x):
+        nonlocal current_meta
+        x = normalizar_texto(x)
+        if x and x not in current_meta:
+            current_meta.append(x)
+        if len(current_meta) > 12:
+            current_meta = current_meta[-12:]
+        recompute()
+
+    def is_meta_line(x):
+        x = normalizar_texto(x).strip()
+        up = x.upper()
+        if not x:
+            return True
+        if x in {"•", "·", "-"}:
+            return True
+        if is_number_line_sofa_schedule(x):
+            return True
+        if normalizar_superficie_pegada(x, default="") in ["Hard", "Clay", "Grass"]:
+            return True
+        if up in {"ATP", "WTA", "CHALLENGER", "ITF", "GRAND SLAM", "QUALIFYING", "QUALIFICATION"}:
+            return True
+        if any(k in up for k in ["ATP 1000", "ATP 500", "ATP 250", "WTA 1000", "WTA 500", "WTA 250", "WTA 125", "CHALLENGER 50", "CHALLENGER 75", "CHALLENGER 100", "CHALLENGER 125", "CHALLENGER 175"]):
+            return True
+        return False
+
+    def is_doubles_context():
+        txt = " ".join([current_tournament] + current_meta).upper()
+        return "DOUBLES" in txt
+
+    i = 0
+    n = len(lines)
+    while i < n:
+        line_raw = lines[i]
+        line = normalizar_texto(line_raw).strip()
+
+        # Cabecera de torneo: tiene prioridad sobre meta, pero no para categorías tipo Challenger 75.
+        if _is_block_header_v23690(line, lines[i+1:i+10]):
+            set_tournament(line)
+            i += 1
+            continue
+
+        if is_meta_line(line):
+            add_meta(line)
+            i += 1
+            continue
+
+        if is_time_line_sofa(line):
+            hora = line
+            j = i + 1
+            if j < n and normalizar_texto(lines[j]).strip() == "-":
+                j += 1
+
+            # Formato normal SofaScore: país / jugador / país / jugador.
+            parsed = False
+            if j + 3 < n:
+                c1 = normalizar_texto(lines[j]).strip()
+                p1 = normalizar_texto(lines[j+1]).strip()
+                c2 = normalizar_texto(lines[j+2]).strip()
+                p2 = normalizar_texto(lines[j+3]).strip()
+                country_pair = (is_country_line_sofa(c1) or is_country_like_name(c1)) and (is_country_line_sofa(c2) or is_country_like_name(c2))
+                player_pair = looks_like_player_line_sofa(p1) and looks_like_player_line_sofa(p2) and not is_country_like_name(p1) and not is_country_like_name(p2) and "/" not in p1 and "/" not in p2 and not es_rival_pendiente_pegado(p1) and not es_rival_pendiente_pegado(p2)
+                if country_pair and player_pair and not is_doubles_context():
+                    sf, sf_src, sf_warn = _surface_repair_from_context_v23690(current_surface, current_tournament, current_meta, fallback="Clay")
+                    matches.append({
+                        "raw": f"{hora} · {p1} - {p2}",
+                        "time": hora,
+                        "p1_raw": p1,
+                        "p2_raw": p2,
+                        "surface": sf,
+                        "surface_source": sf_src,
+                        "surface_warning": sf_warn,
+                        "torneo": current_tournament,
+                        "circuito_detectado": current_circuit,
+                        "odd1": None,
+                        "odd2": None,
+                        "quoted_side": None,
+                        "quoted_odd": None,
+                        "quoted_text": None
+                    })
+                    i = j + 4
+                    parsed = True
+            if parsed:
+                continue
+
+            # Fallback: buscar dos líneas que parezcan jugador hasta la siguiente hora/cabecera.
+            candidates = []
+            k = j
+            while k < n and not is_time_line_sofa(lines[k]) and not is_date_line_sofa_result(lines[k]):
+                ln = normalizar_texto(lines[k]).strip()
+                if _is_block_header_v23690(ln, lines[k+1:k+8]):
+                    break
+                if not ln or ln == "-" or is_meta_line(ln) or is_country_line_sofa(ln) or is_country_like_name(ln) or is_sofa_meta_line(ln):
+                    k += 1
+                    continue
+                if "/" in ln or es_rival_pendiente_pegado(ln):
+                    break
+                if looks_like_player_line_sofa(ln) and not is_country_like_name(ln):
+                    candidates.append(ln)
+                    if len(candidates) >= 2:
+                        break
+                k += 1
+            if len(candidates) >= 2 and not is_doubles_context():
+                sf, sf_src, sf_warn = _surface_repair_from_context_v23690(current_surface, current_tournament, current_meta, fallback="Clay")
+                matches.append({
+                    "raw": f"{hora} · {candidates[0]} - {candidates[1]}",
+                    "time": hora,
+                    "p1_raw": candidates[0],
+                    "p2_raw": candidates[1],
+                    "surface": sf,
+                    "surface_source": sf_src,
+                    "surface_warning": sf_warn,
+                    "torneo": current_tournament,
+                    "circuito_detectado": current_circuit,
+                    "odd1": None,
+                    "odd2": None,
+                    "quoted_side": None,
+                    "quoted_odd": None,
+                    "quoted_text": None
+                })
+                i = max(k + 1, i + 1)
+                continue
+
+            i += 1
+            continue
+
+        i += 1
+
+    return matches
+
+def parse_sofascore_paste(raw_text):
+    raw_lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    if raw_lines and any(is_time_line_sofa(x) for x in raw_lines) and not any(is_date_line_sofa_result(x) for x in raw_lines):
+        parsed = parse_sofascore_schedule_no_date_paste(raw_text)
+        if parsed:
+            return parsed
+    legacy = parse_sofascore_paste_legacy_v23680(raw_text) if 'parse_sofascore_paste_legacy_v23680' in globals() else []
+    for m in legacy:
+        sf, src, warn = _surface_repair_from_context_v23690(m.get("surface", ""), m.get("torneo", ""), [], fallback="Clay")
+        m["surface"] = sf
+        m.setdefault("surface_source", src)
+        m.setdefault("surface_warning", warn)
+        m.setdefault("torneo", "")
+        m.setdefault("circuito_detectado", "DESCONOCIDO")
+    return legacy
+
+
+def parse_sofascore_day_grouped_paste(raw_text):
+    lines = [ln.strip() for ln in str(raw_text).splitlines() if ln.strip()]
+    if lines and not any(is_date_line_sofa_result(x) for x in lines) and any(is_time_line_sofa(x) for x in lines):
+        return parse_sofascore_schedule_no_date_paste(raw_text)
+    matches = []
+    current_tournament = ""
+    current_meta = []
+    current_circuit = "DESCONOCIDO"
+    current_surface = ""
+    current_surface_source = ""
+    current_surface_warning = ""
+    current_ignore_doubles = False
+
+    def refresh_context():
+        nonlocal current_circuit, current_surface, current_surface_source, current_surface_warning, current_ignore_doubles
+        current_circuit = clasificar_bloque_torneo_pegado(current_tournament, current_meta)
+        current_ignore_doubles = current_circuit == "IGNORAR_DOBLES"
+        current_surface, current_surface_source, current_surface_warning = _surface_repair_from_context_v23690(current_surface, current_tournament, current_meta, fallback="Clay")
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if es_linea_torneo_principal_resultados(line) and not es_rival_pendiente_pegado(line):
+            current_tournament = line
+            current_meta = []
+            current_surface = ""
+            j = i + 1
+            while j < len(lines) and len(current_meta) < 10 and not is_date_line_sofa_result(lines[j]) and not is_time_line_sofa(lines[j]):
+                current_meta.append(lines[j])
+                j += 1
+            refresh_context()
+            i += 1
+            continue
+        if is_date_line_sofa_result(line):
+            fecha = line
+            if i + 1 >= len(lines) or not is_time_line_sofa(lines[i + 1]):
+                i += 1
+                continue
+            hora = lines[i + 1]
+            j = i + 2
+            candidates = []
+            pending_or_doubles = False
+            while j < len(lines) and not is_date_line_sofa_result(lines[j]) and len(candidates) < 2:
+                ln = lines[j].strip()
+                if es_linea_torneo_pegado(ln) and len(candidates) < 2:
+                    pending_or_doubles = True
+                    break
+                if ln == "-" or is_country_line_sofa(ln) or is_country_like_name(ln) or is_sofa_meta_line(ln):
+                    j += 1
+                    continue
+                if "/" in ln or es_rival_pendiente_pegado(ln):
+                    pending_or_doubles = True
+                    break
+                if looks_like_player_line_sofa(ln) and not is_country_like_name(ln):
+                    candidates.append(ln)
+                j += 1
+            if len(candidates) >= 2 and not pending_or_doubles and not current_ignore_doubles:
+                sf, sf_src, sf_warn = _surface_repair_from_context_v23690(current_surface, current_tournament, current_meta, fallback="Clay")
+                matches.append({
+                    "raw": f"{fecha} {hora} · {candidates[0]} - {candidates[1]}",
+                    "date": fecha,
+                    "time": hora,
+                    "p1_raw": candidates[0],
+                    "p2_raw": candidates[1],
+                    "surface": sf,
+                    "surface_source": sf_src,
+                    "surface_warning": sf_warn,
+                    "torneo": current_tournament,
+                    "circuito_detectado": current_circuit,
+                    "odd1": None,
+                    "odd2": None,
+                    "quoted_side": None,
+                    "quoted_odd": None,
+                    "quoted_text": None
+                })
+            i = max(j, i + 1)
+            continue
+        i += 1
+    return matches
 
 
 # =========================================================
