@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.52 Excel práctico + TA", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.69.2-surface-real-fix-under-pro"
+APP_VERSION = "v23.70.0-surface-context-merge-under-pro"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -7053,6 +7053,95 @@ def parse_sofascore_results_grouped_paste(raw_text):
     return matches
 
 
+
+
+# =========================================================
+# v23.70 SURFACE CONTEXT MERGE
+# Asegura que, aunque el usuario elija un formato legacy/simple o el OCR quite
+# algunas columnas, la superficie real del bloque de SofaScore llegue al análisis.
+# No toca motor Over: solo completa surface/torneo/circuito de cada partido.
+# =========================================================
+
+def _match_context_keys_v23700(m):
+    keys = []
+    p1 = limpiar(m.get("p1_raw", ""))
+    p2 = limpiar(m.get("p2_raw", ""))
+    hora = normalizar_texto(m.get("time", "") or "")
+    fecha = normalizar_texto(m.get("date", "") or "")
+    if p1 and p2:
+        pair = f"{p1}|{p2}"
+        rpair = f"{p2}|{p1}"
+        keys.append(f"{fecha}|{hora}|{pair}")
+        keys.append(f"{hora}|{pair}")
+        keys.append(pair)
+        keys.append(f"{fecha}|{hora}|{rpair}")
+        keys.append(f"{hora}|{rpair}")
+        keys.append(rpair)
+    return [k for k in keys if k]
+
+
+def _index_context_matches_v23700(ctx_matches):
+    idx = {}
+    for c in ctx_matches or []:
+        # Solo indexamos contextos útiles.
+        if not isinstance(c, dict):
+            continue
+        sf = c.get("surface", "")
+        torneo = c.get("torneo", "")
+        circuito = c.get("circuito_detectado", "")
+        if sf not in ["Hard", "Clay", "Grass"] and not torneo and not circuito:
+            continue
+        for k in _match_context_keys_v23700(c):
+            idx.setdefault(k, c)
+    return idx
+
+
+def reparar_contexto_superficie_desde_raw_batch_v23700(matches, raw_text):
+    """Fusiona contexto del pegado original sobre la lista parseada.
+
+    Corrige el caso visto:
+    - Los partidos de Cary/Dura outdoor podían llegar a analyze_batch sin torneo/surface
+      y entonces heredaban la pista del selector lateral, normalmente Clay.
+    - Aquí se vuelve a leer el pegado completo con parser de contexto y se copia
+      surface/torneo/circuito a cada match por jugador/hora.
+    """
+    if not matches:
+        return matches
+
+    raw = str(raw_text or "")
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    ctx_matches = []
+    try:
+        if lines and any(is_time_line_sofa(x) for x in lines) and not any(is_date_line_sofa_result(x) for x in lines):
+            ctx_matches = parse_sofascore_schedule_no_date_paste(raw)
+        elif lines and any(is_date_line_sofa_result(x) for x in lines):
+            ctx_matches = parse_sofascore_results_grouped_paste(raw)
+    except Exception:
+        ctx_matches = []
+
+    ctx_idx = _index_context_matches_v23700(ctx_matches)
+    if not ctx_idx:
+        # Nada que fusionar.
+        return matches
+
+    out = []
+    for m in matches:
+        mm = dict(m)
+        ctx = None
+        for k in _match_context_keys_v23700(mm):
+            if k in ctx_idx:
+                ctx = ctx_idx[k]
+                break
+        if ctx:
+            sf = ctx.get("surface", "")
+            if sf in ["Hard", "Clay", "Grass"]:
+                mm["surface"] = sf
+            for c in ["surface_source", "surface_warning", "torneo", "circuito_detectado"]:
+                if ctx.get(c, ""):
+                    mm[c] = ctx.get(c, "")
+            mm["surface_context_merged"] = "✅ Contexto SofaScore fusionado"
+        out.append(mm)
+    return out
 # =========================================================
 # v23.25.3 Parser resultados Sofascore: hora + estado
 # =========================================================
@@ -20181,18 +20270,39 @@ def render_predictor_deep_match_analyzer_panel():
 # =========================================================
 
 def _surface_repair_from_context_v23690(surface, tournament="", meta_lines=None, fallback="Clay"):
-    """Repara superficie usando meta explícita y mapa de torneo.
-    Prioridad: meta explícita > torneo conocido > surface válido > fallback.
+    """Repara superficie usando contexto real.
+
+    v23.70:
+    - NO llama al detector antiguo con fallback vacío, porque eso podía devolver Clay
+      antes de comprobar la superficie heredada.
+    - Prioridad real: superficie explícita > mapa torneo > surface heredada > fallback.
     """
     meta_lines = meta_lines or []
-    sf, src, warn = detectar_superficie_pegado_pro_v23670(tournament, meta_lines, fallback="")
-    if sf in ["Hard", "Clay", "Grass"]:
-        return sf, src, warn
+    piezas = [str(tournament or "")] + [str(x or "") for x in meta_lines]
+
+    # 1) Superficie explícita del bloque. Tomamos la última, porque es la más cercana.
+    explicit = []
+    for x in piezas:
+        sf = normalizar_superficie_pegada(x, default="")
+        if sf in ["Hard", "Clay", "Grass"]:
+            explicit.append(sf)
+    if explicit:
+        return explicit[-1], "SofaScore/meta explícita", ""
+
+    # 2) Mapa por torneo.
+    txt = limpiar(" ".join(piezas))
+    for sf, names in SURFACE_TOURNAMENT_HINTS_V23670.items():
+        for name in names:
+            if limpiar(name) and limpiar(name) in txt:
+                return sf, f"Detectada por torneo ({name})", ""
+
+    # 3) Si ya venía una superficie válida desde parser/análisis, respetarla.
     if surface in ["Hard", "Clay", "Grass"]:
         return surface, "Superficie heredada del bloque", ""
+
+    # 4) Fallback final.
     fb = fallback if fallback in ["Hard", "Clay", "Grass"] else "Clay"
     return fb, "Fallback sin contexto", "⚠️ Superficie no explícita: revisar"
-
 
 def _is_block_header_v23690(line, following=None):
     """Cabecera de torneo para pegados tipo SofaScore día."""
@@ -21325,6 +21435,14 @@ Sebastián Baez - Roberto Carballés Baena"""
                     preview = parse_sofascore_results_paste(raw_batch)
         else:
             preview = []
+
+        # v23.70: fusiona contexto real de SofaScore en la vista previa.
+        try:
+            if preview:
+                preview = reparar_contexto_superficie_desde_raw_batch_v23700(preview, raw_batch)
+        except Exception:
+            pass
+
         st.metric("Partidos detectados", len(preview))
     with crun:
         total_est_sims = min(len(preview), int(max_batch)) * int(sims_batch)
@@ -21394,6 +21512,13 @@ Sebastián Baez - Roberto Carballés Baena"""
         # v23.60.0: fallback final para capturas/OCR móvil de SofaScore.
         if not parsed and any(_sofa_ocr_has_time(x.strip()) for x in raw_batch.splitlines()):
             parsed = parse_sofascore_mobile_ocr_paste(raw_batch)[:int(max_batch)]
+
+        # v23.70: fusiona contexto real de SofaScore antes del análisis.
+        # Evita que Cary/Dura outdoor llegue como Clay si el parser seleccionado era legacy/simple.
+        try:
+            parsed = reparar_contexto_superficie_desde_raw_batch_v23700(parsed, raw_batch)
+        except Exception:
+            pass
 
         # v23.10: seguridad para evitar superar memoria en Cloud.
         if len(parsed) * int(sims_batch) > 50000:
