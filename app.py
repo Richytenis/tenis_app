@@ -9,7 +9,7 @@ from itertools import combinations
 
 st.set_page_config(page_title="Tennis IA v23.74 Plan del Día", page_icon="🎾", layout="wide")
 
-APP_VERSION = "v23.71.0-sofascore-router-surface-fix"
+APP_VERSION = "v23.76.0-plan-dia-contexto-completo"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
 
 # =========================================================
@@ -18244,12 +18244,131 @@ def batch_excel_bytes(df):
     return output.getvalue()
 
 
+
+
+# =========================================================
+# v23.76 PLAN DEL DÍA CONTEXTO COMPLETO
+# Corrige dos problemas del Excel único:
+# 1) Hora/Torneo/Superficie vacíos por usar la tabla visual ya recortada.
+# 2) PLAN DEL DÍA debe partir del análisis bruto completo y no solo de picks/tabla pantalla.
+# =========================================================
+
+def _plan_key_v23760(x):
+    return limpiar(str(x or "").replace(" vs ", " "))
+
+
+def _plan_context_cols_v23760(raw_df):
+    if raw_df is None or not isinstance(raw_df, pd.DataFrame) or raw_df.empty:
+        return pd.DataFrame()
+    cols = [c for c in ["Fecha", "Hora", "Torneo", "Superficie", "Circuito fuente", "Circuito datos", "Circuito cálculo", "Partido", "Estado"] if c in raw_df.columns]
+    out = raw_df[cols].copy()
+    if "Partido" in out.columns:
+        out["__plan_key"] = out["Partido"].apply(_plan_key_v23760)
+    out["__raw_order"] = range(len(out))
+    return out
+
+
+def _plan_restore_context_v23760(plan_df, raw_df):
+    """Rellena Hora/Torneo/Superficie desde el análisis bruto y añade filas que falten.
+    No modifica mercados ni motor: solo corrige salida operativa.
+    """
+    if plan_df is None or not isinstance(plan_df, pd.DataFrame):
+        plan_df = pd.DataFrame()
+    plan = plan_df.copy()
+    ctx = _plan_context_cols_v23760(raw_df)
+    if ctx.empty:
+        return plan
+    if not plan.empty and "Partido" in plan.columns:
+        plan["__plan_key"] = plan["Partido"].apply(_plan_key_v23760)
+        used_keys = set(plan["__plan_key"].astype(str))
+        ctx_map = ctx.drop_duplicates("__plan_key", keep="first").set_index("__plan_key")
+        for i, row in plan.iterrows():
+            k = row.get("__plan_key", "")
+            if k in ctx_map.index:
+                for col in ["Hora", "Torneo", "Superficie"]:
+                    if col in ctx_map.columns:
+                        cur = str(plan.at[i, col]) if col in plan.columns and pd.notna(plan.at[i, col]) else ""
+                        if cur.strip() in ["", "nan", "None"]:
+                            val = ctx_map.at[k, col]
+                            plan.at[i, col] = "" if pd.isna(val) else val
+    else:
+        used_keys = set()
+
+    # Añadir cualquier partido analizado que no haya llegado al PLAN por filtros visuales.
+    missing = []
+    for _, r in ctx.iterrows():
+        k = str(r.get("__plan_key", ""))
+        if k and k not in used_keys:
+            estado = str(r.get("Estado", "") or "")
+            accion = "NO JUGAR" if "No encontrado" in estado else "OBSERVAR"
+            missing.append({
+                "Hora": str(r.get("Hora", "") or ""),
+                "Torneo": str(r.get("Torneo", "") or ""),
+                "Superficie": str(r.get("Superficie", "") or ""),
+                "Partido": str(r.get("Partido", "") or ""),
+                "Lectura app": "SIN DECISIÓN FINAL" if accion == "OBSERVAR" else "DATOS FALTAN",
+                "Acción": accion,
+                "Mercado recomendado": "—",
+                "Línea": "",
+                "Alternativa": "Revisar en predictor individual" if accion == "OBSERVAR" else "Añadir/actualizar ficha TA",
+                "Confianza": "—",
+                "Riesgo principal": estado,
+                "Motivo": "Incluido por v23.76: estaba en la lista analizada pero no llegaba a la hoja final.",
+            })
+    if missing:
+        plan = pd.concat([plan.drop(columns=["__plan_key"], errors="ignore"), pd.DataFrame(missing)], ignore_index=True)
+    else:
+        plan = plan.drop(columns=["__plan_key"], errors="ignore")
+
+    cols = ["Hora", "Torneo", "Superficie", "Partido", "Lectura app", "Acción", "Mercado recomendado", "Línea", "Alternativa", "Confianza", "Riesgo principal", "Motivo"]
+    for c in cols:
+        if c not in plan.columns:
+            plan[c] = ""
+    return plan[cols]
+
+
+def _plan_prepare_from_raw_v23760(raw_df):
+    """Construye PLAN desde el df bruto completo, preservando contexto."""
+    if raw_df is None or not isinstance(raw_df, pd.DataFrame) or raw_df.empty:
+        return pd.DataFrame()
+    try:
+        estados_ok = ["OK", "OK con jugador estimado"]
+        if "Estado" in raw_df.columns:
+            work = raw_df[raw_df["Estado"].isin(estados_ok)].copy()
+        else:
+            work = raw_df.copy()
+        if work.empty:
+            return _plan_restore_context_v23760(pd.DataFrame(), raw_df)
+        work = prepare_batch_display_table(work)
+        try:
+            work = aplicar_challenger_recent_form_engine(work)
+            work = aplicar_grand_slam_bo5_selector_final(work)
+        except Exception:
+            try:
+                work = aplicar_grand_slam_bo5_selector_final(work)
+            except Exception:
+                pass
+        work = añadir_estudio_over_20_21_v23500(work)
+        plan = crear_plan_del_dia_df_v23740(work)
+        return _plan_restore_context_v23760(plan, raw_df)
+    except Exception:
+        plan = crear_plan_del_dia_df_v23740(raw_df)
+        return _plan_restore_context_v23760(plan, raw_df)
+
 def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
     """v23.75: exporta SOLO PLAN DEL DÍA con TODOS los partidos OK + los no encontrados."""
     output = io.BytesIO()
-    ok_sheet = añadir_estudio_over_20_21_v23500(ok_df.copy() if ok_df is not None else pd.DataFrame())
-    # No pasar por crear_picks_limpios_df: esa función filtra picks y ocultaba media lista.
-    plan_df = crear_plan_del_dia_df_v23740(ok_sheet)
+    raw_df = None
+    try:
+        raw_df = st.session_state.get("batch_raw_df", None)
+    except Exception:
+        raw_df = None
+    if isinstance(raw_df, pd.DataFrame) and not raw_df.empty:
+        plan_df = _plan_prepare_from_raw_v23760(raw_df)
+    else:
+        ok_sheet = añadir_estudio_over_20_21_v23500(ok_df.copy() if ok_df is not None else pd.DataFrame())
+        # No pasar por crear_picks_limpios_df: esa función filtra picks y ocultaba media lista.
+        plan_df = crear_plan_del_dia_df_v23740(ok_sheet)
     try:
         ko_sheet = enrich_not_found_with_suggestions(ko_df, db) if ko_df is not None and not ko_df.empty else pd.DataFrame()
         if ko_sheet is not None and not ko_sheet.empty:
@@ -21752,6 +21871,14 @@ Sebastián Baez - Roberto Carballés Baena"""
                     df_batch = df_batch.drop_duplicates(subset=dedupe_cols, keep="last").reset_index(drop=True)
                     if before_dedup != len(df_batch):
                         msg.caption(f"✅ Lista analizada. Duplicados eliminados: {before_dedup - len(df_batch)}")
+            # v23.76: guardar análisis bruto completo y lista parseada para que el Excel único
+            # no pierda partidos ni Hora/Torneo/Superficie al pasar por tablas visuales.
+            try:
+                st.session_state["batch_raw_df"] = df_batch.copy()
+                st.session_state["batch_parsed_count"] = len(parsed)
+                st.session_state["batch_parsed_matches"] = parsed
+            except Exception:
+                pass
             bar.progress(100, text=f"Análisis completado · {len(parsed)} partidos")
             msg.caption("✅ Lista analizada.")
 
