@@ -17927,7 +17927,7 @@ def _write_if_not_empty_v23520(writer, df, sheet_name):
 # La app calcula todo por dentro, pero exporta una sola hoja limpia.
 # =========================================================
 
-APP_VERSION = "v23.75.0-plan-del-dia-full-list-fix"
+APP_VERSION = "v23.77.0-parser-decision-clean-fix"
 
 
 def _plan_pick_text_v23740(row, cols=None):
@@ -20894,6 +20894,332 @@ def parse_sofascore_day_grouped_paste(raw_text):
         i += 1
     return matches
 
+
+
+
+
+# =========================================================
+# v23.77 PARSER + DECISION CLEAN FIX
+# - Parser: ignora líneas intermedias de sede tipo "Newport, USA" sin romper el bloque.
+# - Parser: amplía países para no leer "Chinese Taipei" u otros países como jugador.
+# - Plan del día: limpia contradicciones de decisión. NO TOCAR/MIXTO no puede ser JUGAR.
+# Presentación/lectura solamente. NO toca motor Over ni simulación.
+# =========================================================
+
+SOFA_COUNTRIES_EXTRA_V23770 = {
+    "andorra", "argentina", "australia", "austria", "belgium", "bolivia", "brazil", "canada", "chile", "china", "colombia",
+    "croatia", "czechia", "czech republic", "denmark", "finland", "france", "georgia", "germany", "hungary", "italy",
+    "kazakhstan", "latvia", "lebanon", "lithuania", "luxembourg", "monaco", "netherlands", "paraguay", "peru",
+    "portugal", "russia", "serbia", "spain", "switzerland", "tunisia", "united kingdom", "great britain", "uruguay",
+    "usa", "u.s.a", "united states", "united states of america", "ukraine", "poland", "slovakia", "slovenia", "romania",
+    "bulgaria", "turkey", "turkiye", "türkiye", "greece", "norway", "sweden", "japan", "india", "south korea",
+    "korea republic", "belarus", "cyprus", "malta", "albania", "armenia", "azerbaijan", "montenegro", "north macedonia",
+    "macedonia", "kosovo", "iran", "iraq", "qatar", "uae", "united arab emirates", "saudi arabia", "vietnam",
+    "philippines", "malaysia", "singapore", "uzbekistan", "costa rica", "puerto rico", "morocco", "bosnia & herzegovina",
+    "bosnia and herzegovina", "bosnia", "herzegovina", "dominican republic", "south africa", "new zealand", "estonia",
+    "moldova", "moldavia", "israel", "ireland", "mexico", "ecuador", "venezuela", "egypt", "taiwan", "chinese taipei",
+    "hong kong", "thailand", "indonesia", "guatemala", "el salvador", "panama", "honduras", "nicaragua", "cuba",
+    "jamaica", "barbados", "trinidad and tobago", "haiti", "iceland", "liechtenstein", "san marino", "vatican", "maldives",
+    "sri lanka", "pakistan", "bangladesh", "nepal", "mongolia", "kyrgyzstan", "tajikistan", "turkmenistan",
+    "new caledonia", "fiji", "samoa", "liege", "colombia"
+}
+
+
+def _country_norm_v23770(x):
+    return normalizar_texto(x).lower().strip().replace(".", "")
+
+
+def is_country_line_sofa(x):
+    """v23.77: país puro copiado por SofaScore. Evita países como jugador."""
+    return _country_norm_v23770(x) in {c.replace(".", "") for c in SOFA_COUNTRIES_EXTRA_V23770}
+
+
+def is_country_like_name(name):
+    """v23.77: países/territorios que no deben tratarse como jugadores."""
+    t = _country_norm_v23770(name)
+    if is_country_line_sofa(t):
+        return True
+    return t in SOFA_COUNTRIES_EXTRA_V23770
+
+
+def _is_tournament_location_line_v23770(line):
+    """Detecta línea secundaria de sede: 'Newport, USA', 'Cary, USA', 'Bogota, Colombia'.
+    No es un nuevo torneo ni un jugador. Sirve como meta/contexto.
+    """
+    t = normalizar_texto(line).strip()
+    if not t or "," not in t:
+        return False
+    if is_time_line_sofa(t) or is_date_line_sofa_result(t):
+        return False
+    up = t.upper()
+    # Cabeceras reales con categoría no son ubicación secundaria.
+    if any(k in up for k in ["ATP", "WTA", "CHALLENGER", "ITF", "MEN SINGLES", "WOMEN SINGLES", "DOUBLES", "QUALIFICATION"]):
+        return False
+    parts = [p.strip() for p in t.split(",") if p.strip()]
+    if len(parts) < 2 or len(parts) > 3:
+        return False
+    country = parts[-1]
+    city = " ".join(parts[:-1]).strip()
+    if not city or len(city) < 2:
+        return False
+    if is_country_like_name(country):
+        return True
+    # Fallback para países escritos con abreviaturas raras o acentos.
+    if limpiar(country) in {"USA", "US", "UK", "UAE"}:
+        return True
+    return False
+
+
+def is_sofa_meta_line(x):
+    """v23.77: meta de SofaScore. Las líneas de ubicación son meta, no jugadores."""
+    t = normalizar_texto(x).lower().strip()
+    if not t:
+        return True
+    if _is_tournament_location_line_v23770(x):
+        return True
+    meta_exact = {"-", "atp", "wta", "challenger", "itf", "tierra batida", "hard", "grass", "hierba", "dura outdoor", "dura indoor", "clay"}
+    if t in meta_exact:
+        return True
+    if re.match(r"^\d+$", t):
+        return True
+    if "doubles" in t:
+        return False  # lo usamos para activar skip doubles
+    if any(k in t for k in ["masters", "rome", "valencia", "bordeaux", "cordoba", "oeiras", "tunis", "zagreb"]):
+        return True
+    if "challenger" in t or "wta 1000" in t or "atp 1000" in t or "atp 250" in t or "atp 500" in t or "wta 125" in t:
+        return True
+    if "," in t and len(t) > 6:
+        return True
+    return False
+
+
+def looks_like_player_line_sofa(x):
+    """v23.77: jugador válido. Bloquea países/sedes/pending/dobles."""
+    s = str(x).strip()
+    if not s:
+        return False
+    if is_time_line_sofa(s) or is_date_line_sofa_result(s) or s == "-":
+        return False
+    if is_country_line_sofa(s) or is_country_like_name(s):
+        return False
+    if _is_tournament_location_line_v23770(s):
+        return False
+    if is_sofa_meta_line(s):
+        return False
+    if "/" in s:
+        return False
+    if es_rival_pendiente_pegado(s):
+        return False
+    return bool(re.search(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]", s))
+
+
+def es_linea_torneo_pegado(line):
+    """v23.77: título de torneo real; no confundir 'Newport, USA' con nuevo torneo."""
+    t = normalizar_texto(line).strip()
+    u = t.upper()
+    if not t or is_date_line_sofa_result(t) or is_time_line_sofa(t):
+        return False
+    if _is_tournament_location_line_v23770(t):
+        return False
+    if is_country_line_sofa(t) or is_country_like_name(t):
+        return False
+    if any(k in u for k in ["ATP", "WTA", "CHALLENGER", "ITF"]):
+        return True
+    # Solo usamos coma como torneo si no es sede secundaria y parece cabecera amplia.
+    if "," in t and not looks_like_player_line_sofa(t):
+        return True
+    return False
+
+
+def es_linea_torneo_principal_resultados(line):
+    """v23.77: título real de bloque, no sede secundaria ni metadatos sueltos."""
+    t = normalizar_texto(line).strip()
+    u = t.upper()
+    if _is_tournament_location_line_v23770(t):
+        return False
+    if not es_linea_torneo_pegado(t):
+        return False
+    meta_sueltos = {
+        "ATP", "WTA", "CHALLENGER", "ITF", "ATP 1000", "ATP 500", "ATP 250",
+        "WTA 1000", "WTA 500", "WTA 250", "WTA 125", "CHALLENGER 50",
+        "CHALLENGER 75", "CHALLENGER 100", "CHALLENGER 125", "CHALLENGER 175"
+    }
+    if u in meta_sueltos:
+        return False
+    return True
+
+
+def _is_block_header_v23690(line, following=None):
+    """v23.77: cabecera de torneo para SofaScore día; sede tipo 'Newport, USA' no rompe bloque."""
+    t = normalizar_texto(line).strip()
+    if not t or t == "-" or is_time_line_sofa(t) or is_date_line_sofa_result(t):
+        return False
+    if _is_tournament_location_line_v23770(t):
+        return False
+    if is_country_line_sofa(t) or is_country_like_name(t):
+        return False
+    if is_number_line_sofa_schedule(t):
+        return False
+    up = t.upper()
+    if up in {"ATP", "WTA", "CHALLENGER", "ITF", "QUALIFYING", "QUALIFICATION"}:
+        return False
+    if any(k in up for k in ["CHALLENGER", "ATP ", "WTA ", "ITF ", "GRAND SLAM"]):
+        return False
+    if normalizar_superficie_pegada(t, default="") in ["Hard", "Clay", "Grass"]:
+        return False
+    if "DOUBLES" in up:
+        return True
+    if "," in t:
+        return True
+    following = following or []
+    ftxt = " ".join(normalizar_texto(x).upper() for x in following[:8])
+    if any(k in ftxt for k in ["ATP", "WTA", "CHALLENGER", "ITF", "TIERRA", "DURA", "HARD", "CLAY", "GRASS", "HIERBA"]):
+        return True
+    return False
+
+
+# Guardamos referencias a los parsers v23.69/v23.76 y los envolvemos con limpieza post-parse.
+_parse_sofascore_schedule_no_date_paste_prev_v23770 = parse_sofascore_schedule_no_date_paste
+_parse_sofascore_day_grouped_paste_prev_v23770 = parse_sofascore_day_grouped_paste
+_parse_sofascore_results_grouped_paste_prev_v23770 = parse_sofascore_results_grouped_paste
+
+
+def _clean_parsed_matches_v23770(matches):
+    """Elimina partidos contaminados por países/sedes y deduplica por fecha/hora/jugadores."""
+    cleaned = []
+    seen = set()
+    for m in matches or []:
+        p1 = normalizar_texto(m.get("p1_raw", ""))
+        p2 = normalizar_texto(m.get("p2_raw", ""))
+        if not p1 or not p2:
+            continue
+        if is_country_like_name(p1) or is_country_like_name(p2):
+            continue
+        if _is_tournament_location_line_v23770(p1) or _is_tournament_location_line_v23770(p2):
+            continue
+        if "/" in p1 or "/" in p2 or es_rival_pendiente_pegado(p1) or es_rival_pendiente_pegado(p2):
+            continue
+        k = (str(m.get("date", "")), str(m.get("time", "")), limpiar(p1), limpiar(p2), str(m.get("torneo", "")))
+        if k in seen:
+            continue
+        seen.add(k)
+        cleaned.append(m)
+    return cleaned
+
+
+def parse_sofascore_schedule_no_date_paste(raw_text):
+    """v23.77 wrapper: protege contra líneas de sede intermedias y países como jugador."""
+    return _clean_parsed_matches_v23770(_parse_sofascore_schedule_no_date_paste_prev_v23770(raw_text))
+
+
+def parse_sofascore_day_grouped_paste(raw_text):
+    """v23.77 wrapper: usa helpers corregidos y limpia contaminaciones."""
+    return _clean_parsed_matches_v23770(_parse_sofascore_day_grouped_paste_prev_v23770(raw_text))
+
+
+def parse_sofascore_results_grouped_paste(raw_text):
+    """v23.77 wrapper: evita resultados tipo 'Jugador vs Chinese Taipei'."""
+    return _clean_parsed_matches_v23770(_parse_sofascore_results_grouped_paste_prev_v23770(raw_text))
+
+
+def _plan_accion_v23740(row):
+    """v23.77 decisión limpia: NO TOCAR/MIXTO no puede acabar como JUGAR; JUGAR exige mercado claro."""
+    accion_raw = str(row.get("Acción", row.get("🎯 Acción final", "")) or "").upper()
+    lectura = _plan_lectura_v23740(row).upper()
+    mercado = str(row.get("Mercado", row.get("Mercado estudio", row.get("🎯 Mercado más probable", row.get("Mejor señal", "")))) or "").upper()
+    motivo = str(row.get("Motivo", row.get("Motivo radar", row.get("🎯 Motivo acierto", row.get("TA_MOTIVO", "")))) or "").upper()
+    riesgo = str(row.get("Riesgo", row.get("Riesgos", row.get("Riesgo principal", ""))) or "").upper()
+    estado = str(row.get("Estado", "") or "").upper()
+    conf = str(row.get("🎯 Confianza acierto", row.get("Confianza", "")) or "").upper()
+    blob = " | ".join([accion_raw, lectura, mercado, motivo, riesgo, estado, conf])
+
+    if "NO ENCONTRADO" in estado or "DATOS FALTAN" in blob or "JUGADOR NO ENCONTRADO" in blob:
+        return "NO JUGAR"
+    if "NO OVER" in blob or "NO SUBIR" in blob or "MOTOR INCLINA UNDER" in blob:
+        return "NO OVER"
+    if "NO UNDER" in blob:
+        return "NO UNDER"
+
+    # Regla de limpieza: si la propia lectura dice que no hay lectura clara, jamás JUGAR.
+    if "NO TOCAR" in lectura or "MIXTO" in lectura or "SIN DECISIÓN" in lectura:
+        return "OBSERVAR" if re.search(r"WATCH|OBSERVAR|UNDER|OVER|2-0|GANA SET", blob, flags=re.I) else "NO JUGAR"
+
+    mercado_claro = bool(re.search(r"OVER|UNDER|2-0|GANA SET|GANA AL MENOS|JUEGOS", mercado, flags=re.I))
+    mercado_vacio = mercado.strip() in ["", "—", "-", "SIN MERCADO CLARO", "NO UNDER CLARO"]
+
+    if "JUGAR" in accion_raw and not re.search(r"OBSERVAR|WATCH|NO BET|CANCEL|RETIR|QUALITY GUARD ACTIVO|SIN MERCADO", blob, flags=re.I):
+        return "JUGAR" if mercado_claro and not mercado_vacio else "OBSERVAR"
+
+    prob = _plan_prob_float_v23740(row.get("🎯 Prob máxima", row.get("Prob señal", row.get("Prob.", 0))), default=0.0)
+    if re.search(r"OVER 18.5|OVER 19.5|OVER 20.5|OVER 21.5|OVER 22.5", mercado, flags=re.I):
+        if prob >= 0.80 and "DATOS PARCIALES" not in blob and "WATCH" not in blob and mercado_claro:
+            return "JUGAR"
+        return "OBSERVAR"
+    if re.search(r"UNDER|WATCH|OBSERVAR|BASE OVER|OVER LARGO|2-0|GANA SET", blob, flags=re.I):
+        return "OBSERVAR"
+    return "NO JUGAR"
+
+
+def _plan_mercado_principal_v23740(row):
+    """v23.77: toda acción útil debe traer mercado o alternativa clara."""
+    accion = _plan_accion_v23740(row)
+    lectura = _plan_lectura_v23740(row).upper()
+    under_market = str(row.get("Mercado Under Pro", "") or "").strip()
+    mercado_estudio = str(row.get("Mercado estudio", "") or "").strip()
+    mercado = str(row.get("Mercado", row.get("Mercado base", row.get("🎯 Mercado más probable", row.get("Mejor señal", "")))) or "").strip()
+    mejor = str(row.get("Mejor señal", "") or "").strip()
+
+    def valid(x):
+        s = _plan_market_clean_v23740(x)
+        if not s or s in ["—", "-", "Sin mercado claro", "No under claro"]:
+            return ""
+        return s
+
+    if accion == "NO JUGAR":
+        return "—"
+    if accion == "NO OVER":
+        if valid(under_market):
+            return valid(under_market)
+        u215 = _plan_prob_float_v23740(row.get("Under 21.5", 0), default=0.0)
+        u205 = _plan_prob_float_v23740(row.get("Under 20.5", 0), default=0.0)
+        fav20 = _plan_prob_float_v23740(row.get("Favorito 2-0", 0), default=0.0)
+        if u205 >= 0.58:
+            return "👀 Revisar Under 20.5"
+        if u215 >= 0.58:
+            return "👀 Revisar Under 21.5"
+        if fav20 >= 0.58:
+            return "👀 Revisar favorito 2-0"
+        return "👀 Revisar Under 21.5 / favorito 2-0"
+    if accion == "NO UNDER":
+        return "No under claro: revisar Over base / favorito 2-0"
+    for x in [under_market if "UNDER" in lectura else "", mercado, mercado_estudio, under_market, mejor]:
+        vx = valid(x)
+        if vx:
+            return vx
+    return "Revisar en predictor individual" if accion == "OBSERVAR" else "—"
+
+
+def _plan_motivo_v23740(row):
+    base = ""
+    for c in ["Motivo Under Pro", "Motivo radar", "Motivo", "Motivo TA", "TA_MOTIVO", "🎯 Motivo acierto"]:
+        try:
+            v = row.get(c, "")
+            if pd.notna(v) and str(v).strip():
+                base = str(v).strip()
+                break
+        except Exception:
+            pass
+    accion = _plan_accion_v23740(row)
+    lectura = _plan_lectura_v23740(row)
+    prefix = ""
+    if accion == "NO JUGAR" and ("NO TOCAR" in lectura.upper() or "MIXTO" in lectura.upper()):
+        prefix = "Señales cruzadas: no convertir en apuesta. "
+    elif accion == "OBSERVAR" and ("NO TOCAR" in lectura.upper() or "MIXTO" in lectura.upper()):
+        prefix = "Observación, no apuesta directa: lectura mixta. "
+    elif accion == "NO OVER":
+        prefix = "Cortafuegos Over activo: partido con señales de corto/under. "
+    s = (prefix + base).strip()
+    return s[:260] + ("..." if len(s) > 260 else "")
 
 
 # =========================================================
