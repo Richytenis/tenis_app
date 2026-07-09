@@ -17927,7 +17927,7 @@ def _write_if_not_empty_v23520(writer, df, sheet_name):
 # La app calcula todo por dentro, pero exporta una sola hoja limpia.
 # =========================================================
 
-APP_VERSION = "v23.74.0-plan-del-dia-excel-unico"
+APP_VERSION = "v23.75.0-plan-del-dia-full-list-fix"
 
 
 def _plan_pick_text_v23740(row, cols=None):
@@ -17984,22 +17984,28 @@ def _plan_market_clean_v23740(v):
 
 def _plan_lectura_v23740(row):
     direccion = str(row.get("Dirección partido", "") or "").strip()
-    mercado = str(row.get("Mercado", row.get("Mercado estudio", "")) or "")
+    mercado = str(row.get("Mercado", row.get("Mercado estudio", row.get("🎯 Mercado más probable", row.get("Mejor señal", "")))) or "")
     under_m = str(row.get("Mercado Under Pro", "") or "")
+    ta_rec = str(row.get("TA_RECOMENDACION", "") or "")
+    over_guard = str(row.get("Over Quality Guard", "") or "")
+    under_rescue = str(row.get("Under 2.5 Rescue", "") or "")
     blob = _plan_pick_text_v23740(row, [
-        "Dirección partido", "Mercado", "Mercado estudio", "Mercado Under Pro", "Motivo", "Motivo radar",
-        "Motivo Under Pro", "Prioridad apuesta", "Fuente pick Excel", "Riesgo"
+        "Dirección partido", "Mercado", "Mercado estudio", "🎯 Mercado más probable", "Mejor señal",
+        "Mercado Under Pro", "Alternativa Under", "TA_RECOMENDACION", "TA_MOTIVO",
+        "Over Quality Guard", "Motivos Over Guard", "Under 2.5 Rescue",
+        "Motivo", "Motivo radar", "Motivo Under Pro", "🎯 Motivo acierto",
+        "Prioridad apuesta", "Fuente pick Excel", "Riesgo", "Riesgos"
     ]).upper()
 
-    if "NO OVER" in blob:
+    if "NO OVER" in blob or "NO SUBIR" in blob or "MOTOR INCLINA UNDER" in blob:
         return "NO OVER / POSIBLE CORTO"
     if direccion:
         return direccion
-    if "UNDER" in under_m.upper() or "UNDER" in mercado.upper():
+    if "UNDER" in under_m.upper() or "UNDER" in mercado.upper() or "UNDER" in ta_rec.upper() or "UNDER" in under_rescue.upper():
         return "CORTO / UNDER"
-    if "OVER LARGO" in blob or "21.5" in blob or "22.5" in blob:
+    if "OVER LARGO" in blob or "OVER 21.5" in blob or "OVER 22.5" in blob:
         return "OVER LARGO"
-    if "OVER" in mercado.upper():
+    if "OVER" in mercado.upper() or "OVER" in str(row.get("Mejor señal", "")).upper():
         return "OVER BASE"
     if "2-0" in blob or "2 SET" in blob:
         return "FAVORITO 2-0"
@@ -18011,11 +18017,15 @@ def _plan_lectura_v23740(row):
 def _plan_accion_v23740(row):
     accion = str(row.get("Acción", row.get("🎯 Acción final", "")) or "").upper()
     lectura = _plan_lectura_v23740(row).upper()
-    mercado = str(row.get("Mercado", row.get("Mercado estudio", "")) or "").upper()
-    motivo = str(row.get("Motivo", row.get("Motivo radar", "")) or "").upper()
-    riesgo = str(row.get("Riesgo", row.get("Riesgos", "")) or "").upper()
-    blob = " | ".join([accion, lectura, mercado, motivo, riesgo])
+    mercado = str(row.get("Mercado", row.get("Mercado estudio", row.get("🎯 Mercado más probable", row.get("Mejor señal", "")))) or "").upper()
+    motivo = str(row.get("Motivo", row.get("Motivo radar", row.get("🎯 Motivo acierto", row.get("TA_MOTIVO", "")))) or "").upper()
+    riesgo = str(row.get("Riesgo", row.get("Riesgos", row.get("Riesgo principal", ""))) or "").upper()
+    estado = str(row.get("Estado", "") or "").upper()
+    conf = str(row.get("🎯 Confianza acierto", row.get("Confianza", "")) or "").upper()
+    blob = " | ".join([accion, lectura, mercado, motivo, riesgo, estado, conf])
 
+    if "NO ENCONTRADO" in estado or "DATOS FALTAN" in blob:
+        return "NO JUGAR"
     # Cortafuegos de presentación: si la lectura dice NO OVER, no lo escondemos como JUGAR.
     if "NO OVER" in blob:
         return "NO OVER"
@@ -18023,7 +18033,13 @@ def _plan_accion_v23740(row):
         return "NO UNDER"
     if "JUGAR" in accion and not re.search(r"OBSERVAR|WATCH|NO BET|CANCEL|RETIR|QUALITY GUARD ACTIVO", blob, flags=re.I):
         return "JUGAR"
-    if re.search(r"UNDER|NO SUBIR|WATCH|OBSERVAR|BASE OVER|OVER LARGO", blob, flags=re.I):
+    # En lista completa, si el mercado máximo/acierto trae confianza alta y no hay guard, puede ser JUGAR.
+    prob = _plan_prob_float_v23740(row.get("🎯 Prob máxima", row.get("Prob señal", row.get("Prob.", 0))), default=0.0)
+    if re.search(r"OVER 18.5|OVER 19.5|OVER 20.5|OVER 21.5|OVER 22.5", mercado, flags=re.I):
+        if prob >= 0.80 and "DATOS PARCIALES" not in blob and "WATCH" not in blob:
+            return "JUGAR"
+        return "OBSERVAR"
+    if re.search(r"UNDER|NO SUBIR|WATCH|OBSERVAR|BASE OVER|OVER LARGO|2-0|GANA SET", blob, flags=re.I):
         return "OBSERVAR"
     return "NO JUGAR"
 
@@ -18033,27 +18049,45 @@ def _plan_mercado_principal_v23740(row):
     lectura = _plan_lectura_v23740(row).upper()
     under_market = str(row.get("Mercado Under Pro", "") or "").strip()
     mercado_estudio = str(row.get("Mercado estudio", "") or "").strip()
-    mercado = str(row.get("Mercado", row.get("Mercado base", "")) or "").strip()
+    mercado = str(row.get("Mercado", row.get("Mercado base", row.get("🎯 Mercado más probable", row.get("Mejor señal", "")))) or "").strip()
+    mejor = str(row.get("Mejor señal", "") or "").strip()
 
     if accion in ["NO JUGAR"]:
         return "—"
+    if "NO OVER" in accion:
+        if under_market:
+            return _plan_market_clean_v23740(under_market)
+        u215 = _plan_prob_float_v23740(row.get("Under 21.5", 0), default=0.0)
+        u205 = _plan_prob_float_v23740(row.get("Under 20.5", 0), default=0.0)
+        fav20 = _plan_prob_float_v23740(row.get("Favorito 2-0", 0), default=0.0)
+        if u205 >= 0.58:
+            return "👀 Revisar Under 20.5"
+        if u215 >= 0.58:
+            return "👀 Revisar Under 21.5"
+        if fav20 >= 0.58:
+            return "👀 Revisar favorito 2-0"
+        return "👀 Revisar Under 21.5 / favorito 2-0"
     if "UNDER" in lectura and under_market:
         return _plan_market_clean_v23740(under_market)
     if "UNDER" in lectura and mercado_estudio:
         return _plan_market_clean_v23740(mercado_estudio)
-    if "NO OVER" in accion:
-        return _plan_market_clean_v23740(under_market or mercado_estudio or "Revisar Under / Favorito 2-0")
-    return _plan_market_clean_v23740(mercado or mercado_estudio or under_market or "—")
+    return _plan_market_clean_v23740(mercado or mercado_estudio or under_market or mejor or "—")
 
 
 def _plan_alternativa_v23740(row):
-    for c in ["Alternativa Under", "Línea larga estudio", "TA observar", "TA_RECOMENDACION", "Mercado base"]:
+    for c in ["Alternativa Under", "Línea larga estudio", "TA observar", "TA_RECOMENDACION", "Mercado base", "Under 2.5 Rescue", "Over Quality Guard"]:
         try:
             v = row.get(c, "")
             if pd.notna(v) and str(v).strip():
                 return _plan_market_clean_v23740(v)
         except Exception:
             pass
+    # Fallback útil en filas completas del análisis.
+    fav20 = _plan_prob_float_v23740(row.get("Favorito 2-0", 0), default=0.0)
+    if fav20 >= 0.58:
+        return "Favorito 2-0"
+    if _plan_prob_float_v23740(row.get("Under 21.5", 0), default=0.0) >= 0.58:
+        return "Under 21.5"
     return ""
 
 
@@ -18111,6 +18145,8 @@ def crear_plan_del_dia_df_v23740(picks_df):
         }])
 
     df = picks_df.copy()
+    # v23.75: PLAN DEL DÍA debe partir de TODA la lista analizada, no solo de picks filtrados.
+    # Si recibe el análisis completo, aquí enriquecemos con radar sin recortar partidos.
     try:
         if "Dirección partido" not in df.columns:
             df = aplicar_under_radar_pro_v23660(df)
@@ -18193,13 +18229,13 @@ def _ajustar_ancho_plan_v23740(writer, sheet_name="PLAN DEL DÍA"):
 
 
 def batch_excel_bytes(df):
-    """v23.74: exporta SOLO una hoja: PLAN DEL DÍA.
-    Los motores siguen calculando todo por dentro, pero el Excel ya no muestra hojas técnicas.
+    """v23.75: exporta SOLO una hoja: PLAN DEL DÍA, pero con TODOS los partidos analizados.
+    Antes usaba crear_picks_limpios_df(df), que recortaba la lista a picks/radar y por eso salían 24 de ~50
+    y se perdían Hora/Torneo/Superficie.
     """
     output = io.BytesIO()
-    df = añadir_estudio_over_20_21_v23500(df)
-    picks_df = crear_picks_limpios_df(df)
-    plan_df = crear_plan_del_dia_df_v23740(picks_df)
+    full_df = añadir_estudio_over_20_21_v23500(df.copy() if df is not None else pd.DataFrame())
+    plan_df = crear_plan_del_dia_df_v23740(full_df)
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         plan_df.to_excel(writer, index=False, sheet_name="PLAN DEL DÍA")
         aplicar_estilo_excel_limpio(writer)
@@ -18209,11 +18245,11 @@ def batch_excel_bytes(df):
 
 
 def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
-    """v23.74: exporta SOLO PLAN DEL DÍA. Si hay no encontrados, los integra como filas NO JUGAR."""
+    """v23.75: exporta SOLO PLAN DEL DÍA con TODOS los partidos OK + los no encontrados."""
     output = io.BytesIO()
     ok_sheet = añadir_estudio_over_20_21_v23500(ok_df.copy() if ok_df is not None else pd.DataFrame())
-    picks_df = crear_picks_limpios_df(ok_sheet)
-    plan_df = crear_plan_del_dia_df_v23740(picks_df)
+    # No pasar por crear_picks_limpios_df: esa función filtra picks y ocultaba media lista.
+    plan_df = crear_plan_del_dia_df_v23740(ok_sheet)
     try:
         ko_sheet = enrich_not_found_with_suggestions(ko_df, db) if ko_df is not None and not ko_df.empty else pd.DataFrame()
         if ko_sheet is not None and not ko_sheet.empty:
