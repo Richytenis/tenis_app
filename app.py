@@ -21472,6 +21472,277 @@ def parse_sofascore_day_grouped_paste(raw_text):
         return parse_sofascore_results_grouped_paste(raw_text)
     return _clean_parsed_matches_v23770(_parse_sofascore_day_grouped_paste_prev_v23780(raw_text))
 
+
+
+# =========================================================
+# v23.79 SOFASCORE RESULT PARSER CONTEXT FIX
+# - El v23.78 ya recuperaba parte de la lista, pero seguía tragándose
+#   cabeceras de torneo cuando aparecían justo después del marcador.
+# - Ahora corta el bloque del partido al encontrar una nueva cabecera,
+#   actualiza contexto y no arrastra todo a "Bogota".
+# - Lee nombres con guiones y países compuestos sin depender del parser legacy.
+# - Cancelados se saltan; Retirado se puede leer si trae jugadores/marcador.
+# No toca motor Over ni simulación.
+# =========================================================
+
+SOFA_COUNTRY_LIKE_EXTRA_V23790 = {
+    "usa", "united states", "united kingdom", "great britain", "australia", "japan", "france", "spain", "italy",
+    "germany", "czechia", "serbia", "austria", "russia", "argentina", "poland", "switzerland",
+    "bosnia & herzegovina", "bosnia and herzegovina", "hungary", "belgium", "india", "denmark",
+    "estonia", "china", "chinese taipei", "canada", "brazil", "mexico", "peru", "chile", "colombia",
+    "romania", "croatia", "netherlands", "bulgaria", "ireland", "norway", "sweden", "finland", "portugal"
+}
+
+
+def _country_like_v23790(x):
+    t = normalizar_texto(x).strip()
+    tl = t.lower()
+    if not t:
+        return False
+    try:
+        if is_country_line_sofa(t) or is_country_like_name(t):
+            return True
+    except Exception:
+        pass
+    return tl in SOFA_COUNTRY_LIKE_EXTRA_V23790
+
+
+def _status_kind_v23790(x):
+    t = normalizar_texto(x).strip().lower()
+    if t in {"ft", "final", "finished"} or is_final_status_sofa_result(x):
+        return "ok"
+    if t in {"retirado", "ret", "ret.", "abandonado", "abandoned"}:
+        return "retired"
+    if t in {"cancelado", "cancelled", "canceled", "aplazado", "postponed", "suspendido", "suspended", "walkover", "w/o", "wo"}:
+        return "skip"
+    try:
+        if is_status_line_sofa_result(x):
+            return "ok"
+    except Exception:
+        pass
+    return ""
+
+
+def _is_result_start_v23790(lines, idx):
+    try:
+        return is_date_line_sofa_result(lines[idx]) and idx + 1 < len(lines) and bool(_status_kind_v23790(lines[idx + 1]))
+    except Exception:
+        return False
+
+
+def _is_numeric_token_v23790(x):
+    return bool(re.match(r"^\d+$", normalizar_texto(x).strip()))
+
+
+def _is_hard_context_line_v23790(x):
+    t = normalizar_texto(x).strip()
+    if not t:
+        return True
+    if t == "•" or t == "-":
+        return True
+    if _is_numeric_token_v23790(t):
+        return True
+    if is_date_line_sofa_result(t) or bool(_status_kind_v23790(t)):
+        return False
+    up = t.upper()
+    if any(k in up for k in ["ATP CHALLENGER", "WTA", "ATP ", "CHALLENGER", "MEN SINGLES", "WOMEN SINGLES", "QUALIFYING", "QUALIFICATION"]):
+        return True
+    try:
+        if _is_surface_context_line_v23780(t) or _is_tournament_location_line_v23770(t) or es_linea_torneo_principal_resultados(t):
+            return True
+    except Exception:
+        pass
+    # Sedes tipo "Newport, USA, Qualifying" / "Nottingham 3, Great Britain"
+    if "," in t and not re.search(r"\b[A-ZÁÉÍÓÚÑ]\.?\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]", t):
+        return True
+    return False
+
+
+def _looks_player_v23790(x):
+    t = normalizar_texto(x).strip()
+    if not t or _country_like_v23790(t) or _is_numeric_token_v23790(t):
+        return False
+    if _is_hard_context_line_v23790(t):
+        return False
+    if "/" in t or es_rival_pendiente_pegado(t):
+        return False
+    # Acepta inicial + apellido, nombres con guion y nombres completos.
+    if re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñ]", t) and ("." in t or len(tokens(t)) >= 2):
+        return True
+    try:
+        return looks_like_player_line_sofa(t)
+    except Exception:
+        return False
+
+
+def _update_context_from_line_v23790(line, current_tournament, current_meta):
+    t = normalizar_texto(line).strip()
+    if not t or t == "•" or _is_numeric_token_v23790(t):
+        return current_tournament, current_meta
+    if is_date_line_sofa_result(t) or bool(_status_kind_v23790(t)):
+        return current_tournament, current_meta
+    up = t.upper()
+    is_title = any(k in up for k in ["ATP CHALLENGER", "WTA", "ATP ", " MEN SINGLES", " WOMEN SINGLES", "ITF"])
+    is_location = False
+    try:
+        is_location = _is_tournament_location_line_v23770(t)
+    except Exception:
+        is_location = ("," in t)
+    is_qual_location = ("," in t and "QUAL" in up)
+    if is_title or is_location or is_qual_location:
+        # La sede posterior suele ser más limpia para Excel; el título completo también sirve.
+        current_tournament = t
+        current_meta = []
+        return current_tournament, current_meta
+    if _is_surface_context_line_v23780(t) or "CHALLENGER" in up or t.lower() in {"challenger 125", "challenger 100", "challenger 75", "challenger 50", "challenger"}:
+        if len(current_meta) < 12:
+            current_meta.append(t)
+    return current_tournament, current_meta
+
+
+def parse_sofascore_results_grouped_paste(raw_text):
+    """v23.79 parser robusto de resultados SofaScore.
+    Esperado para la lista 8/7/26 del usuario: ~40 partidos válidos, saltando cancelados.
+    """
+    lines = [normalizar_texto(ln).strip() for ln in str(raw_text).splitlines() if normalizar_texto(ln).strip()]
+    matches = []
+    current_tournament = ""
+    current_meta = []
+    current_circuit = "DESCONOCIDO"
+    current_surface = "Clay"
+    current_surface_source = "Default Clay"
+    current_surface_warning = ""
+    current_ignore_doubles = False
+
+    def refresh_context():
+        nonlocal current_circuit, current_surface, current_surface_source, current_surface_warning, current_ignore_doubles
+        try:
+            current_circuit = clasificar_bloque_torneo_pegado(current_tournament, current_meta)
+        except Exception:
+            current_circuit = "DESCONOCIDO"
+        current_ignore_doubles = current_circuit == "IGNORAR_DOBLES"
+        try:
+            current_surface, current_surface_source, current_surface_warning = detectar_superficie_pegado_pro_v23670(current_tournament, current_meta, fallback="Clay")
+        except Exception:
+            try:
+                current_surface, current_surface_source, current_surface_warning = _surface_repair_from_context_v23690("", current_tournament, current_meta, fallback="Clay")
+            except Exception:
+                current_surface, current_surface_source, current_surface_warning = "Clay", "Default Clay", ""
+
+    seen = set()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not _is_result_start_v23790(lines, i):
+            if _is_hard_context_line_v23790(line):
+                current_tournament, current_meta = _update_context_from_line_v23790(line, current_tournament, current_meta)
+                refresh_context()
+            i += 1
+            continue
+
+        fecha = lines[i]
+        status = lines[i + 1]
+        kind = _status_kind_v23790(status)
+        j = i + 2
+        candidates = []
+        numbers = []
+        invalid = False
+
+        while j < len(lines):
+            # Nuevo partido: fin del bloque actual.
+            if _is_result_start_v23790(lines, j):
+                break
+            ln = lines[j]
+
+            # Nueva cabecera después del marcador: NO la consumas; deja que el bucle externo actualice contexto.
+            if _is_hard_context_line_v23790(ln) and len(candidates) >= 2 and len(numbers) >= 2:
+                break
+
+            # Cabecera antes de jugadores: actualiza contexto y continúa.
+            if _is_hard_context_line_v23790(ln) and len(candidates) < 2:
+                current_tournament, current_meta = _update_context_from_line_v23790(ln, current_tournament, current_meta)
+                refresh_context()
+                j += 1
+                continue
+
+            if _is_numeric_token_v23790(ln):
+                numbers.append(int(ln))
+                j += 1
+                continue
+            if _country_like_v23790(ln):
+                j += 1
+                continue
+            if "/" in ln or es_rival_pendiente_pegado(ln):
+                invalid = True
+                j += 1
+                continue
+            if _looks_player_v23790(ln) and len(candidates) < 2:
+                candidates.append(ln)
+            j += 1
+
+        # Cancelados: saltar sin romper.
+        if kind == "skip":
+            i = max(j, i + 1)
+            continue
+        if invalid or current_ignore_doubles or len(candidates) < 2:
+            i = max(j, i + 1)
+            continue
+
+        p1_raw, p2_raw = candidates[0], candidates[1]
+        if _country_like_v23790(p1_raw) or _country_like_v23790(p2_raw):
+            i = max(j, i + 1)
+            continue
+
+        p1_sets, p2_sets, total_games, score_games = _decode_sofascore_numbers_v23780(numbers)
+        winner_side = None
+        if p1_sets is not None and p2_sets is not None:
+            if p1_sets > p2_sets:
+                winner_side = 1
+            elif p2_sets > p1_sets:
+                winner_side = 2
+
+        key = (fecha, limpiar(p1_raw), limpiar(p2_raw), limpiar(current_tournament))
+        if key not in seen:
+            seen.add(key)
+            matches.append({
+                "raw": f"{fecha} · {p1_raw} - {p2_raw}",
+                "date": fecha,
+                "time": "",
+                "status": status,
+                "p1_raw": p1_raw,
+                "p2_raw": p2_raw,
+                "p1_sets_real": p1_sets,
+                "p2_sets_real": p2_sets,
+                "actual_winner_side": winner_side,
+                "actual_total_games": total_games,
+                "score_games": score_games,
+                "games_leidos": bool(total_games is not None),
+                "surface": current_surface,
+                "surface_source": current_surface_source,
+                "surface_warning": current_surface_warning,
+                "torneo": current_tournament,
+                "circuito_detectado": current_circuit,
+                "odd1": None,
+                "odd2": None,
+                "quoted_side": None,
+                "quoted_odd": None,
+                "quoted_text": None,
+            })
+        i = max(j, i + 1)
+
+    return _clean_parsed_matches_v23770(matches)
+
+
+def parse_sofascore_day_grouped_paste(raw_text):
+    """v23.79: si aparecen resultados, usar parser robusto; si no, mantener parser de partidos."""
+    lines = [normalizar_texto(ln).strip() for ln in str(raw_text).splitlines() if normalizar_texto(ln).strip()]
+    if any(_is_result_start_v23790(lines, idx) for idx in range(max(0, len(lines)-1))):
+        return parse_sofascore_results_grouped_paste(raw_text)
+    try:
+        return _clean_parsed_matches_v23770(_parse_sofascore_day_grouped_paste_prev_v23780(raw_text))
+    except Exception:
+        return _clean_parsed_matches_v23770(_parse_sofascore_day_grouped_paste_prev_v23770(raw_text))
+
 # =========================================================
 # v23.71 SOFASCORE ROUTER FIX
 # Corrige el fallo real detectado: la UI usa etiquetas nuevas
