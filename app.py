@@ -21743,6 +21743,295 @@ def parse_sofascore_day_grouped_paste(raw_text):
     except Exception:
         return _clean_parsed_matches_v23770(_parse_sofascore_day_grouped_paste_prev_v23770(raw_text))
 
+
+# =========================================================
+# v23.80 SOFASCORE COUNT + CONTEXT FIX
+# Objetivo: recuperar los 40 partidos válidos de listas de resultados
+# mixtas SofaScore (torneos duplicados, sedes intermedias, Qualifying,
+# cancelados sin marcador) sin tocar motor Over.
+# Fixes sobre v23.79:
+# - "Challenger" / "Challenger 125" ya no pisa el nombre del torneo.
+# - "Newport, USA, Qualifying" hereda el circuito/superficie Challenger.
+# - Se preserva meta de superficie/circuito al cambiar de sede.
+# - Parser por bloque fecha+estado con jugadores extraídos de forma estable.
+# =========================================================
+
+APP_VERSION = "v23.80.0-sofascore-count-context-fix"
+
+SOFA_CONTEXT_META_WORDS_V23800 = {
+    "challenger", "challenger 125", "challenger 100", "challenger 75", "challenger 50",
+    "atp", "wta", "itf", "men singles", "women singles", "tierra batida", "hierba", "dura", "dura outdoor", "dura indoor"
+}
+
+
+def _is_plain_category_meta_v23800(x):
+    t = normalizar_texto(x).strip().lower()
+    if not t:
+        return False
+    if t in SOFA_CONTEXT_META_WORDS_V23800:
+        return True
+    if re.match(r"^challenger\s*\d+$", t):
+        return True
+    if normalizar_superficie_pegada(t, default="") in ["Hard", "Clay", "Grass"]:
+        return True
+    return False
+
+
+def _is_location_header_v23800(x):
+    t = normalizar_texto(x).strip()
+    if not t or "," not in t:
+        return False
+    if is_date_line_sofa_result(t) or bool(_status_kind_v23790(t)):
+        return False
+    # Localizaciones tipo "Newport, USA", "Newport, USA, Qualifying", "Nottingham 3, Great Britain".
+    # Si contiene inicial de jugador, no es header.
+    if re.search(r"\b[A-ZÁÉÍÓÚÑ]\.\s*[A-ZÁÉÍÓÚÑa-záéíóúñ]", t):
+        return False
+    return True
+
+
+def _is_title_header_v23800(x):
+    t = normalizar_texto(x).strip()
+    up = t.upper()
+    if not t:
+        return False
+    if any(k in up for k in ["ATP CHALLENGER", "WTA ", "ATP ", " ITF ", "MEN SINGLES", "WOMEN SINGLES"]):
+        return True
+    return False
+
+
+def _is_context_line_v23800(x):
+    t = normalizar_texto(x).strip()
+    if not t:
+        return True
+    if t == "•" or t == "-" or _is_numeric_token_v23790(t):
+        return True
+    if is_date_line_sofa_result(t) or bool(_status_kind_v23790(t)):
+        return False
+    if _is_plain_category_meta_v23800(t) or _is_location_header_v23800(t) or _is_title_header_v23800(t):
+        return True
+    try:
+        if es_linea_torneo_principal_resultados(t) or _is_surface_context_line_v23780(t):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _update_context_v23800(line, ctx):
+    t = normalizar_texto(line).strip()
+    if not t or t == "•" or _is_numeric_token_v23790(t):
+        return ctx
+    if is_date_line_sofa_result(t) or bool(_status_kind_v23790(t)):
+        return ctx
+
+    tournament = ctx.get("tournament", "")
+    meta = list(ctx.get("meta", []) or [])
+    prev_txt = " ".join([tournament] + meta).upper()
+    up = t.upper()
+
+    def add_meta(v):
+        vv = normalizar_texto(v).strip()
+        if vv and vv not in meta and len(meta) < 16:
+            meta.append(vv)
+
+    # Títulos principales: sí cambian torneo y reinician meta básica.
+    if _is_title_header_v23800(t):
+        tournament = t
+        meta = []
+        if "CHALLENGER" in up:
+            meta.append("Challenger")
+        if "WTA" in up:
+            meta.append("WTA")
+        if "ATP" in up:
+            meta.append("ATP")
+        if "QUAL" in up:
+            meta.append("Qualifying")
+        ctx["tournament"] = tournament
+        ctx["meta"] = meta
+        return ctx
+
+    # Sedes: cambian el nombre visible, pero NO borran circuito/superficie anterior.
+    if _is_location_header_v23800(t):
+        tournament = t
+        if "QUAL" in up:
+            add_meta("Qualifying")
+        # Si veníamos de un título Challenger, o el texto actual/previo lo indica, preserva Challenger.
+        if "CHALLENGER" in prev_txt or "CHALLENGER" in up:
+            add_meta("Challenger")
+        if "WTA" in prev_txt:
+            add_meta("WTA")
+        elif "ATP" in prev_txt or "CHALLENGER" in prev_txt:
+            add_meta("ATP")
+        ctx["tournament"] = tournament
+        ctx["meta"] = meta
+        return ctx
+
+    # Categorías/superficies: son meta, nunca nombre de torneo.
+    if _is_plain_category_meta_v23800(t):
+        add_meta(t)
+        ctx["tournament"] = tournament
+        ctx["meta"] = meta
+        return ctx
+
+    try:
+        if _is_surface_context_line_v23780(t):
+            add_meta(t)
+    except Exception:
+        pass
+    ctx["tournament"] = tournament
+    ctx["meta"] = meta
+    return ctx
+
+
+def _refresh_ctx_values_v23800(ctx):
+    tournament = ctx.get("tournament", "")
+    meta = ctx.get("meta", []) or []
+    try:
+        circuit = clasificar_bloque_torneo_pegado(tournament, meta)
+    except Exception:
+        circuit = "DESCONOCIDO"
+    try:
+        surface, source, warning = detectar_superficie_pegado_pro_v23670(tournament, meta, fallback="Clay")
+    except Exception:
+        surface, source, warning = "Clay", "Default Clay", ""
+    return circuit, surface, source, warning
+
+
+def _looks_player_v23800(x):
+    t = normalizar_texto(x).strip()
+    if not t or _country_like_v23790(t) or _is_numeric_token_v23790(t):
+        return False
+    if _is_context_line_v23800(t):
+        return False
+    if "/" in t or es_rival_pendiente_pegado(t):
+        return False
+    # Formatos SofaScore: "D. Dedura-Palomero", "G. I. Justo", "M. Pucinelli de Almeida", "Y. Bu"
+    if re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñ]", t) and ("." in t or len(tokens(t)) >= 2):
+        return True
+    try:
+        return looks_like_player_line_sofa(t)
+    except Exception:
+        return False
+
+
+def _extract_block_players_numbers_v23800(lines, start_idx, ctx):
+    """Devuelve (players, numbers, next_index). start_idx apunta a línea posterior al status."""
+    candidates, numbers = [], []
+    j = start_idx
+    while j < len(lines):
+        ln = lines[j]
+        if _is_result_start_v23790(lines, j):
+            break
+        # Si ya tenemos marcador y aparece un header, termina bloque para que el exterior actualice contexto.
+        if _is_context_line_v23800(ln) and len(candidates) >= 2 and len(numbers) >= 2:
+            break
+        if _is_context_line_v23800(ln) and len(candidates) < 2:
+            _update_context_v23800(ln, ctx)
+            j += 1
+            continue
+        if _is_numeric_token_v23790(ln):
+            numbers.append(int(normalizar_texto(ln).strip()))
+            j += 1
+            continue
+        if _country_like_v23790(ln):
+            j += 1
+            continue
+        if _looks_player_v23800(ln) and len(candidates) < 2:
+            candidates.append(ln)
+        j += 1
+    return candidates, numbers, j
+
+
+def parse_sofascore_results_grouped_paste(raw_text):
+    """v23.80: parser de resultados por bloques fecha+estado.
+    Para la lista 8/7/26 del usuario debe devolver 40 partidos válidos
+    si se excluyen los 2 Cancelado.
+    """
+    lines = [normalizar_texto(ln).strip() for ln in str(raw_text).splitlines() if normalizar_texto(ln).strip()]
+    matches, seen = [], set()
+    ctx = {"tournament": "", "meta": []}
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not _is_result_start_v23790(lines, i):
+            if _is_context_line_v23800(line):
+                _update_context_v23800(line, ctx)
+            i += 1
+            continue
+
+        fecha = lines[i]
+        status = lines[i + 1]
+        kind = _status_kind_v23790(status)
+        candidates, numbers, j = _extract_block_players_numbers_v23800(lines, i + 2, ctx)
+
+        if kind == "skip":
+            i = max(j, i + 2)
+            continue
+        if len(candidates) < 2:
+            i = max(j, i + 2)
+            continue
+
+        circuit, surface, surface_source, surface_warning = _refresh_ctx_values_v23800(ctx)
+        if circuit == "IGNORAR_DOBLES":
+            i = max(j, i + 2)
+            continue
+
+        p1_raw, p2_raw = candidates[0], candidates[1]
+        if _country_like_v23790(p1_raw) or _country_like_v23790(p2_raw):
+            i = max(j, i + 2)
+            continue
+
+        p1_sets, p2_sets, total_games, score_games = _decode_sofascore_numbers_v23780(numbers)
+        winner_side = None
+        if p1_sets is not None and p2_sets is not None:
+            if p1_sets > p2_sets:
+                winner_side = 1
+            elif p2_sets > p1_sets:
+                winner_side = 2
+
+        key = (fecha, limpiar(p1_raw), limpiar(p2_raw), limpiar(ctx.get("tournament", "")))
+        if key not in seen:
+            seen.add(key)
+            matches.append({
+                "raw": f"{fecha} · {p1_raw} - {p2_raw}",
+                "date": fecha,
+                "time": "",
+                "status": status,
+                "p1_raw": p1_raw,
+                "p2_raw": p2_raw,
+                "p1_sets_real": p1_sets,
+                "p2_sets_real": p2_sets,
+                "actual_winner_side": winner_side,
+                "actual_total_games": total_games,
+                "score_games": score_games,
+                "games_leidos": bool(total_games is not None),
+                "surface": surface,
+                "surface_source": surface_source,
+                "surface_warning": surface_warning,
+                "torneo": ctx.get("tournament", ""),
+                "circuito_detectado": circuit,
+                "odd1": None,
+                "odd2": None,
+                "quoted_side": None,
+                "quoted_odd": None,
+                "quoted_text": None,
+            })
+        i = max(j, i + 2)
+
+    return _clean_parsed_matches_v23770(matches)
+
+
+def parse_sofascore_day_grouped_paste(raw_text):
+    lines = [normalizar_texto(ln).strip() for ln in str(raw_text).splitlines() if normalizar_texto(ln).strip()]
+    if any(_is_result_start_v23790(lines, idx) for idx in range(max(0, len(lines)-1))):
+        return parse_sofascore_results_grouped_paste(raw_text)
+    try:
+        return _clean_parsed_matches_v23770(_parse_sofascore_day_grouped_paste_prev_v23780(raw_text))
+    except Exception:
+        return _clean_parsed_matches_v23770(_parse_sofascore_day_grouped_paste_prev_v23770(raw_text))
+
 # =========================================================
 # v23.71 SOFASCORE ROUTER FIX
 # Corrige el fallo real detectado: la UI usa etiquetas nuevas
