@@ -7,7 +7,7 @@ import requests
 from difflib import SequenceMatcher
 from itertools import combinations
 
-st.set_page_config(page_title="Tennis IA v23.74 Plan del Día", page_icon="🎾", layout="wide")
+st.set_page_config(page_title="Tennis IA v23.81 Decision Scoring Clean", page_icon="🎾", layout="wide")
 
 APP_VERSION = "v23.76.0-plan-dia-contexto-completo"
 QUALITY_ENGINE_VERSION = "v23.39.5-wta-over17-rankgap80-2026-05-28"
@@ -18398,6 +18398,408 @@ def batch_excel_with_not_found_bytes(ok_df, ko_df, db):
         _ajustar_ancho_plan_v23740(writer, "PLAN DEL DÍA")
     output.seek(0)
     return output.getvalue()
+
+
+
+# =========================================================
+# v23.81 DECISION SCORING CLEAN
+# Presentación/decisión final del PLAN DEL DÍA.
+# No toca motores Over/Under ni simulaciones: solo limpia la salida operativa.
+# Objetivos:
+# - JUGAR más exigente y coherente.
+# - Reducir OBSERVAR genérico.
+# - Gana set solo si hay señal fuerte real.
+# - Añadir Prioridad y Siguiente paso.
+# =========================================================
+
+APP_VERSION = "v23.81.0-decision-scoring-clean"
+
+
+def _plan_blob_v23810(row):
+    cols = [
+        "Dirección partido", "Lectura app", "Acción", "🎯 Acción final", "Mercado", "Mercado estudio",
+        "🎯 Mercado más probable", "Mejor señal", "Mercado Under Pro", "Alternativa Under",
+        "TA_RECOMENDACION", "TA_MOTIVO", "Motivo", "Motivo radar", "Motivo Under Pro",
+        "🎯 Motivo acierto", "Riesgo", "Riesgos", "Riesgo principal", "Riesgo Tie-break",
+        "Riesgo Tie-break Under", "Riesgo 3 sets", "Riesgo 3 sets Under", "Over Quality Guard",
+        "Motivos Over Guard", "Under 2.5 Rescue", "Confianza", "🎯 Confianza acierto", "Prioridad apuesta"
+    ]
+    return _plan_pick_text_v23740(row, cols).upper()
+
+
+def _plan_surface_v23810(row):
+    try:
+        sf = _pista_simple_v23620(row)
+        if sf:
+            return str(sf)
+    except Exception:
+        pass
+    return str(row.get("Superficie", "") or "")
+
+
+def _plan_prob_principal_v23810(row):
+    vals = []
+    for c in ["🎯 Prob máxima", "Prob señal", "Prob.", "Probabilidad", "Score apuesta", "Score radar", "Score Under Pro"]:
+        try:
+            vals.append(_plan_prob_float_v23740(row.get(c, 0), default=0.0))
+        except Exception:
+            pass
+    vals = [x for x in vals if x is not None]
+    return max(vals) if vals else 0.0
+
+
+def _plan_has_clear_market_v23810(market):
+    m = str(market or "").upper()
+    if not m or m in ["—", "-", "SIN MERCADO CLARO", "NO UNDER CLARO", "NO OVER CLARO"]:
+        return False
+    return bool(re.search(r"OVER|UNDER|2-0|2 SET|GANA.*SET|GANA AL MENOS|HANDICAP|JUEGOS|ML|GANADOR", m, flags=re.I))
+
+
+def _plan_is_set_market_v23810(market):
+    m = str(market or "").upper()
+    return ("SET" in m and ("GANA" in m or "AL MENOS" in m))
+
+
+def _plan_set_signal_strong_v23810(row, market=""):
+    """Evita que 'gana al menos 1 set' sea recomendación por defecto.
+    Solo lo deja como OBSERVAR/JUGAR si hay probabilidad o motivo fuerte.
+    """
+    blob = _plan_blob_v23810(row)
+    prob = _plan_prob_principal_v23810(row)
+    # Señales textuales fuertes ya calculadas por la app/TA.
+    if re.search(r"SET MUY CONFIRMADO|GANA SET FUERTE|ELITE|>=\s*70|>=\s*90|>=\s*94", blob, flags=re.I):
+        return True
+    # Probabilidades específicas si existen.
+    candidates = []
+    for c in ["Prob gana set", "Favorito gana al menos 1 set", "Dog gana al menos 1 set", "ModelFavWinsSet", "ModelDogWinsSet"]:
+        try:
+            candidates.append(_plan_prob_float_v23740(row.get(c, 0), default=0.0))
+        except Exception:
+            pass
+    best = max([prob] + [x for x in candidates if x is not None])
+    # Para favorito gana set pedimos muy alto; para dog gana set pedimos señal muy clara.
+    if "DOG" in str(market).upper() or "UNDERDOG" in blob:
+        return best >= 0.70
+    return best >= 0.88
+
+
+def _plan_grass_over_ok_v23810(row, market=""):
+    """Over en hierba más exigente: no basta con una señal suelta.
+    Pedimos probabilidad fuerte y al menos 2 señales reales de partido largo.
+    """
+    m = str(market or "").upper()
+    if not re.search(r"OVER\s*(18|19|20|21|22)[\.,]?5", m, flags=re.I):
+        return True
+    sf = _plan_surface_v23810(row).upper()
+    if "GRASS" not in sf and "HIERBA" not in sf:
+        return True
+    blob = _plan_blob_v23810(row)
+    prob = _plan_prob_principal_v23810(row)
+    signals = 0
+    if re.search(r"TIE.?BREAK.*ALTO|TB.*ALTO|RIESGO TIE.?BREAK ALTO", blob, flags=re.I):
+        signals += 1
+    if re.search(r"3 SETS.*ALTO|SET3.*ALTO|RIESGO 3 SETS ALTO|PARTIDO A 3", blob, flags=re.I):
+        signals += 1
+    if re.search(r"IGUALAD|EQUILIBR|COMPETITIV|HOLD ALTO|BIG SERVER|OVER LARGO", blob, flags=re.I):
+        signals += 1
+    contradictions = bool(re.search(r"NO OVER|NO SUBIR|MOTOR INCLINA UNDER|FAVORITO 2-0|2-0 PROBABLE|ROMPE FÁCIL|ROMPE FACIL|UNDER", blob, flags=re.I))
+    return (prob >= 0.82 and signals >= 2 and not contradictions)
+
+
+def _plan_accion_v23740(row):
+    accion_raw = str(row.get("Acción", row.get("🎯 Acción final", "")) or "").upper()
+    lectura = _plan_lectura_v23740(row).upper()
+    mercado_raw = str(row.get("Mercado", row.get("Mercado estudio", row.get("🎯 Mercado más probable", row.get("Mejor señal", "")))) or "")
+    mercado = mercado_raw.upper()
+    estado = str(row.get("Estado", "") or "").upper()
+    conf = str(row.get("🎯 Confianza acierto", row.get("Confianza", "")) or "").upper()
+    blob = _plan_blob_v23810(row)
+    prob = _plan_prob_principal_v23810(row)
+
+    if "NO ENCONTRADO" in estado or "DATOS FALTAN" in blob or "CANCEL" in blob:
+        return "NO JUGAR"
+
+    if "NO OVER" in blob or "NO SUBIR" in blob or "MOTOR INCLINA UNDER" in blob:
+        return "NO OVER"
+
+    if "NO UNDER" in blob:
+        return "NO UNDER"
+
+    # NO TOCAR/MIXTO no puede salir como JUGAR. Si hay mercado realmente claro, observar; si no, descartar.
+    if "NO TOCAR" in lectura or "MIXTO" in lectura:
+        if _plan_is_set_market_v23810(mercado) and not _plan_set_signal_strong_v23810(row, mercado):
+            return "NO JUGAR"
+        if _plan_has_clear_market_v23810(mercado) and prob >= 0.70:
+            return "OBSERVAR"
+        return "NO JUGAR"
+
+    # Gana set solo se juega/observa si es señal fuerte real.
+    if _plan_is_set_market_v23810(mercado):
+        if not _plan_set_signal_strong_v23810(row, mercado):
+            return "NO JUGAR"
+        return "JUGAR" if ("JUGAR" in accion_raw and prob >= 0.88) else "OBSERVAR"
+
+    # Over en hierba: endurecido.
+    if re.search(r"OVER\s*(18|19|20|21|22)[\.,]?5", mercado, flags=re.I):
+        if not _plan_grass_over_ok_v23810(row, mercado):
+            return "OBSERVAR"
+        if ("JUGAR" in accion_raw or prob >= 0.82) and "DATOS PARCIALES" not in blob and "WATCH" not in blob:
+            return "JUGAR"
+        return "OBSERVAR"
+
+    # Under: JUGAR solo si viene claro; si no, observar.
+    if "UNDER" in mercado or "UNDER" in lectura:
+        if prob >= 0.70 and not re.search(r"TIE.?BREAK.*ALTO|3 SETS.*ALTO|NO UNDER", blob, flags=re.I):
+            return "JUGAR" if "JUGAR" in accion_raw else "OBSERVAR"
+        return "OBSERVAR"
+
+    # Favorito 2-0: no forzar si la señal no es clara.
+    if "2-0" in mercado or "2 SET" in mercado or "FAVORITO 2-0" in lectura:
+        if prob >= 0.68 and not re.search(r"3 SETS.*ALTO|TIE.?BREAK.*ALTO", blob, flags=re.I):
+            return "JUGAR" if "JUGAR" in accion_raw else "OBSERVAR"
+        return "OBSERVAR"
+
+    if "JUGAR" in accion_raw and _plan_has_clear_market_v23810(mercado) and prob >= 0.82:
+        return "JUGAR"
+
+    if re.search(r"OBSERVAR|WATCH|BASE OVER|OVER LARGO|UNDER|2-0", blob, flags=re.I):
+        return "OBSERVAR"
+
+    return "NO JUGAR"
+
+
+def _plan_mercado_principal_v23740(row):
+    accion = _plan_accion_v23740(row)
+    lectura = _plan_lectura_v23740(row).upper()
+    under_market = str(row.get("Mercado Under Pro", "") or "").strip()
+    mercado_estudio = str(row.get("Mercado estudio", "") or "").strip()
+    mercado = str(row.get("Mercado", row.get("Mercado base", row.get("🎯 Mercado más probable", row.get("Mejor señal", "")))) or "").strip()
+    mejor = str(row.get("Mejor señal", "") or "").strip()
+
+    if accion == "NO JUGAR":
+        return "—"
+
+    if accion == "NO OVER":
+        if under_market and "NO UNDER" not in under_market.upper():
+            return _plan_market_clean_v23740(under_market)
+        u215 = _plan_prob_float_v23740(row.get("Under 21.5", 0), default=0.0)
+        u205 = _plan_prob_float_v23740(row.get("Under 20.5", 0), default=0.0)
+        fav20 = _plan_prob_float_v23740(row.get("Favorito 2-0", 0), default=0.0)
+        if u205 >= 0.58:
+            return "👀 Revisar Under 20.5"
+        if u215 >= 0.58:
+            return "👀 Revisar Under 21.5"
+        if fav20 >= 0.58:
+            return "👀 Revisar favorito 2-0"
+        return "👀 Revisar Under 21.5 / favorito 2-0"
+
+    if accion == "NO UNDER":
+        return "—"
+
+    # Evitar que gana set salga como comodín débil.
+    if _plan_is_set_market_v23810(mercado) and not _plan_set_signal_strong_v23810(row, mercado):
+        return "Sin mercado claro"
+
+    if "UNDER" in lectura and under_market:
+        return _plan_market_clean_v23740(under_market)
+    if "UNDER" in lectura and mercado_estudio:
+        return _plan_market_clean_v23740(mercado_estudio)
+    return _plan_market_clean_v23740(mercado or mercado_estudio or under_market or mejor or "—")
+
+
+def _plan_prioridad_v23810(row, accion=None, mercado=None, confianza=None):
+    accion = accion or _plan_accion_v23740(row)
+    mercado = mercado or _plan_mercado_principal_v23740(row)
+    conf = str(confianza or _plan_confianza_v23740(row) or "").upper()
+    prob = _plan_prob_principal_v23810(row)
+    clear = _plan_has_clear_market_v23810(mercado)
+    if accion == "JUGAR":
+        return "Alta" if (prob >= 0.82 or "ALTA" in conf or "🔥" in conf) else "Media"
+    if accion in ["NO OVER", "NO UNDER"]:
+        return "Media" if clear else "Baja"
+    if accion == "OBSERVAR":
+        return "Media" if clear and "SIN MERCADO" not in str(mercado).upper() else "Baja"
+    return "Baja"
+
+
+def _plan_siguiente_paso_v23810(row, accion=None, mercado=None):
+    accion = accion or _plan_accion_v23740(row)
+    mercado = mercado or _plan_mercado_principal_v23740(row)
+    m = str(mercado or "").upper()
+    if accion == "JUGAR":
+        return "Revisar cuota; confirmar en predictor individual si hay cualquier duda."
+    if accion == "OBSERVAR":
+        if "SIN MERCADO" in m or m in ["—", "-"]:
+            return "Pasar por predictor individual solo si te interesa; si no, descartar."
+        return "Pasar por predictor individual antes de jugar."
+    if accion == "NO OVER":
+        return "No jugar Over; pasar predictor si quieres mirar Under 21.5/20.5 o favorito 2-0."
+    if accion == "NO UNDER":
+        return "No entrar al Under; riesgo de tie-break/3 sets. Pasar predictor solo si la cuota compensa."
+    return "Descartar."
+
+
+def crear_plan_del_dia_df_v23740(picks_df):
+    """v23.81: Una sola hoja operativa con decisión final limpia.
+    No limita artificialmente los JUGAR: si hay 8 JUGAR válidos, salen 8.
+    """
+    if picks_df is None or not isinstance(picks_df, pd.DataFrame) or picks_df.empty:
+        return pd.DataFrame([{
+            "Hora": "", "Torneo": "", "Superficie": "", "Partido": "SIN PARTIDOS",
+            "Lectura app": "—", "Acción": "NO JUGAR", "Prioridad": "Baja",
+            "Mercado recomendado": "—", "Línea": "", "Alternativa": "", "Confianza": "—",
+            "Riesgo principal": "", "Motivo": "No hay datos para analizar", "Siguiente paso": "Descartar."
+        }])
+
+    df = picks_df.copy()
+    try:
+        if "Dirección partido" not in df.columns:
+            df = aplicar_under_radar_pro_v23660(df)
+    except Exception:
+        pass
+
+    rows = []
+    for _, r in df.iterrows():
+        accion = _plan_accion_v23740(r)
+        lectura = _plan_lectura_v23740(r)
+        mercado = _plan_mercado_principal_v23740(r)
+        linea = _plan_extract_linea_v23740(mercado, r.get("Línea Under recomendada", ""), r.get("Línea larga estudio", ""), r.get("Mercado estudio", ""))
+        confianza = _plan_confianza_v23740(r)
+        prioridad = _plan_prioridad_v23810(r, accion, mercado, confianza)
+        siguiente = _plan_siguiente_paso_v23810(r, accion, mercado)
+        rows.append({
+            "Hora": str(r.get("Hora", "") or ""),
+            "Torneo": str(r.get("Torneo", "") or ""),
+            "Superficie": _plan_surface_v23810(r),
+            "Partido": str(r.get("Partido", "") or ""),
+            "Lectura app": lectura,
+            "Acción": accion,
+            "Prioridad": prioridad,
+            "Mercado recomendado": mercado,
+            "Línea": linea,
+            "Alternativa": _plan_alternativa_v23740(r),
+            "Confianza": confianza,
+            "Riesgo principal": _plan_riesgo_v23740(r),
+            "Motivo": _plan_motivo_v23740(r),
+            "Siguiente paso": siguiente,
+            "__accion_sort": {"JUGAR": 0, "NO OVER": 1, "OBSERVAR": 2, "NO UNDER": 3, "NO JUGAR": 4}.get(accion, 5),
+            "__prio_sort": {"Alta": 0, "Media": 1, "Baja": 2}.get(prioridad, 3),
+            "__score_sort": max(
+                _plan_score100_v23740(r.get("Score apuesta", 0)),
+                _plan_score100_v23740(r.get("Score radar", 0)),
+                _plan_score100_v23740(r.get("Score Under Pro", 0)),
+                _plan_score100_v23740(r.get("Prob.", 0)),
+                _plan_score100_v23740(r.get("🎯 Prob máxima", 0))
+            )
+        })
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return pd.DataFrame([{
+            "Hora": "", "Torneo": "", "Superficie": "", "Partido": "NO HAY APUESTA CLARA",
+            "Lectura app": "NO TOCAR", "Acción": "NO JUGAR", "Prioridad": "Baja",
+            "Mercado recomendado": "—", "Línea": "", "Alternativa": "", "Confianza": "—",
+            "Riesgo principal": "", "Motivo": "Disciplina: no forzar", "Siguiente paso": "Descartar."
+        }])
+    try:
+        out = out.sort_values(["__accion_sort", "__prio_sort", "__score_sort"], ascending=[True, True, False]).reset_index(drop=True)
+    except Exception:
+        pass
+    cols = ["Hora", "Torneo", "Superficie", "Partido", "Lectura app", "Acción", "Prioridad", "Mercado recomendado", "Línea", "Alternativa", "Confianza", "Riesgo principal", "Motivo", "Siguiente paso"]
+    for c in cols:
+        if c not in out.columns:
+            out[c] = ""
+    return out[cols]
+
+
+def _plan_restore_context_v23760(plan_df, raw_df):
+    """v23.81: mantiene Prioridad/Siguiente paso cuando restaura contexto y añade faltantes."""
+    if plan_df is None or not isinstance(plan_df, pd.DataFrame):
+        plan_df = pd.DataFrame()
+    plan = plan_df.copy()
+    ctx = _plan_context_cols_v23760(raw_df)
+    if ctx.empty:
+        return plan
+    if not plan.empty and "Partido" in plan.columns:
+        plan["__plan_key"] = plan["Partido"].apply(_plan_key_v23760)
+        used_keys = set(plan["__plan_key"].astype(str))
+        ctx_map = ctx.drop_duplicates("__plan_key", keep="first").set_index("__plan_key")
+        for i, row in plan.iterrows():
+            k = row.get("__plan_key", "")
+            if k in ctx_map.index:
+                for col in ["Hora", "Torneo", "Superficie"]:
+                    if col in ctx_map.columns:
+                        cur = str(plan.at[i, col]) if col in plan.columns and pd.notna(plan.at[i, col]) else ""
+                        if cur.strip() in ["", "nan", "None"]:
+                            val = ctx_map.at[k, col]
+                            plan.at[i, col] = "" if pd.isna(val) else val
+    else:
+        used_keys = set()
+
+    missing = []
+    for _, r in ctx.iterrows():
+        k = str(r.get("__plan_key", ""))
+        if k and k not in used_keys:
+            estado = str(r.get("Estado", "") or "")
+            accion = "NO JUGAR" if "No encontrado" in estado else "OBSERVAR"
+            missing.append({
+                "Hora": str(r.get("Hora", "") or ""),
+                "Torneo": str(r.get("Torneo", "") or ""),
+                "Superficie": str(r.get("Superficie", "") or ""),
+                "Partido": str(r.get("Partido", "") or ""),
+                "Lectura app": "SIN DECISIÓN FINAL" if accion == "OBSERVAR" else "DATOS FALTAN",
+                "Acción": accion,
+                "Prioridad": "Baja",
+                "Mercado recomendado": "—",
+                "Línea": "",
+                "Alternativa": "",
+                "Confianza": "—",
+                "Riesgo principal": estado,
+                "Motivo": "Incluido por v23.81: estaba en la lista analizada pero no llegaba a la decisión final.",
+                "Siguiente paso": "Pasar por predictor individual solo si te interesa; si no, descartar." if accion == "OBSERVAR" else "Descartar.",
+            })
+    if missing:
+        plan = pd.concat([plan.drop(columns=["__plan_key"], errors="ignore"), pd.DataFrame(missing)], ignore_index=True)
+    else:
+        plan = plan.drop(columns=["__plan_key"], errors="ignore")
+
+    cols = ["Hora", "Torneo", "Superficie", "Partido", "Lectura app", "Acción", "Prioridad", "Mercado recomendado", "Línea", "Alternativa", "Confianza", "Riesgo principal", "Motivo", "Siguiente paso"]
+    for c in cols:
+        if c not in plan.columns:
+            plan[c] = ""
+    return plan[cols]
+
+
+def _ajustar_ancho_plan_v23740(writer, sheet_name="PLAN DEL DÍA"):
+    try:
+        ws = writer.book[sheet_name]
+        widths = {
+            "A": 10, "B": 22, "C": 12, "D": 34, "E": 24, "F": 13,
+            "G": 12, "H": 30, "I": 10, "J": 24, "K": 16, "L": 30,
+            "M": 70, "N": 56
+        }
+        for col, width in widths.items():
+            ws.column_dimensions[col].width = width
+        ws.freeze_panes = "A2"
+        for row in ws.iter_rows(min_row=2):
+            accion = str(row[5].value or "").upper() if len(row) > 5 else ""
+            try:
+                from openpyxl.styles import PatternFill, Font
+                if accion == "JUGAR":
+                    row[5].fill = PatternFill("solid", fgColor="C6EFCE")
+                    row[5].font = Font(bold=True, color="006100")
+                elif accion == "OBSERVAR":
+                    row[5].fill = PatternFill("solid", fgColor="FFF2CC")
+                    row[5].font = Font(bold=True, color="7F6000")
+                elif accion in ["NO OVER", "NO UNDER"]:
+                    row[5].fill = PatternFill("solid", fgColor="DDEBF7")
+                    row[5].font = Font(bold=True, color="1F4E78")
+                elif accion == "NO JUGAR":
+                    row[5].fill = PatternFill("solid", fgColor="F4CCCC")
+                    row[5].font = Font(bold=True, color="990000")
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 # =========================================================
 # v23.33 Control Panel + Safe UX Helpers
